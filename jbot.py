@@ -25,16 +25,14 @@
 # --- Consolidated Imports ---
 import os
 import discord
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone, timedelta
 import requests
 import re
 import google.generativeai as genai
 import asyncio
 import time
 import json
-import datetime
 import urllib.parse
-from datetime import timezone, timedelta
 from discord import ui
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -294,7 +292,7 @@ def create_horoscope_embed(sign_name, data, request_date):
     embed.add_field(name="Lucky Time", value=lucky_time, inline=True)
     return embed
 
-run_time = datetime.time(hour=0, minute=0, tzinfo=timezone.utc)
+run_time = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
 
 @tasks.loop(time=run_time)
 async def send_daily_horoscopes():
@@ -534,7 +532,7 @@ async def help_command(ctx):
     embed.add_field(name=f"🎵 Music Download (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Search for a song:** `{COMMAND_PREFIX}searchsong [query]`\n" f"**Download a song from results:** `{COMMAND_PREFIX}downloadsong [number]`"), inline=False)
     embed.add_field(name=f"🐱 Fun Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Cat Picture:** `{COMMAND_PREFIX}c`\n" f"**Cat Fact:** `{COMMAND_PREFIX}cf`"), inline=False)
     embed.add_field(name=f"🎮 Game Deals (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Top Steam Deals:** `{COMMAND_PREFIX}deals`\n" f"**Check Game Price:** `{COMMAND_PREFIX}price [game name]`"), inline=False)
-    embed.add_field(name=f"📚 Utility Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Dictionary:** `{COMMAND_PREFIX}dict [word]`\n" f"**Gold/Silver Price:** `{COMMAND_PREFIX}gold [currency]`"), inline=False)
+    embed.add_field(name=f"📚 Utility Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Dictionary:** `{COMMAND_PREFIX}dict [word]`\n" f"**Gold Price:** `{COMMAND_PREFIX}gold [currency]`\n" f"**Silver Price:** `{COMMAND_PREFIX}silver [currency]`"), inline=False)
     
     if ctx.author.id == bot.owner_id:
         embed.add_field(name=f"👑 Owner Commands", value=f"**List all horoscope users:** `{COMMAND_PREFIX}olist`\n**Test your horoscope DM:** `{COMMAND_PREFIX}test`", inline=False)
@@ -968,102 +966,139 @@ async def download_song(ctx: commands.Context, song_number: int):
         print(f"Error downloading song: {e}")
         await ctx.send("Sorry, I encountered an error while downloading the song.")
 
+# The conversion factor from troy ounce to grams
+TROY_OUNCE_TO_GRAMS = 31.1034768
+
 @bot.command(name='gold', aliases=['g'])
 async def gold(ctx: commands.Context, currency: str = "USD"):
-    """Fetches and displays live gold and silver prices for a given currency."""
+    """Fetches and displays the live price and performance of gold."""
     currency_code = currency.upper()
     
-    # Define the required headers and cookies for the request
     cookies = { 'wcid': 'D95hVgSMso1SAAAC', 'react_component_complete': 'true' }
     headers = {
-        'accept': '*/*',
-        'accept-language': 'en-US,en-GB;q=0.9,en;q=0.8',
-        'referer': 'https://goldprice.org/spot-gold.html',
-        'sec-fetch-dest': 'empty',
-        'sec-fetch-mode': 'cors',
-        'sec-fetch-site': 'same-origin',
+        'accept': '*/*', 'accept-language': 'en-US,en-GB;q=0.9,en;q=0.8',
+        'referer': 'https://goldprice.org/spot-gold.html', 'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-origin',
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
     }
     
-    # API URLs
     price_api_url = f"https://data-asg.goldprice.org/dbXRates/{currency_code}"
-    performance_api_url = "https://goldprice.org/performance-json/gold-price-performance-USD.json"
+    gold_perf_api_url = f"https://goldprice.org/performance-json/gold-price-performance-{currency_code}.json"
     
-    msg = await ctx.send(f"Fetching live prices for **{currency_code}**...")
+    msg = await ctx.send(f"Fetching live gold prices for **{currency_code}**...")
     
     try:
-        # --- Fetch Price Data ---
         price_response = requests.get(price_api_url, cookies=cookies, headers=headers)
         price_response.raise_for_status()
-        price_data = price_response.json().get("items")[0]
+        price_json = price_response.json()
 
-        # --- Fetch Performance Data ---
-        perf_response = requests.get(performance_api_url, cookies=cookies, headers=headers)
-        perf_response.raise_for_status()
-        perf_data = perf_response.json().get("Change")[0]
+        gold_perf_response = requests.get(gold_perf_api_url, cookies=cookies, headers=headers)
+        gold_perf_response.raise_for_status()
         
-        # --- Prepare Data for Embed ---
-        # Price and daily change
-        xau_price = price_data.get('xauPrice', 0)
-        xag_price = price_data.get('xagPrice', 0)
-        xau_change = price_data.get('chgXau', 0)
-        xag_change = price_data.get('chgXag', 0)
+        # --- Process Data ---
+        price_data = price_json.get("items")[0]
+        unix_timestamp = price_json.get("ts", 0) // 1000
         xau_pc_change = price_data.get('pcXau', 0)
-        xag_pc_change = price_data.get('pcXag', 0)
-        
-        # Performance data
-        perf_today = perf_data.get("Today", {}).get("percentage", "N/A")
-        perf_30d = perf_data.get("30 Days", {}).get("percentage", "N/A")
-        perf_6m = perf_data.get("6 Months", {}).get("percentage", "N/A")
-        perf_1y = perf_data.get("1 Year", {}).get("percentage", "N/A")
 
+        gold_perf_list = gold_perf_response.json().get("Change", [])
+        gold_perf_data = {k: v for item in gold_perf_list for k, v in item.items()}
+        
+        xau_price_gram = price_data.get('xauPrice', 0) / TROY_OUNCE_TO_GRAMS
+        xau_change_gram = price_data.get('chgXau', 0) / TROY_OUNCE_TO_GRAMS
+        
         # --- Create Embed ---
         embed = discord.Embed(
-            title=f"🥇 Live Gold & Silver Prices ({currency_code})",
-            description="Prices are per troy ounce.",
-            color=discord.Color.gold()
+            title=f"🥇 Live Gold Price ({currency_code})",
+            description=f"Price is per gram in **{currency_code}**.",
+            color=discord.Color.gold(),
+            timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
         )
-        embed.set_thumbnail(url="https://i.imgur.com/22RFa2s.png") # Gold bars icon
+        embed.set_footer(text="Data from goldprice.org")
 
-        # Gold Price Field
-        xau_sign = "+" if xau_change >= 0 else ""
-        xau_emoji = "📈" if xau_change >= 0 else "📉"
-        xau_value = (
-            f"**Price:** `{xau_price:,.2f} {currency_code}`\n"
-            f"**Change:** {xau_emoji} `{xau_sign}{xau_change:,.2f} ({xau_sign}{xau_pc_change:.2f}%)`"
-        )
-        embed.add_field(name="Gold (XAU)", value=xau_value, inline=True)
-
-        # Silver Price Field
-        xag_sign = "+" if xag_change >= 0 else ""
-        xag_emoji = "📈" if xag_change >= 0 else "📉"
-        xag_value = (
-            f"**Price:** `{xag_price:,.2f} {currency_code}`\n"
-            f"**Change:** {xag_emoji} `{xag_sign}{xag_change:,.2f} ({xag_sign}{xag_pc_change:.2f}%)`"
-        )
-        embed.add_field(name="Silver (XAG)", value=xag_value, inline=True)
-
-        # Performance Field
-        perf_text = (
-            f"**Today:** `{perf_today}` | **30D:** `{perf_30d}`\n"
-            f"**6M:** `{perf_6m}` | **1Y:** `{perf_1y}`"
-        )
-        embed.add_field(name="Gold Performance (vs USD)", value=perf_text, inline=False)
+        # --- Price & Performance Fields ---
+        xau_sign = "+" if xau_change_gram >= 0 else ""
+        xau_emoji = "📈" if xau_change_gram >= 0 else "📉"
+        xau_value = f"**Price:** `{xau_price_gram:,.4f}`\n**Change:** {xau_emoji} `{xau_sign}{xau_change_gram:,.4f} ({xau_sign}{xau_pc_change:.2f}%)`"
+        embed.add_field(name="Gold (XAU)", value=xau_value, inline=False)
         
-        # Set footer with timestamp from API
-        api_date = price_response.json().get("date", "Live Data")
-        embed.set_footer(text=f"Data from goldprice.org | As of {api_date}")
+        g_today_sign = "+" if xau_pc_change >= 0 else ""
+        g_today_perf = f"{g_today_sign}{xau_pc_change:.2f}%"
+        g_30d = gold_perf_data.get('30 Days', {}).get('percentage', 'N/A')
+        g_6m = gold_perf_data.get('6 Months', {}).get('percentage', 'N/A')
+        g_1y = gold_perf_data.get('1 Year', {}).get('percentage', 'N/A')
+        g_perf_str = f"**Today:** `{g_today_perf}` | **30D:** `{g_30d}`\n**6M:** `{g_6m}` | **1Y:** `{g_1y}`"
+        embed.add_field(name=f"Gold Performance ({currency_code})", value=g_perf_str, inline=False)
 
         await msg.edit(content=None, embed=embed)
-
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            await msg.edit(content=f"Sorry, I couldn't find price data for **{currency_code}**. Please use a valid ISO currency code (e.g., USD, MYR, JPY).")
-        else:
-            await msg.edit(content=f"An API error occurred: `Status {e.response.status_code}`. Please try again later.")
     except Exception as e:
-        print(f"An error occurred in the gold command: {e}")
-        await msg.edit(content="An unexpected error occurred while fetching gold prices.")
+        await msg.edit(content=f"An error occurred while fetching gold prices for **{currency_code}**.")
+        print(f"Error in !gold command: {e}")
+
+
+@bot.command(name='silver', aliases=['s'])
+async def silver(ctx: commands.Context, currency: str = "USD"):
+    """Fetches and displays the live price and performance of silver."""
+    currency_code = currency.upper()
+    
+    cookies = { 'wcid': 'D95hVgSMso1SAAAC', 'react_component_complete': 'true' }
+    headers = {
+        'accept': '*/*', 'accept-language': 'en-US,en-GB;q=0.9,en;q=0.8',
+        'referer': 'https://goldprice.org/spot-gold.html', 'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+    }
+    
+    price_api_url = f"https://data-asg.goldprice.org/dbXRates/{currency_code}"
+    silver_perf_api_url = f"https://goldprice.org/performance-json/silver-price-performance-{currency_code}.json"
+    
+    msg = await ctx.send(f"Fetching live silver prices for **{currency_code}**...")
+    
+    try:
+        price_response = requests.get(price_api_url, cookies=cookies, headers=headers)
+        price_response.raise_for_status()
+        price_json = price_response.json()
+        
+        silver_perf_response = requests.get(silver_perf_api_url, cookies=cookies, headers=headers)
+        silver_perf_response.raise_for_status()
+        
+        # --- Process Data ---
+        price_data = price_json.get("items")[0]
+        unix_timestamp = price_json.get("ts", 0) // 1000
+        xag_pc_change = price_data.get('pcXag', 0)
+
+        silver_perf_list = silver_perf_response.json().get("Change", [])
+        silver_perf_data = {k: v for item in silver_perf_list for k, v in item.items()}
+        
+        xag_price_gram = price_data.get('xagPrice', 0) / TROY_OUNCE_TO_GRAMS
+        xag_change_gram = price_data.get('chgXag', 0) / TROY_OUNCE_TO_GRAMS
+        
+        # --- Create Embed ---
+        embed = discord.Embed(
+            title=f"🥈 Live Silver Price ({currency_code})",
+            description=f"Price is per gram in **{currency_code}**.",
+            color=discord.Color.light_grey(),
+            timestamp=datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
+        )
+        embed.set_footer(text="Data from goldprice.org")
+
+        # --- Price & Performance Fields ---
+        xag_sign = "+" if xag_change_gram >= 0 else ""
+        xag_emoji = "📈" if xag_change_gram >= 0 else "📉"
+        xag_value = f"**Price:** `{xag_price_gram:,.4f}`\n**Change:** {xag_emoji} `{xag_sign}{xag_change_gram:,.4f} ({xag_sign}{xag_pc_change:.2f}%)`"
+        embed.add_field(name="Silver (XAG)", value=xag_value, inline=False)
+
+        s_today_sign = "+" if xag_pc_change >= 0 else ""
+        s_today_perf = f"{s_today_sign}{xag_pc_change:.2f}%"
+        s_30d = silver_perf_data.get('30 Days', {}).get('percentage', 'N/A')
+        s_6m = silver_perf_data.get('6 Months', {}).get('percentage', 'N/A')
+        s_1y = silver_perf_data.get('1 Year', {}).get('percentage', 'N/A')
+        s_perf_str = f"**Today:** `{s_today_perf}` | **30D:** `{s_30d}`\n**6M:** `{s_6m}` | **1Y:** `{s_1y}`"
+        embed.add_field(name=f"Silver Performance ({currency_code})", value=s_perf_str, inline=False)
+
+        await msg.edit(content=None, embed=embed)
+    except Exception as e:
+        await msg.edit(content=f"An error occurred while fetching silver prices for **{currency_code}**.")
+        print(f"Error in !silver command: {e}")
 
 # --- Main Execution Block ---
 if __name__ == '__main__':
