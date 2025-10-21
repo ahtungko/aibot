@@ -330,6 +330,47 @@ async def send_daily_horoscopes():
 async def before_daily_task(): await bot.wait_until_ready()
 
 # --- All Helper Functions ---
+@tasks.loop(seconds=60)  
+async def update_gold_price_status():
+    currency_code = "MYR"
+    
+    # --- Reusable API Request Logic ---
+    cookies = { 'wcid': 'D95hVgSMso1SAAAC', 'react_component_complete': 'true' }
+    headers = {
+        'accept': '*/*', 'accept-language': 'en-US,en-GB;q=0.9,en;q=0.8',
+        'referer': 'https://goldprice.org/spot-gold.html', 'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+    }
+    price_api_url = f"https://data-asg.goldprice.org/dbXRates/{currency_code}"
+
+    try:
+        price_response = requests.get(price_api_url, cookies=cookies, headers=headers)
+        price_response.raise_for_status()
+        price_json = price_response.json()
+
+        # --- Process Data ---
+        price_data = price_json.get("items")[0]
+        xau_price_gram = price_data.get('xauPrice', 0) / TROY_OUNCE_TO_GRAMS
+        
+        # --- Format the Status Message ---
+        status_text = f"Gold: {xau_price_gram:,.2f} MYR/g"
+        
+        # --- Update Bot's Presence ---
+        activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
+        await bot.change_presence(activity=activity)
+        print(f"Updated bot status: {status_text}")
+
+    except Exception as e:
+        print(f"An error occurred in the status update task: {e}")
+        # Optional: Set a default/error status
+        error_activity = discord.Activity(type=discord.ActivityType.watching, name="Price API Error")
+        await bot.change_presence(activity=error_activity)
+
+@update_gold_price_status.before_loop
+async def before_status_task():
+    await bot.wait_until_ready()
+
 
 def load_user_data():
     if not os.path.exists(USER_DATA_FILE): return {}
@@ -498,6 +539,10 @@ async def on_ready():
     if not send_daily_horoscopes.is_running():
         send_daily_horoscopes.start()
         print("Started the daily horoscope background task.")
+
+    if not update_gold_price_status.is_running():
+        update_gold_price_status.start()
+        print("Started the live gold price status update task.")
 
 @bot.event
 async def on_message(message):
