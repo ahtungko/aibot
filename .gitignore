@@ -3,3 +3,4 @@ discord/.env
 discord/venv
 discord/abc.txt
 .env
+dashboard_data.json
