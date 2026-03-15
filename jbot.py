@@ -26,7 +26,7 @@
 import os
 import discord
 from datetime import datetime, time as dt_time, timezone, timedelta
-import requests
+import aiohttp
 import re
 import google.generativeai as genai
 import asyncio
@@ -37,6 +37,7 @@ from discord import ui
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 import io
+import aiofiles
 
 # --- Unified Configuration & Environment Loading ---
 load_dotenv()
@@ -48,7 +49,7 @@ BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
 WISE_SANDBOX_TOKEN = os.getenv("WISE_SANDBOX_TOKEN")
 
 # Bot Settings
-COMMAND_PREFIX = '!'
+COMMAND_PREFIX = "!"
 USER_DATA_FILE = "abc.txt"
 
 # --- Sanity Checks for Environment Variables ---
@@ -107,13 +108,14 @@ intents.members = True
 intents.messages = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None, owner_id=owner_id_int)
+bot.http_session = None
 
 
 # --- UI Components ---
 
 async def handle_timezone_selection(interaction: discord.Interaction, select_item: ui.Select, offset_str: str):
     user_id = str(interaction.user.id)
-    users = load_user_data()
+    users = await load_user_data()
     user_data = users.get(user_id)
     sign = getattr(select_item.view, 'sign', None)
 
@@ -128,7 +130,7 @@ async def handle_timezone_selection(interaction: discord.Interaction, select_ite
             return
         users[user_id] = {"sign": sign, "timezone_offset": offset_str}
         
-    save_user_data(users)
+    await save_user_data(users)
 
     for item in select_item.view.children:
         item.disabled = True
@@ -195,14 +197,14 @@ class ZodiacSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
         selected_sign = self.values[0]
-        users = load_user_data()
+        users = await load_user_data()
         user_data = users.get(user_id)
         if user_data:
             if isinstance(user_data, str):
                 users[user_id] = {"sign": selected_sign, "timezone_offset": "+0"}
             elif isinstance(user_data, dict):
                 user_data['sign'] = selected_sign
-            save_user_data(users)
+            await save_user_data(users)
             await interaction.response.edit_message(content=f"✅ Your zodiac sign has been updated to **{selected_sign}**!", view=None)
         else:
             view = TimezoneSelectionView(author=interaction.user, sign=selected_sign)
@@ -254,9 +256,9 @@ class HistoricalGraphView(ui.View):
         await interaction.response.edit_message(view=self)
         api_url = f"https://currencyhistoryapi.tinaleewx99.workers.dev/?base={self.base_currency}&symbols={self.target_currency}"
         try:
-            response = requests.get(api_url)
-            response.raise_for_status()
-            data = response.json()
+            async with bot.http_session.get(api_url) as response:
+                response.raise_for_status()
+                data = await response.json()
             rates_over_time = data.get('rates', {})
             if not rates_over_time:
                 await interaction.followup.send("Sorry, I couldn't find any historical data for this currency pair.", ephemeral=True)
@@ -296,8 +298,8 @@ run_time = dt_time(hour=0, minute=0, tzinfo=timezone.utc)
 
 @tasks.loop(time=run_time)
 async def send_daily_horoscopes():
-    print(f"[{datetime.datetime.now()}] Running daily horoscope task...")
-    users = load_user_data()
+    print(f"[{datetime.now()}] Running daily horoscope task...")
+    users = await load_user_data()
     if not users:
         print("No registered users to send horoscopes to.")
         return
@@ -311,11 +313,11 @@ async def send_daily_horoscopes():
                 offset_str = data.get('timezone_offset', '+0')
             if not sign: continue
             user_timezone = timezone(timedelta(hours=float(offset_str)))
-            user_today_date = datetime.datetime.now(user_timezone).date().isoformat()
+            user_today_date = datetime.now(user_timezone).date().isoformat()
             url = f"https://api.aistrology.beandev.xyz/v1?sign={sign.lower()}&date={user_today_date}"
-            response = requests.get(url)
-            response.raise_for_status()
-            horoscope_data_list = response.json()
+            async with bot.http_session.get(url) as response:
+                response.raise_for_status()
+                horoscope_data_list = await response.json()
             if horoscope_data_list and isinstance(horoscope_data_list, list):
                 horoscope_data = horoscope_data_list[0]
                 user = await bot.fetch_user(int(user_id))
@@ -345,9 +347,9 @@ async def update_gold_price_status():
     price_api_url = f"https://data-asg.goldprice.org/dbXRates/{currency_code}"
 
     try:
-        price_response = requests.get(price_api_url, cookies=cookies, headers=headers)
-        price_response.raise_for_status()
-        price_json = price_response.json()
+        async with bot.http_session.get(price_api_url, cookies=cookies, headers=headers) as price_response:
+            price_response.raise_for_status()
+            price_json = await price_response.json()
 
         # --- Process Data ---
         price_data = price_json.get("items")[0]
@@ -372,44 +374,46 @@ async def before_status_task():
     await bot.wait_until_ready()
 
 
-def load_user_data():
+async def load_user_data():
     if not os.path.exists(USER_DATA_FILE): return {}
     try:
-        with open(USER_DATA_FILE, 'r') as f: return json.load(f)
+        async with aiofiles.open(USER_DATA_FILE, 'r') as f:
+            return json.loads(await f.read())
     except (json.JSONDecodeError, FileNotFoundError): return {}
 
-def save_user_data(data):
-    with open(USER_DATA_FILE, 'w') as f: json.dump(data, f, indent=4)
+async def save_user_data(data):
+    async with aiofiles.open(USER_DATA_FILE, 'w') as f:
+        await f.write(json.dumps(data, indent=4))
 
 async def fetch_exchange_rates(base_currency: str, target_currency: str = None):
     params = {'base': base_currency.upper()}
     if target_currency: params['to'] = target_currency.upper()
     try:
-        response = requests.get(BASE_CURRENCY_API_URL, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
+        async with bot.http_session.get(BASE_CURRENCY_API_URL, params=params) as response:
+            response.raise_for_status()
+            return await response.json()
+    except aiohttp.ClientError as e:
         print(f"Error fetching exchange rates from API: {e}")
         return None
 
 async def fetch_and_send_horoscope(destination, sign, user: discord.User = None):
-    users, user_id = load_user_data(), str(user.id)
+    users, user_id = await load_user_data(), str(user.id)
     user_data = users.get(user_id)
     offset_str = '+0'
     if isinstance(user_data, dict): offset_str = user_data.get('timezone_offset', '+0')
     user_timezone = timezone(timedelta(hours=float(offset_str)))
-    today_date = datetime.datetime.now(user_timezone).date().isoformat()
+    today_date = datetime.now(user_timezone).date().isoformat()
     url = f"https://api.aistrology.beandev.xyz/v1?sign={sign.lower()}&date={today_date}"
     try:
         mention_text = f"{user.mention}, " if user else ""
         if isinstance(destination, (commands.Context, discord.TextChannel, discord.Interaction)):
             await destination.send(f"{mention_text}fetching today's horoscope for **{sign}**...")
-        response = requests.get(url)
-        response.raise_for_status()
-        horoscope_data_list = response.json()
+        async with bot.http_session.get(url) as response:
+            response.raise_for_status()
+            horoscope_data_list = await response.json()
         if horoscope_data_list and isinstance(horoscope_data_list, list):
             data = horoscope_data_list[0]
-            embed = create_horoscope_embed(sign, horoscope_data, today_date)
+            embed = create_horoscope_embed(sign, data, today_date)
             if hasattr(destination, 'send'): await destination.send(embed=embed)
             return True
         else:
@@ -517,6 +521,7 @@ async def handle_gemini_mention(message):
 @bot.event
 async def on_ready():
     global model
+    bot.http_session = aiohttp.ClientSession()
     print(f'Bot is ready! Logged in as {bot.user.name} (ID: {bot.user.id})')
     print(f"Command Prefix: '{COMMAND_PREFIX}' | Mention: @{bot.user.name}")
     print('------')
@@ -543,6 +548,12 @@ async def on_ready():
     if not update_gold_price_status.is_running():
         update_gold_price_status.start()
         print("Started the live gold price status update task.")
+
+@bot.event
+async def on_disconnect():
+    if bot.http_session:
+        await bot.http_session.close()
+        print("Closed aiohttp session.")
 
 @bot.event
 async def on_message(message):
@@ -574,7 +585,7 @@ async def help_command(ctx):
     embed.add_field(name="🤖 AI Chat Functionality", value=f"To chat with the AI, simply mention the bot (`@{bot.user.name}`) followed by your question.", inline=False)
     embed.add_field(name=f"💱 Currency Exchange (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Get Daily Rates:** `{COMMAND_PREFIX}usd`\n" f"**Convert (Daily Rate):** `{COMMAND_PREFIX}usd 100 myr`\n" f"**Convert (LIVE Rate):** `{COMMAND_PREFIX}liverate` or `{COMMAND_PREFIX}r [amount] <source> <target>`\n\n" f"Click `📈` to see a graph for daily rate conversions."), inline=False)
     embed.add_field(name=f"✨ Daily Horoscope (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Register:** `{COMMAND_PREFIX}reg`\n" f"**Modify Sign:** `{COMMAND_PREFIX}mod`\n" f"**Modify Timezone:** `{COMMAND_PREFIX}modtz`\n" f"**Remove your record:** `{COMMAND_PREFIX}remove`\n" f"**Show in channel:** `{COMMAND_PREFIX}list`\n\n" f"Receive a daily horoscope in your timezone!"), inline=False)
-    embed.add_field(name=f"🎵 Music Download (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Search for a song:** `{COMMAND_PREFIX}searchsong [query]`\n" f"**Download a song from results:** `{COMMAND_PREFIX}downloadsong [number]`"), inline=False)
+    embed.add_field(name=f"🎵 Music Download (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Search for a song:** `{COMMAND_PREFIX}ss [query]`\n" f"**Download a song from results:** `{COMMAND_PREFIX}d [number]`"), inline=False)
     embed.add_field(name=f"🐱 Fun Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Cat Picture:** `{COMMAND_PREFIX}c`\n" f"**Cat Fact:** `{COMMAND_PREFIX}cf`"), inline=False)
     embed.add_field(name=f"🎮 Game Deals (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Top Steam Deals:** `{COMMAND_PREFIX}deals`\n" f"**Check Game Price:** `{COMMAND_PREFIX}price [game name]`"), inline=False)
     embed.add_field(name=f"📚 Utility Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Dictionary:** `{COMMAND_PREFIX}dict [word]`\n" f"**Gold Price:** `{COMMAND_PREFIX}gold [currency]`\n" f"**Silver Price:** `{COMMAND_PREFIX}silver [currency]`"), inline=False)
@@ -586,7 +597,7 @@ async def help_command(ctx):
 
 @bot.command(name='reg')
 async def reg(ctx: commands.Context):
-    if str(ctx.author.id) in load_user_data():
+    if str(ctx.author.id) in await load_user_data():
         await ctx.send(f"You are already registered, {ctx.author.mention}! Use `{COMMAND_PREFIX}mod` to change your sign or `{COMMAND_PREFIX}modtz` to change your timezone.")
         return
     view = ZodiacSelectionView(author=ctx.author)
@@ -594,7 +605,7 @@ async def reg(ctx: commands.Context):
 
 @bot.command(name='mod')
 async def mod(ctx: commands.Context):
-    if str(ctx.author.id) not in load_user_data():
+    if str(ctx.author.id) not in await load_user_data():
         await ctx.send(f"You haven't registered yet, {ctx.author.mention}. Please use `{COMMAND_PREFIX}reg` to get started.")
         return
     view = ZodiacSelectionView(author=ctx.author)
@@ -602,7 +613,7 @@ async def mod(ctx: commands.Context):
 
 @bot.command(name='modtz')
 async def modtz(ctx: commands.Context):
-    if str(ctx.author.id) not in load_user_data():
+    if str(ctx.author.id) not in await load_user_data():
         await ctx.send(f"You need to register with `{COMMAND_PREFIX}reg` first before changing your timezone.")
         return
     view = TimezoneSelectionView(author=ctx.author)
@@ -611,10 +622,10 @@ async def modtz(ctx: commands.Context):
 @bot.command(name='remove')
 async def remove_record(ctx: commands.Context):
     user_id = str(ctx.author.id)
-    users = load_user_data()
+    users = await load_user_data()
     if user_id in users:
         del users[user_id]
-        save_user_data(users)
+        await save_user_data(users)
         await ctx.send(f"✅ Your record has been deleted, {ctx.author.mention}. Use `{COMMAND_PREFIX}reg` to register again.")
     else:
         await ctx.send(f"You do not have a registered sign to delete, {ctx.author.mention}.")
@@ -622,7 +633,7 @@ async def remove_record(ctx: commands.Context):
 @bot.command(name='list')
 async def list_horoscope(ctx: commands.Context):
     user_id = str(ctx.author.id)
-    users = load_user_data()
+    users = await load_user_data()
     user_data = users.get(user_id)
     sign = None
     if isinstance(user_data, str):
@@ -639,9 +650,9 @@ async def c(ctx: commands.Context):
     API_URL = "https://api.thecatapi.com/v1/images/search"
     try:
         async with ctx.typing():
-            response = requests.get(API_URL)
-            response.raise_for_status()
-            data = response.json()
+            async with bot.http_session.get(API_URL) as response:
+                response.raise_for_status()
+                data = await response.json()
             if not data: await ctx.send("The cat API returned no cats. 😿"); return
             embed = discord.Embed(title="Meow! Here's a cat for you 🐱", color=discord.Color.blue())
             embed.set_image(url=data[0]['url'])
@@ -653,9 +664,9 @@ async def cf(ctx: commands.Context):
     API_URL = "https://meowfacts.herokuapp.com/"
     try:
         async with ctx.typing():
-            response = requests.get(API_URL)
-            response.raise_for_status()
-            data = response.json()
+            async with bot.http_session.get(API_URL) as response:
+                response.raise_for_status()
+                data = await response.json()
             if 'data' not in data or not data['data']: await ctx.send("The cat fact API is empty. 😿"); return
             embed = discord.Embed(title="🐱 Did You Know?", description=data['data'][0], color=discord.Color.green())
             await ctx.send(embed=embed)
@@ -666,9 +677,9 @@ async def deals(ctx: commands.Context):
     API_URL = "https://www.cheapshark.com/api/1.0/deals?storeID=1&sortBy=Savings&pageSize=5"
     try:
         async with ctx.typing():
-            response = requests.get(API_URL)
-            response.raise_for_status()
-            deals_data = response.json()
+            async with bot.http_session.get(API_URL) as response:
+                response.raise_for_status()
+                deals_data = await response.json()
             if not deals_data: await ctx.send("I couldn't find any hot deals on Steam right now."); return
             embed = discord.Embed(title="🔥 Top 5 Steam Deals Right Now", description="Here are the hottest deals, sorted by discount!", color=discord.Color.from_rgb(10, 29, 45))
             for deal in deals_data:
@@ -686,9 +697,9 @@ async def price(ctx: commands.Context, *, game_name: str = None):
     DEAL_API_URL = f"https://www.cheapshark.com/api/1.0/deals?storeID=1&onSale=1&exact=1&title={formatted_game_name}"
     try:
         async with ctx.typing():
-            response = requests.get(DEAL_API_URL)
-            response.raise_for_status()
-            deals_data = response.json()
+            async with bot.http_session.get(DEAL_API_URL) as response:
+                response.raise_for_status()
+                deals_data = await response.json()
             if deals_data:
                 deal = deals_data[0]
                 steam_store_link = f"https://store.steampowered.com/app/{deal.get('steamAppID')}"
@@ -700,9 +711,9 @@ async def price(ctx: commands.Context, *, game_name: str = None):
                 await ctx.send(embed=embed)
             else:
                 lookup_url = f"https://www.cheapshark.com/api/1.0/games?title={formatted_game_name}&exact=1"
-                lookup_response = requests.get(lookup_url)
-                lookup_response.raise_for_status()
-                game_data = lookup_response.json()
+                async with bot.http_session.get(lookup_url) as lookup_response:
+                    lookup_response.raise_for_status()
+                    game_data = await lookup_response.json()
                 if not game_data: await ctx.send(f"Sorry, I couldn't find a game with the exact name **'{game_name}'**."); return
                 game_info = game_data[0]
                 steam_store_link = f"https://store.steampowered.com/app/{game_info.get('steamAppID')}"
@@ -724,9 +735,12 @@ async def dict_command(ctx: commands.Context, *, word: str = None):
     
     async with ctx.typing():
         try:
-            response = requests.get(API_URL)
-            response.raise_for_status() 
-            data = response.json()
+            async with bot.http_session.get(API_URL) as response:
+                if response.status == 404:
+                    await ctx.send(f"Sorry, I couldn't find a definition for **'{word}'**. Please check the spelling.")
+                    return
+                response.raise_for_status() 
+                data = await response.json()
 
             if isinstance(data, dict) and data.get("title") == "No Definitions Found":
                 await ctx.send(f"Sorry, I couldn't find a definition for **'{word}'**. Please check the spelling.")
@@ -770,19 +784,19 @@ async def dict_command(ctx: commands.Context, *, word: str = None):
             audio_file = None
             if audio_url:
                 try:
-                    audio_response = requests.get(audio_url)
-                    audio_response.raise_for_status()
-                    
-                    if 'audio' in audio_response.headers.get('Content-Type', ''):
-                        audio_data = io.BytesIO(audio_response.content)
-                        audio_file = discord.File(fp=audio_data, filename=f"{word_text}_pronunciation.mp3")
+                    async with bot.http_session.get(audio_url) as audio_response:
+                        audio_response.raise_for_status()
+                        
+                        if 'audio' in audio_response.headers.get('Content-Type', ''):
+                            audio_data = io.BytesIO(await audio_response.read())
+                            audio_file = discord.File(fp=audio_data, filename=f"{word_text}_pronunciation.mp3")
                 except Exception as e:
                     print(f"Failed to download audio file: {e}")
             
             await ctx.send(embed=embed, file=audio_file)
 
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
+        except aiohttp.ClientResponseError as e:
+            if e.status == 404:
                 await ctx.send(f"Sorry, I couldn't find a definition for **'{word}'**. Please check the spelling.")
             else:
                 await ctx.send(f"An HTTP error occurred: {e}")
@@ -831,9 +845,9 @@ async def liverate(ctx: commands.Context, *args):
     
     async with ctx.typing():
         try:
-            response = requests.get(api_url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+            async with bot.http_session.get(api_url, headers=headers) as response:
+                response.raise_for_status()
+                data = await response.json()
             
             if not data or not isinstance(data, list):
                 await ctx.send(f"The Wise API returned an unexpected response for {source_curr} to {target_curr}.")
@@ -851,7 +865,7 @@ async def liverate(ctx: commands.Context, *args):
             
             if time_str.endswith("+0000"):
                 time_str = time_str[:-2] + ":" + time_str[-2:]
-            dt_object = datetime.datetime.fromisoformat(time_str)
+            dt_object = datetime.fromisoformat(time_str)
             unix_timestamp = int(dt_object.timestamp())
 
             embed = discord.Embed(title="Live Rate", description=f"**{amount:,.2f} {source_curr}** is equal to\n# **`{converted_amount:,.2f} {target_curr}`**", color=discord.Color.blue())
@@ -860,7 +874,7 @@ async def liverate(ctx: commands.Context, *args):
             embed.set_footer(text="Rates from Wise")
             await ctx.send(embed=embed)
 
-        except requests.exceptions.HTTPError:
+        except aiohttp.ClientResponseError:
             await ctx.send(f"Sorry, I couldn't get a rate for **{source_curr}** to **{target_curr}**. Please check if the currency codes are valid.")
         except Exception as e:
             print(f"An error occurred in the liverate command: {e}")
@@ -871,7 +885,7 @@ async def liverate(ctx: commands.Context, *args):
 @commands.is_owner()
 async def olist(ctx: commands.Context):
     """Lists all users registered for daily horoscopes."""
-    users = load_user_data()
+    users = await load_user_data()
     if not users:
         await ctx.send("No users have registered for horoscopes yet.")
         return
@@ -907,7 +921,7 @@ async def olist(ctx: commands.Context):
 async def test_daily_horoscopes(ctx):
     await ctx.message.add_reaction('🧪')
     owner_id = str(ctx.author.id)
-    users = load_user_data()
+    users = await load_user_data()
     owner_data = users.get(owner_id)
     sign = None
     if isinstance(owner_data, str):
@@ -921,7 +935,7 @@ async def test_daily_horoscopes(ctx):
         await ctx.author.send(f"⚠️ You are not registered for horoscopes. Please use `{COMMAND_PREFIX}reg` first to test this feature.")
 
 # --- Music Bot Logic ---
-@bot.command(name='searchsong')
+@bot.command(name='ss', aliases=['searchsong'])
 async def search_song(ctx: commands.Context, *, query: str):
     """Searches for a song and displays the top 10 results."""
     user_id = ctx.author.id
@@ -930,9 +944,9 @@ async def search_song(ctx: commands.Context, *, query: str):
     async with ctx.typing():
         try:
             url = f"{API_SEARCH_URLS['joox']}?key={urllib.parse.quote(query)}"
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
+            async with bot.http_session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json(content_type=None)
             
             if not data.get('data', {}).get('data'):
                 await ctx.send("No songs found for that query. Please try again.")
@@ -943,16 +957,22 @@ async def search_song(ctx: commands.Context, *, query: str):
             
             embed = discord.Embed(
                 title="🎧 Search Results",
-                description=f"Found **{len(songs)}** songs. Use `!downloadsong [number]` to download one.",
+                description=f"Found **{len(songs)}** songs. Use `!d [number]` to download one.",
                 color=discord.Color.dark_green()
             )
             
             for i, song in enumerate(songs):
                 song_title = song.get('title', 'Unknown Title')
-                artist_names = ', '.join([s.get('name') for s in song.get('singers', [])])
+                artist_names = ', '.join([s.get('name') for s in song.get('singers', []) if s.get('name')]) or 'Unknown Artist'
+                album_name = song.get('album', {}).get('name', 'N/A')
+                duration_sec = song.get('duration', 0)
+                minutes, seconds = divmod(duration_sec, 60)
+                duration_str = f"{minutes}:{seconds:02d}"
+                platform = song.get('platform', 'N/A').title()
+
                 embed.add_field(
                     name=f"{i+1}. {song_title}",
-                    value=f"**Artist:** {artist_names}\n**Album:** {song.get('album', {}).get('name', 'N/A')}",
+                    value=f"**Artist:** {artist_names}\n**Album:** {album_name}\n**Duration:** `{duration_str}` | **Source:** `{platform}`",
                     inline=False
                 )
                 
@@ -962,12 +982,12 @@ async def search_song(ctx: commands.Context, *, query: str):
             print(f"Error in searchsong command: {e}")
             await ctx.send("Sorry, an error occurred while searching for music.")
 
-@bot.command(name='downloadsong')
+@bot.command(name='d', aliases=['downloadsong'])
 async def download_song(ctx: commands.Context, song_number: int):
     """Downloads a song from the previous search results."""
     user_id = ctx.author.id
     if user_id not in search_results_cache or not search_results_cache[user_id]:
-        await ctx.send("Please use `!searchsong [query]` first to get a list of songs.")
+        await ctx.send("Please use `!ss [query]` first to get a list of songs.")
         return
     
     if not 1 <= song_number <= len(search_results_cache[user_id]):
@@ -977,31 +997,40 @@ async def download_song(ctx: commands.Context, song_number: int):
     song = search_results_cache[user_id][song_number - 1]
     song_id = song.get('ID')
     song_title = song.get('title', 'song')
-    song_artist = ', '.join([s.get('name') for s in song.get('singers', [])])
+    song_artist = ', '.join([s.get('name') for s in song.get('singers', []) if s.get('name')]) or 'Unknown Artist'
 
-    # Find the best quality mp3 or m4a for download
+    # Discord file limit (standard) is 25MB
+    MAX_FILE_SIZE = 25 * 1024 * 1024 
+    
+    # Find the best quality that fits in 25MB
     best_link = None
-    for link in song.get('fileLinks', []):
-        if link.get('format') in ['mp3', 'm4a']:
-            if best_link is None or link.get('quality', 0) > best_link.get('quality', 0):
-                best_link = link
+    links = song.get('fileLinks', [])
+    
+    # Sort links by quality descending to pick the best one first
+    sorted_links = sorted(links, key=lambda x: x.get('quality', 0), reverse=True)
+    
+    for link in sorted_links:
+        if link.get('size', float('inf')) <= MAX_FILE_SIZE:
+            # Prefer common formats for Discord preview, but allow FLAC if fits
+            best_link = link
+            break
     
     if not best_link:
-        await ctx.send("No compatible download format found for this song.")
+        await ctx.send("No download format found that fits within Discord's file size limit.")
         return
 
     quality = best_link.get('quality')
     file_format = best_link.get('format')
+    file_size_mb = best_link.get('size', 0) / (1024 * 1024)
     
     download_url = f"{API_DOWNLOAD_URLS['joox']}?ID={song_id}&quality={quality}&format={file_format}"
     
-    await ctx.send(f"Downloading **{song_title}** by **{song_artist}**...")
+    await ctx.send(f"Downloading **{song_title}** by **{song_artist}**...\nQuality: `{quality}` | Size: `{file_size_mb:.2f} MB`")
 
     try:
-        response = requests.get(download_url)
-        response.raise_for_status()
-
-        audio_data = io.BytesIO(response.content)
+        async with bot.http_session.get(download_url) as response:
+            response.raise_for_status()
+            audio_data = io.BytesIO(await response.read())
         audio_file = discord.File(fp=audio_data, filename=f"{song_title}_{song_artist}.{file_format}")
         
         await ctx.send(file=audio_file)
@@ -1033,19 +1062,20 @@ async def gold(ctx: commands.Context, currency: str = "USD"):
     msg = await ctx.send(f"Fetching live gold prices for **{currency_code}**...")
     
     try:
-        price_response = requests.get(price_api_url, cookies=cookies, headers=headers)
-        price_response.raise_for_status()
-        price_json = price_response.json()
+        async with bot.http_session.get(price_api_url, cookies=cookies, headers=headers) as price_response:
+            price_response.raise_for_status()
+            price_json = await price_response.json()
 
-        gold_perf_response = requests.get(gold_perf_api_url, cookies=cookies, headers=headers)
-        gold_perf_response.raise_for_status()
+        async with bot.http_session.get(gold_perf_api_url, cookies=cookies, headers=headers) as gold_perf_response:
+            gold_perf_response.raise_for_status()
+            gold_perf_json = await gold_perf_response.json()
         
         # --- Process Data ---
         price_data = price_json.get("items")[0]
         unix_timestamp = price_json.get("ts", 0) // 1000
         xau_pc_change = price_data.get('pcXau', 0)
 
-        gold_perf_list = gold_perf_response.json().get("Change", [])
+        gold_perf_list = gold_perf_json.get("Change", [])
         gold_perf_data = {k: v for item in gold_perf_list for k, v in item.items()}
         
         xau_price_gram = price_data.get('xauPrice', 0) / TROY_OUNCE_TO_GRAMS
@@ -1063,7 +1093,7 @@ async def gold(ctx: commands.Context, currency: str = "USD"):
         # --- Price & Performance Fields ---
         xau_sign = "+" if xau_change_gram >= 0 else ""
         xau_emoji = "📈" if xau_change_gram >= 0 else "📉"
-        xau_value = f"**Price:** `{xau_price_gram:,.4f}`\n**Change:** {xau_emoji} `{xau_sign}{xau_change_gram:,.4f} ({xau_sign}{xau_pc_change:.2f}%)`"
+        xau_value = f"**Price:** `{xau_price_gram:,.4f}`\n**Change:** {xau_emoji} `{xau_sign}{xau_change_gram:,.4f} ({xau_sign}{xau_pc_change:.2f}%)"
         embed.add_field(name="Gold (XAU)", value=xau_value, inline=False)
         
         g_today_sign = "+" if xau_pc_change >= 0 else ""
@@ -1099,19 +1129,20 @@ async def silver(ctx: commands.Context, currency: str = "USD"):
     msg = await ctx.send(f"Fetching live silver prices for **{currency_code}**...")
     
     try:
-        price_response = requests.get(price_api_url, cookies=cookies, headers=headers)
-        price_response.raise_for_status()
-        price_json = price_response.json()
+        async with bot.http_session.get(price_api_url, cookies=cookies, headers=headers) as price_response:
+            price_response.raise_for_status()
+            price_json = await price_response.json()
         
-        silver_perf_response = requests.get(silver_perf_api_url, cookies=cookies, headers=headers)
-        silver_perf_response.raise_for_status()
+        async with bot.http_session.get(silver_perf_api_url, cookies=cookies, headers=headers) as silver_perf_response:
+            silver_perf_response.raise_for_status()
+            silver_perf_json = await silver_perf_response.json()
         
         # --- Process Data ---
         price_data = price_json.get("items")[0]
         unix_timestamp = price_json.get("ts", 0) // 1000
         xag_pc_change = price_data.get('pcXag', 0)
 
-        silver_perf_list = silver_perf_response.json().get("Change", [])
+        silver_perf_list = silver_perf_json.get("Change", [])
         silver_perf_data = {k: v for item in silver_perf_list for k, v in item.items()}
         
         xag_price_gram = price_data.get('xagPrice', 0) / TROY_OUNCE_TO_GRAMS
@@ -1129,7 +1160,7 @@ async def silver(ctx: commands.Context, currency: str = "USD"):
         # --- Price & Performance Fields ---
         xag_sign = "+" if xag_change_gram >= 0 else ""
         xag_emoji = "📈" if xag_change_gram >= 0 else "📉"
-        xag_value = f"**Price:** `{xag_price_gram:,.4f}`\n**Change:** {xag_emoji} `{xag_sign}{xag_change_gram:,.4f} ({xag_sign}{xag_pc_change:.2f}%)`"
+        xag_value = f"**Price:** `{xag_price_gram:,.4f}`\n**Change:** {xag_emoji} `{xag_sign}{xag_change_gram:,.4f} ({xag_sign}{xag_pc_change:.2f}%)"
         embed.add_field(name="Silver (XAG)", value=xag_value, inline=False)
 
         s_today_sign = "+" if xag_pc_change >= 0 else ""
