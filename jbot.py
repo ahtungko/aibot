@@ -28,7 +28,7 @@ import discord
 from datetime import datetime, time as dt_time, timezone, timedelta
 import aiohttp
 import re
-import google.generativeai as genai
+from openai import AsyncOpenAI
 import asyncio
 import time
 import json
@@ -44,7 +44,7 @@ load_dotenv()
 
 # Bot and API Credentials
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
 WISE_SANDBOX_TOKEN = os.getenv("WISE_SANDBOX_TOKEN")
 
@@ -56,8 +56,8 @@ USER_DATA_FILE = "abc.txt"
 if not DISCORD_BOT_TOKEN:
     print("FATAL ERROR: DISCORD_BOT_TOKEN not found in .env file. Please set it.")
     exit(1)
-if not GEMINI_API_KEY:
-    print("FATAL ERROR: GEMINI_API_KEY not found in .env file. Please set it. AI features will be disabled.")
+if not OPENAI_API_KEY:
+    print("Warning: OPENAI_API_KEY not found in .env file. AI features will be disabled.")
 if not BOT_OWNER_ID_STR:
     print("Warning: BOT_OWNER_ID not found in .env file. Owner-only commands will be disabled.")
 if not WISE_SANDBOX_TOKEN:
@@ -70,20 +70,21 @@ except ValueError:
     owner_id_int = None
 
 # --- API & Global Variable Setup ---
-if GEMINI_API_KEY:
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-    except Exception as e:
-        print(f"Fatal Error: Could not configure Gemini API: {e}")
-        GEMINI_API_KEY = None
-else:
-    model = None
-
 BASE_CURRENCY_API_URL = "https://api.frankfurter.dev/v1/latest"
-DEFAULT_MODEL = 'gemini-1.5-flash'
-model = None
-last_gemini_call_time = 0
+OPENAI_BASE_URL = "https://ai.qaq.al/v1"
+DEFAULT_MODEL = 'gpt-5.4'   # model supported by this proxy
+FALLBACK_MODEL = 'gpt-5.3-codex'  # same — only supported model
+openai_client = None
+last_ai_call_time = 0
 MIN_DELAY_BETWEEN_CALLS = 1.1
+
+# AI personality (module-level so both on_ready and handle_ai_mention can access it)
+AI_PERSONALITY = (
+    "You are a helpful and friendly AI assistant. Your goal is to provide accurate, clear, and concise information. "
+    "You should be polite and respectful in all your responses. "
+    "IMPORTANT: You MUST detect the language of the user's message and ALWAYS respond in that same language. "
+    "For example, if the user writes in Chinese, you must reply in Chinese. If they write in Malay, you reply in Malay."
+)
 
 # --- Music Bot API and Cache ---
 API_DOWNLOAD_URLS = {
@@ -332,7 +333,7 @@ async def send_daily_horoscopes():
 async def before_daily_task(): await bot.wait_until_ready()
 
 # --- All Helper Functions ---
-@tasks.loop(seconds=60)  
+@tasks.loop(seconds=120)  
 async def update_gold_price_status():
     currency_code = "MYR"
     
@@ -482,9 +483,9 @@ async def handle_currency_command(message):
     else:
         await status_message.edit(content=f"Sorry, I couldn't fetch exchange rates for `{base_currency}`.")
 
-async def handle_gemini_mention(message):
-    global last_gemini_call_time
-    if model is None:
+async def handle_ai_mention(message):
+    global last_ai_call_time
+    if openai_client is None:
         await message.reply("My AI brain is currently offline.")
         return
     user_message = message.content.replace(f'<@{bot.user.id}>', '').strip()
@@ -492,16 +493,44 @@ async def handle_gemini_mention(message):
         await message.reply("Hello! Mention me with a question to get an AI response.")
         return
     current_time = time.time()
-    if current_time - last_gemini_call_time < MIN_DELAY_BETWEEN_CALLS:
-        remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - last_gemini_call_time)
+    if current_time - last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
+        remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - last_ai_call_time)
         await message.reply(f"I'm thinking... please wait {remaining_time:.1f}s.")
         return
     try:
         async with message.channel.typing():
-            print(f"Sending prompt to Gemini from {message.author}: '{user_message}'")
-            response = await model.generate_content_async(user_message)
-            ai_response_text = response.text
-            last_gemini_call_time = time.time()
+            models_to_try = [DEFAULT_MODEL, FALLBACK_MODEL]
+            ai_response_text = None
+            last_error = None
+            for model_name in models_to_try:
+                for attempt in range(3):
+                    try:
+                        print(f"Sending prompt to OpenAI (model={model_name}, attempt={attempt+1}) from {message.author}: '{user_message}'")
+                        async with openai_client.responses.stream(
+                            model=model_name,
+                            instructions=AI_PERSONALITY,
+                            input=[{
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": user_message}]
+                            }],
+                            store=False,
+                        ) as stream:
+                            response = await stream.get_final_response()
+                            ai_response_text = response.output_text
+                        break  # success
+                    except Exception as e:
+                        last_error = e
+                        err_str = str(e)
+                        if '503' in err_str or '502' in err_str or '529' in err_str:
+                            print(f"Got {err_str[:80]}... retrying in 2s (attempt {attempt+1}/3)")
+                            await asyncio.sleep(2)
+                        else:
+                            raise  # non-retryable, bail immediately
+                if ai_response_text:
+                    break  # got a response, skip fallback model
+            if not ai_response_text:
+                raise last_error
+            last_ai_call_time = time.time()
             if len(ai_response_text) > 2000:
                 chunks = [ai_response_text[i:i + 1990] for i in range(0, len(ai_response_text), 1990)]
                 for i, chunk in enumerate(chunks):
@@ -513,34 +542,31 @@ async def handle_gemini_mention(message):
             else:
                 await message.reply(ai_response_text)
     except Exception as e:
-        print(f"Error processing Gemini prompt: {e}")
+        print(f"Error processing OpenAI prompt: {e}")
         await message.reply("I'm sorry, I encountered an error while trying to generate a response.")
 
 # --- Unified Bot Event Handlers ---
 
 @bot.event
 async def on_ready():
-    global model
+    global openai_client
     bot.http_session = aiohttp.ClientSession()
     print(f'Bot is ready! Logged in as {bot.user.name} (ID: {bot.user.id})')
     print(f"Command Prefix: '{COMMAND_PREFIX}' | Mention: @{bot.user.name}")
     print('------')
-    ai_personality = (
-    "You are a helpful and friendly AI assistant. Your goal is to provide accurate, clear, and concise information. "
-    "You should be polite and respectful in all your responses. "
-    "IMPORTANT: You MUST detect the language of the user's message and ALWAYS respond in that same language. "
-    "For example, if the user writes in Chinese, you must reply in Chinese. If they write in Malay, you reply in Malay."
-    )
 
-    if GEMINI_API_KEY:
+    if OPENAI_API_KEY:
         try:
-            model = genai.GenerativeModel(model_name=DEFAULT_MODEL, system_instruction=ai_personality)
-            print(f"Successfully initialized Gemini model: {DEFAULT_MODEL}")
+            openai_client = AsyncOpenAI(
+                api_key=OPENAI_API_KEY,
+                base_url=OPENAI_BASE_URL,
+            )
+            print(f"Successfully initialized OpenAI client: model={DEFAULT_MODEL}, base_url={OPENAI_BASE_URL}")
         except Exception as e:
-            print(f"CRITICAL: Error initializing Gemini model '{DEFAULT_MODEL}': {e}")
-            model = None
+            print(f"CRITICAL: Error initializing OpenAI client: {e}")
+            openai_client = None
     else:
-        print("Gemini API key not found. AI functionality is disabled.")
+        print("OpenAI API key not found. AI functionality is disabled.")
     if not send_daily_horoscopes.is_running():
         send_daily_horoscopes.start()
         print("Started the daily horoscope background task.")
@@ -567,7 +593,7 @@ async def on_message(message):
                 print(f"Could not send a DM reply to {message.author}")
         return
     if bot.user.mentioned_in(message):
-        await handle_gemini_mention(message)
+        await handle_ai_mention(message)
         return
     ctx = await bot.get_context(message)
     if ctx.valid:
