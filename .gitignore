@@ -1,6 +1,35 @@
-discord/.env
-.venv
-discord/venv
-discord/abc.txt
+# --- Secrets --- NEVER commit these
 .env
+*.env
+.env.local
+discord/.env
+
+# --- Bot data (contains user info) ---
+abc.txt
+discord/abc.txt
 dashboard_data.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+discord/venv/
+*.egg-info/
+dist/
+build/
+
+# --- Logs ---
+*.log
+test_codex_api_log.txt
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
