@@ -375,9 +375,11 @@ async def update_gold_price_status():
 
     except Exception as e:
         print(f"An error occurred in the status update task: {e}")
-        # Optional: Set a default/error status
-        error_activity = discord.Activity(type=discord.ActivityType.watching, name="Price API Error")
-        await bot.change_presence(activity=error_activity)
+        try:
+            error_activity = discord.Activity(type=discord.ActivityType.watching, name="Price API Error")
+            await bot.change_presence(activity=error_activity)
+        except Exception:
+            pass  # connection is dead, skip status update
 
 @update_gold_price_status.before_loop
 async def before_status_task():
@@ -614,9 +616,17 @@ async def on_ready():
 
 @bot.event
 async def on_disconnect():
-    if bot.http_session:
+    # Don't close http_session here — Discord reconnects frequently
+    # and we need the session for background tasks.
+    print("Bot disconnected from Discord. Reconnecting...")
+
+async def cleanup():
+    """Called once when the bot fully shuts down."""
+    if bot.http_session and not bot.http_session.closed:
         await bot.http_session.close()
         print("Closed aiohttp session.")
+
+bot.cleanup = cleanup
 
 @bot.event
 async def on_message(message):
@@ -755,6 +765,92 @@ async def clear_command(ctx: commands.Context):
     else:
         await ctx.send(f"📭 {ctx.author.mention}, you don't have any conversation history.")
 
+@bot.command(name='tldr', aliases=['summarize'])
+async def tldr_command(ctx: commands.Context, count: int = 50):
+    """Summarize the last N messages in this channel using AI."""
+    if openai_client is None:
+        await ctx.send("❌ AI is currently offline. Can't summarize.")
+        return
+
+    # Clamp between 10 and 200
+    count = max(10, min(count, 200))
+
+    try:
+        async with ctx.typing():
+            # Fetch messages (excludes the !tldr command itself)
+            messages = []
+            async for msg in ctx.channel.history(limit=count + 1):
+                if msg.id == ctx.message.id:
+                    continue  # skip the !tldr command
+                if msg.author.bot and msg.author.id == bot.user.id:
+                    continue  # skip bot's own messages
+                messages.append(msg)
+
+            if len(messages) < 3:
+                await ctx.send("📭 Not enough messages to summarize.")
+                return
+
+            messages.reverse()  # oldest first
+
+            # Format conversation log
+            lines = []
+            for msg in messages:
+                timestamp = msg.created_at.strftime("%H:%M")
+                content = msg.content[:200] if msg.content else "[attachment/embed]"
+                lines.append(f"[{timestamp}] {msg.author.display_name}: {content}")
+
+            conversation_log = "\n".join(lines)
+
+            # Summarize with AI
+            prompt = (
+                f"Summarize the following Discord chat conversation. "
+                f"Give a concise TL;DR in bullet points covering the main topics discussed. "
+                f"Respond in the same language as the majority of the conversation.\n\n"
+                f"--- CHAT LOG ({len(messages)} messages) ---\n{conversation_log}\n--- END ---"
+            )
+
+            ai_response_text = None
+            models_to_try = [DEFAULT_MODEL, FALLBACK_MODEL]
+            for model_name in models_to_try:
+                for attempt in range(3):
+                    try:
+                        async with openai_client.responses.stream(
+                            model=model_name,
+                            instructions="You are a concise summarizer. Output only the summary, no preamble.",
+                            input=[{
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": prompt}]
+                            }],
+                            store=False,
+                        ) as stream:
+                            response = await stream.get_final_response()
+                            ai_response_text = response.output_text
+                        break
+                    except Exception as e:
+                        err_str = str(e)
+                        if '503' in err_str or '502' in err_str or '529' in err_str:
+                            await asyncio.sleep(2)
+                        else:
+                            raise
+                if ai_response_text:
+                    break
+
+            if not ai_response_text:
+                await ctx.send("❌ AI couldn't generate a summary. Try again later.")
+                return
+
+            embed = discord.Embed(
+                title=f"📋 TL;DR — Last {len(messages)} messages",
+                description=ai_response_text[:4000],
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+            await ctx.send(embed=embed)
+
+    except Exception as e:
+        print(f"Error in !tldr command: {e}")
+        await ctx.send("❌ Failed to summarize. Something went wrong.")
+
 # --- All Bot Commands ---
 
 @bot.command(name='help')
@@ -768,7 +864,7 @@ async def help_command(ctx):
     embed.add_field(name=f"🎮 Game Deals (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Top Steam Deals:** `{COMMAND_PREFIX}deals`\n" f"**Check Game Price:** `{COMMAND_PREFIX}price [game name]`"), inline=False)
     embed.add_field(name=f"📚 Utility Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Dictionary:** `{COMMAND_PREFIX}dict [word]`\n" f"**Gold Price:** `{COMMAND_PREFIX}gold [currency]`\n" f"**Silver Price:** `{COMMAND_PREFIX}silver [currency]`"), inline=False)
     embed.add_field(name=f"📝 Daily Check-in (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Check in:** `{COMMAND_PREFIX}ck [note]`\n" f"**Your streak:** `{COMMAND_PREFIX}streak`\n" f"**Leaderboard:** `{COMMAND_PREFIX}lb`\n" f"Once per day, resets at midnight GMT+8."), inline=False)
-    embed.add_field(name=f"🧹 AI Memory", value=(f"The AI remembers your last few messages.\n" f"**Clear history:** `{COMMAND_PREFIX}clear`"), inline=False)
+    embed.add_field(name=f"🧹 AI Tools", value=(f"**Summarize chat:** `{COMMAND_PREFIX}tldr [count]`\n" f"**Clear AI memory:** `{COMMAND_PREFIX}clear`\n" f"The AI remembers your last few messages."), inline=False)
     
     if ctx.author.id == bot.owner_id:
         embed.add_field(name=f"👑 Owner Commands", value=f"**List all horoscope users:** `{COMMAND_PREFIX}olist`\n**Test your horoscope DM:** `{COMMAND_PREFIX}test`", inline=False)
