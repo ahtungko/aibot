@@ -13,8 +13,23 @@ intents.guilds = True
 intents.members = True
 intents.messages = True
 
-bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None, owner_id=OWNER_ID)
-bot.http_session = None
+class JenBot(commands.Bot):
+    async def setup_hook(self):
+        self.http_session = aiohttp.ClientSession()
+        for cog in COGS:
+            try:
+                await self.load_extension(cog)
+                print(f"  Loaded cog: {cog}")
+            except Exception as e:
+                print(f"  Failed to load cog {cog}: {e}")
+
+    async def close(self):
+        if hasattr(self, 'http_session') and self.http_session and not self.http_session.closed:
+            await self.http_session.close()
+            print("Closed aiohttp session.")
+        await super().close()
+
+bot = JenBot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None, owner_id=OWNER_ID)
 
 # --- Cog Loading ---
 COGS = [
@@ -33,16 +48,9 @@ COGS = [
 
 @bot.event
 async def on_ready():
-    bot.http_session = aiohttp.ClientSession()
     print(f'Bot is ready! Logged in as {bot.user.name} (ID: {bot.user.id})')
     print(f"Command Prefix: '{COMMAND_PREFIX}' | Mention: @{bot.user.name}")
     print('------')
-    for cog in COGS:
-        try:
-            await bot.load_extension(cog)
-            print(f"  Loaded cog: {cog}")
-        except Exception as e:
-            print(f"  Failed to load cog {cog}: {e}")
 
 
 @bot.event
