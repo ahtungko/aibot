@@ -1,3 +1,6 @@
+# OWN USE ONLY
+
+
 # JenBot 🤖
 
 A feature-rich Discord bot with AI chat, currency exchange, horoscopes, music downloads, game deals, and more.
