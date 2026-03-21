@@ -8,6 +8,8 @@ discord/.env
 abc.txt
 discord/abc.txt
 dashboard_data.json
+pins.json
+afk.json
 
 # --- Python ---
 __pycache__/

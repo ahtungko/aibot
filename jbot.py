@@ -87,6 +87,27 @@ MAX_HISTORY_MESSAGES = 10   # 5 user + 5 assistant turns
 HISTORY_EXPIRY_SECONDS = 1800  # 30 minutes
 MIN_DELAY_BETWEEN_CALLS = 1.1
 
+# AFK status: {user_id: {"reason": str, "since": timestamp}}
+AFK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'afk.json')
+
+def _load_afk():
+    if not os.path.exists(AFK_FILE):
+        return {}
+    try:
+        with open(AFK_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+def _save_afk(data):
+    with open(AFK_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+afk_users = _load_afk()
+
+# Pins storage file
+PINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pins.json')
+
 # AI personality (module-level so both on_ready and handle_ai_mention can access it)
 AI_PERSONALITY = (
     "You are a helpful and friendly AI assistant. Your goal is to provide accurate, clear, and concise information. "
@@ -639,16 +660,53 @@ async def on_message(message):
             except discord.errors.Forbidden:
                 print(f"Could not send a DM reply to {message.author}")
         return
-    if bot.user.mentioned_in(message):
-        await handle_ai_mention(message)
-        return
+
+    # Auto-recreate session if closed
+    if bot.http_session is None or bot.http_session.closed:
+        bot.http_session = aiohttp.ClientSession()
+
+    # AFK: auto-clear if AFK user sends a message
+    uid = str(message.author.id)
+    if uid in afk_users:
+        afk_info = afk_users.pop(uid)
+        _save_afk(afk_users)
+        try:
+            await message.channel.send(f"👋 Welcome back {message.author.mention}! You were AFK for {_format_duration(time.time() - afk_info['since'])}.")
+        except Exception:
+            pass
+
+    # AFK: notify if someone mentions an AFK user
+    for mentioned in message.mentions:
+        mid = str(mentioned.id)
+        if mid in afk_users:
+            reason = afk_users[mid].get('reason', 'AFK')
+            since = afk_users[mid].get('since', time.time())
+            await message.channel.send(f"{message.author.mention}, 💤 **{mentioned.display_name}** is AFK: *{reason}* (since {_format_duration(time.time() - since)} ago)")
+
+    # Process commands FIRST (before mention check)
+    # This ensures !pin on a bot reply doesn't trigger AI
     ctx = await bot.get_context(message)
     if ctx.valid:
         await bot.process_commands(message)
         return
+    if bot.user.mentioned_in(message):
+        await handle_ai_mention(message)
+        return
     if message.content.startswith(COMMAND_PREFIX):
         await handle_currency_command(message)
         return
+
+def _format_duration(seconds):
+    """Format seconds into a human-readable duration."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h {mins}m" if mins else f"{hours}h"
 
 # --- Check-in Command ---
 
@@ -851,6 +909,114 @@ async def tldr_command(ctx: commands.Context, count: int = 50):
         print(f"Error in !tldr command: {e}")
         await ctx.send("❌ Failed to summarize. Something went wrong.")
 
+# --- AFK Command ---
+
+@bot.command(name='afk')
+async def afk_command(ctx: commands.Context, *, reason: str = "AFK"):
+    """Set your AFK status. Auto-clears when you send a message."""
+    uid = str(ctx.author.id)
+    afk_users[uid] = {"reason": reason, "since": time.time()}
+    _save_afk(afk_users)
+    await ctx.send(f"💤 {ctx.author.mention} is now AFK: *{reason}*")
+
+# --- Pin Commands ---
+
+def _load_pins():
+    if not os.path.exists(PINS_FILE):
+        return {}
+    try:
+        with open(PINS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+
+def _save_pins(data):
+    with open(PINS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+@bot.command(name='pin')
+async def pin_command(ctx: commands.Context):
+    """Reply to a message with !pin to bookmark it."""
+    if not ctx.message.reference:
+        await ctx.send(f"📌 Reply to a message with `{COMMAND_PREFIX}pin` to bookmark it.")
+        return
+
+    ref_msg = ctx.message.reference.resolved
+    if ref_msg is None:
+        try:
+            ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        except Exception:
+            await ctx.send("❌ Could not find the referenced message.")
+            return
+
+    uid = str(ctx.author.id)
+    pins = _load_pins()
+    if uid not in pins:
+        pins[uid] = []
+
+    # Limit to 50 pins per user
+    if len(pins[uid]) >= 50:
+        await ctx.send("📌 You've reached the maximum of 50 pins. Use `!unpin [number]` to remove some.")
+        return
+
+    pin_entry = {
+        "content": ref_msg.content[:500] if ref_msg.content else "[attachment/embed]",
+        "author": str(ref_msg.author.display_name),
+        "channel": str(ctx.channel.name),
+        "url": ref_msg.jump_url,
+        "saved_at": time.strftime("%Y-%m-%d %H:%M"),
+    }
+    pins[uid].append(pin_entry)
+    _save_pins(pins)
+    await ctx.send(f"📌 Pinned! You now have **{len(pins[uid])}** bookmark(s). View with `{COMMAND_PREFIX}pins`.")
+
+@bot.command(name='pins', aliases=['bookmarks'])
+async def pins_command(ctx: commands.Context):
+    """List your saved bookmarks."""
+    uid = str(ctx.author.id)
+    pins = _load_pins()
+    user_pins = pins.get(uid, [])
+
+    if not user_pins:
+        await ctx.send(f"📭 No pins yet! Reply to a message with `{COMMAND_PREFIX}pin` to bookmark it.")
+        return
+
+    embed = discord.Embed(title=f"📌 {ctx.author.display_name}'s Pins", color=discord.Color.teal())
+    # Show last 10 pins (most recent first)
+    recent = list(reversed(user_pins[-10:]))
+    for i, pin in enumerate(recent):
+        idx = len(user_pins) - i  # real index (1-based)
+        preview = pin['content'][:100]
+        embed.add_field(
+            name=f"#{idx} — {pin.get('author', '?')} in #{pin.get('channel', '?')}",
+            value=f"{preview}\n[Jump to message]({pin['url']}) • {pin.get('saved_at', '')}",
+            inline=False
+        )
+    if len(user_pins) > 10:
+        embed.set_footer(text=f"Showing latest 10 of {len(user_pins)} pins")
+    await ctx.send(embed=embed)
+
+@bot.command(name='unpin')
+async def unpin_command(ctx: commands.Context, number: int = None):
+    """Remove a pin by its number."""
+    if number is None:
+        await ctx.send(f"Usage: `{COMMAND_PREFIX}unpin [number]` — check `{COMMAND_PREFIX}pins` for numbers.")
+        return
+
+    uid = str(ctx.author.id)
+    pins = _load_pins()
+    user_pins = pins.get(uid, [])
+
+    if number < 1 or number > len(user_pins):
+        await ctx.send(f"❌ Invalid pin number. You have {len(user_pins)} pin(s).")
+        return
+
+    removed = user_pins.pop(number - 1)
+    pins[uid] = user_pins
+    _save_pins(pins)
+    preview = removed['content'][:50]
+    await ctx.send(f"🗑️ Removed pin #{number}: *{preview}...*")
+
 # --- All Bot Commands ---
 
 @bot.command(name='help')
@@ -865,6 +1031,8 @@ async def help_command(ctx):
     embed.add_field(name=f"📚 Utility Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Dictionary:** `{COMMAND_PREFIX}dict [word]`\n" f"**Gold Price:** `{COMMAND_PREFIX}gold [currency]`\n" f"**Silver Price:** `{COMMAND_PREFIX}silver [currency]`"), inline=False)
     embed.add_field(name=f"📝 Daily Check-in (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Check in:** `{COMMAND_PREFIX}ck [note]`\n" f"**Your streak:** `{COMMAND_PREFIX}streak`\n" f"**Leaderboard:** `{COMMAND_PREFIX}lb`\n" f"Once per day, resets at midnight GMT+8."), inline=False)
     embed.add_field(name=f"🧹 AI Tools", value=(f"**Summarize chat:** `{COMMAND_PREFIX}tldr [count]`\n" f"**Clear AI memory:** `{COMMAND_PREFIX}clear`\n" f"The AI remembers your last few messages."), inline=False)
+    embed.add_field(name=f"💤 AFK", value=(f"**Set AFK:** `{COMMAND_PREFIX}afk [reason]`\n" f"Auto-clears when you send a message."), inline=False)
+    embed.add_field(name=f"📌 Bookmarks", value=(f"**Pin:** Reply to a message with `{COMMAND_PREFIX}pin`\n" f"**View pins:** `{COMMAND_PREFIX}pins`\n" f"**Remove pin:** `{COMMAND_PREFIX}unpin [number]`"), inline=False)
     
     if ctx.author.id == bot.owner_id:
         embed.add_field(name=f"👑 Owner Commands", value=f"**List all horoscope users:** `{COMMAND_PREFIX}olist`\n**Test your horoscope DM:** `{COMMAND_PREFIX}test`", inline=False)
