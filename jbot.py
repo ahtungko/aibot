@@ -47,6 +47,8 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
 WISE_SANDBOX_TOKEN = os.getenv("WISE_SANDBOX_TOKEN")
+CHECKIN_WORKER_URL = os.getenv("CHECKIN_WORKER_URL")
+CHECKIN_AUTH_PASS = os.getenv("CHECKIN_AUTH_PASS", "")
 
 # Bot Settings
 COMMAND_PREFIX = "!"
@@ -62,6 +64,8 @@ if not BOT_OWNER_ID_STR:
     print("Warning: BOT_OWNER_ID not found in .env file. Owner-only commands will be disabled.")
 if not WISE_SANDBOX_TOKEN:
     print("Warning: WISE_SANDBOX_TOKEN not found. The !liverate command will be disabled.")
+if not CHECKIN_WORKER_URL:
+    print("Warning: CHECKIN_WORKER_URL not found. The !ck check-in command will be disabled.")
 
 try:
     owner_id_int = int(BOT_OWNER_ID_STR) if BOT_OWNER_ID_STR else None
@@ -76,6 +80,11 @@ DEFAULT_MODEL = 'gpt-5.4'   # model supported by this proxy
 FALLBACK_MODEL = 'gpt-5.3-codex'  # same — only supported model
 openai_client = None
 last_ai_call_time = 0
+
+# AI conversation memory: {user_id: {"messages": [...], "last_active": timestamp}}
+ai_conversation_history = {}
+MAX_HISTORY_MESSAGES = 10   # 5 user + 5 assistant turns
+HISTORY_EXPIRY_SECONDS = 1800  # 30 minutes
 MIN_DELAY_BETWEEN_CALLS = 1.1
 
 # AI personality (module-level so both on_ready and handle_ai_mention can access it)
@@ -497,6 +506,28 @@ async def handle_ai_mention(message):
         remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - last_ai_call_time)
         await message.reply(f"I'm thinking... please wait {remaining_time:.1f}s.")
         return
+
+    # Build conversation history for this user
+    uid = str(message.author.id)
+    if uid in ai_conversation_history:
+        if current_time - ai_conversation_history[uid]["last_active"] > HISTORY_EXPIRY_SECONDS:
+            del ai_conversation_history[uid]  # expired
+    if uid not in ai_conversation_history:
+        ai_conversation_history[uid] = {"messages": [], "last_active": current_time}
+
+    history = ai_conversation_history[uid]
+    history["last_active"] = current_time
+
+    # Add the new user message to history
+    history["messages"].append({
+        "role": "user",
+        "content": [{"type": "input_text", "text": user_message}]
+    })
+
+    # Trim to max history size
+    if len(history["messages"]) > MAX_HISTORY_MESSAGES:
+        history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
+
     try:
         async with message.channel.typing():
             models_to_try = [DEFAULT_MODEL, FALLBACK_MODEL]
@@ -509,10 +540,7 @@ async def handle_ai_mention(message):
                         async with openai_client.responses.stream(
                             model=model_name,
                             instructions=AI_PERSONALITY,
-                            input=[{
-                                "role": "user",
-                                "content": [{"type": "input_text", "text": user_message}]
-                            }],
+                            input=history["messages"],
                             store=False,
                         ) as stream:
                             response = await stream.get_final_response()
@@ -530,6 +558,15 @@ async def handle_ai_mention(message):
                     break  # got a response, skip fallback model
             if not ai_response_text:
                 raise last_error
+
+            # Save assistant reply to history
+            history["messages"].append({
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": ai_response_text}]
+            })
+            if len(history["messages"]) > MAX_HISTORY_MESSAGES:
+                history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
+
             last_ai_call_time = time.time()
             if len(ai_response_text) > 2000:
                 chunks = [ai_response_text[i:i + 1990] for i in range(0, len(ai_response_text), 1990)]
@@ -603,6 +640,121 @@ async def on_message(message):
         await handle_currency_command(message)
         return
 
+# --- Check-in Command ---
+
+@bot.command(name='ck', aliases=['checkin'])
+async def checkin_command(ctx: commands.Context, *, note: str = "Just vibing today"):
+    """Log your daily check-in with AI (once per day, resets at 00:00 GMT+8)."""
+    if not CHECKIN_WORKER_URL:
+        await ctx.send("❌ Check-in is not configured. The bot owner needs to set `CHECKIN_WORKER_URL` in the `.env` file.")
+        return
+
+    payload = {
+        "user_pass": CHECKIN_AUTH_PASS,
+        "user_id": str(ctx.author.id),
+        "user_name": str(ctx.author),
+        "checkin_note": note
+    }
+
+    try:
+        async with ctx.typing():
+            async with bot.http_session.post(CHECKIN_WORKER_URL, json=payload) as response:
+                data = await response.json()
+
+                if response.status == 200 and data.get("success"):
+                    ai_reply = data.get("message", "AI is silent today.")
+                    streak = data.get("streak", 0)
+                    streak_text = f"\n🔥 Streak: **{streak} day{'s' if streak != 1 else ''}**" if streak else ""
+                    await ctx.send(f"✅ **Check-in Logged!** ({ctx.author.mention})\n📝 *{note}*\n🤖: *{ai_reply}*{streak_text}")
+                elif response.status == 200 and not data.get("success"):
+                    # Already checked in today
+                    error_msg = data.get("error", "You already checked in today!")
+                    await ctx.send(f"⏰ {ctx.author.mention}, {error_msg}")
+                else:
+                    error_msg = data.get("error", "Access Denied or Unknown Error")
+                    await ctx.send(f"❌ **Check-in Failed:** {error_msg}")
+    except Exception as e:
+        print(f"Error in !ck command: {e}")
+        await ctx.send(f"❌ **Worker Error:** Could not reach the check-in server.")
+
+@bot.command(name='streak')
+async def streak_command(ctx: commands.Context):
+    """Show your current check-in streak."""
+    if not CHECKIN_WORKER_URL:
+        await ctx.send("❌ Check-in is not configured.")
+        return
+
+    payload = {
+        "user_pass": CHECKIN_AUTH_PASS,
+        "action": "streak",
+        "user_id": str(ctx.author.id),
+    }
+
+    try:
+        async with bot.http_session.post(CHECKIN_WORKER_URL, json=payload) as response:
+            data = await response.json()
+            if data.get("success"):
+                streak = data.get("streak", 0)
+                total = data.get("total_checkins", 0)
+                checked = data.get("checked_today", False)
+                today_icon = "✅" if checked else "❌"
+                embed = discord.Embed(title=f"🔥 {ctx.author.display_name}'s Streak", color=discord.Color.orange())
+                embed.add_field(name="Current Streak", value=f"**{streak}** day{'s' if streak != 1 else ''}", inline=True)
+                embed.add_field(name="Total Check-ins", value=f"**{total}**", inline=True)
+                embed.add_field(name="Today", value=f"{today_icon} {'Checked in' if checked else 'Not yet'}", inline=True)
+                await ctx.send(embed=embed)
+            else:
+                await ctx.send(f"❌ {data.get('error', 'Unknown error')}")
+    except Exception as e:
+        print(f"Error in !streak command: {e}")
+        await ctx.send("❌ Could not reach the check-in server.")
+
+@bot.command(name='lb', aliases=['leaderboard'])
+async def leaderboard_command(ctx: commands.Context):
+    """Show top 10 check-in streaks."""
+    if not CHECKIN_WORKER_URL:
+        await ctx.send("❌ Check-in is not configured.")
+        return
+
+    payload = {
+        "user_pass": CHECKIN_AUTH_PASS,
+        "action": "leaderboard",
+    }
+
+    try:
+        async with bot.http_session.post(CHECKIN_WORKER_URL, json=payload) as response:
+            data = await response.json()
+            if data.get("success"):
+                board = data.get("leaderboard", [])
+                if not board:
+                    await ctx.send("📊 No check-in streaks yet! Use `!ck` to start.")
+                    return
+                embed = discord.Embed(title="🏆 Check-in Leaderboard", description="Top streaks (resets at 00:00 GMT+8)", color=discord.Color.gold())
+                medals = ["🥇", "🥈", "🥉"]
+                lines = []
+                for i, entry in enumerate(board):
+                    medal = medals[i] if i < 3 else f"`{i+1}.`"
+                    name = entry.get("user_name", "Unknown").split("#")[0]
+                    streak = entry.get("streak", 0)
+                    lines.append(f"{medal} **{name}** — {streak} day{'s' if streak != 1 else ''}")
+                embed.add_field(name="Rankings", value="\n".join(lines), inline=False)
+                await ctx.send(embed=embed)
+            else:
+                await ctx.send(f"❌ {data.get('error', 'Unknown error')}")
+    except Exception as e:
+        print(f"Error in !lb command: {e}")
+        await ctx.send("❌ Could not reach the check-in server.")
+
+@bot.command(name='clear')
+async def clear_command(ctx: commands.Context):
+    """Clear your AI conversation memory."""
+    uid = str(ctx.author.id)
+    if uid in ai_conversation_history:
+        del ai_conversation_history[uid]
+        await ctx.send(f"🧹 {ctx.author.mention}, your AI conversation history has been cleared!")
+    else:
+        await ctx.send(f"📭 {ctx.author.mention}, you don't have any conversation history.")
+
 # --- All Bot Commands ---
 
 @bot.command(name='help')
@@ -615,6 +767,8 @@ async def help_command(ctx):
     embed.add_field(name=f"🐱 Fun Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Cat Picture:** `{COMMAND_PREFIX}c`\n" f"**Cat Fact:** `{COMMAND_PREFIX}cf`"), inline=False)
     embed.add_field(name=f"🎮 Game Deals (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Top Steam Deals:** `{COMMAND_PREFIX}deals`\n" f"**Check Game Price:** `{COMMAND_PREFIX}price [game name]`"), inline=False)
     embed.add_field(name=f"📚 Utility Commands (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Dictionary:** `{COMMAND_PREFIX}dict [word]`\n" f"**Gold Price:** `{COMMAND_PREFIX}gold [currency]`\n" f"**Silver Price:** `{COMMAND_PREFIX}silver [currency]`"), inline=False)
+    embed.add_field(name=f"📝 Daily Check-in (Prefix: `{COMMAND_PREFIX}`)", value=(f"**Check in:** `{COMMAND_PREFIX}ck [note]`\n" f"**Your streak:** `{COMMAND_PREFIX}streak`\n" f"**Leaderboard:** `{COMMAND_PREFIX}lb`\n" f"Once per day, resets at midnight GMT+8."), inline=False)
+    embed.add_field(name=f"🧹 AI Memory", value=(f"The AI remembers your last few messages.\n" f"**Clear history:** `{COMMAND_PREFIX}clear`"), inline=False)
     
     if ctx.author.id == bot.owner_id:
         embed.add_field(name=f"👑 Owner Commands", value=f"**List all horoscope users:** `{COMMAND_PREFIX}olist`\n**Test your horoscope DM:** `{COMMAND_PREFIX}test`", inline=False)
