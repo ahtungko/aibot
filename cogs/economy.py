@@ -351,6 +351,31 @@ class Economy(commands.Cog):
         view = BlackjackView(ctx, amount)
         await view.start_game()
 
+    # --- JenCoin Rain ---
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot: return
+        # 0.5% chance of random rain
+        if random.random() < 0.005:
+            await self.start_rain(message.channel)
+
+    @commands.command(name='rain')
+    @commands.has_permissions(administrator=True)
+    async def rain_command(self, ctx: commands.Context):
+        """Admin Only: Manually trigger a JenCoin Rain 🌧️"""
+        await self.start_rain(ctx.channel)
+
+    async def start_rain(self, channel):
+        view = RainView()
+        embed = discord.Embed(
+            title="🌧️ IT'S RAINING JENCOINS!",
+            description="Quick! Click the button below to catch some before they hit the ground!\n\n**Limit: First 5 people!**",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url="https://cdn.pixabay.com/animation/2023/03/19/02/45/02-45-20-441_512.gif")
+        view.message = await channel.send(embed=embed, view=view)
+
     # --- Admin Commands ---
 
     @commands.command(name='addcoins', aliases=['addjc'])
@@ -509,6 +534,51 @@ class BlackjackView(discord.ui.View):
     async def on_timeout(self):
         if not self.game_over:
             await self.finish_game("Game Timed Out (Bust)", win=False)
+
+# --- Rain Event Logic ---
+
+class RainView(discord.ui.View):
+    def __init__(self, limit=5):
+        super().__init__(timeout=60)
+        self.limit = limit
+        self.winners = []
+        self.message = None
+
+    @discord.ui.button(label="CATCH 🖐️", style=discord.ButtonStyle.blurple)
+    async def catch(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = str(interaction.user.id)
+        
+        # Check if already caught
+        if any(w['id'] == uid for w in self.winners):
+            await interaction.response.send_message("❌ You already caught some rain! Let others have a chance.", ephemeral=True)
+            return
+
+        amount = random.randint(20, 100)
+        new_bal = add_balance(uid, amount)
+        log_transaction(uid, amount, "Caught Rain")
+        
+        self.winners.append({'id': uid, 'name': interaction.user.display_name, 'amount': amount})
+        
+        await interaction.response.send_message(f"🧤 **CATCH!** You caught **{amount}** JenCoins! (New Balance: {new_bal:,})", ephemeral=True)
+
+        if len(self.winners) >= self.limit:
+            await self.finish_rain()
+
+    async def finish_rain(self):
+        self.stop()
+        if not self.message: return
+
+        if not self.winners:
+            desc = "⛈️ The rain has dried up... No one caught anything."
+        else:
+            w_list = "\n".join([f"✨ **{w['name']}**: `{w['amount']} JC`" for w in self.winners])
+            desc = f"🌈 The rain has stopped! Here are our lucky catchers:\n\n{w_list}"
+
+        embed = discord.Embed(title="☀️ Rain Over", description=desc, color=discord.Color.gold())
+        await self.message.edit(embed=embed, view=None)
+
+    async def on_timeout(self):
+        await self.finish_rain()
 
 
 async def setup(bot):
