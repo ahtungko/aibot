@@ -29,6 +29,8 @@ WORK_MIN = 20
 WORK_MAX = 50
 STARTING_BALANCE = 0
 
+STARTING_BALANCE = 0
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -47,7 +49,9 @@ def get_db():
 
 def log_transaction(user_id: str, amount: int, trans_type: str):
     conn = get_db()
-    conn.execute("INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, ?)", (user_id, amount, trans_type))
+    # Store as a Unix timestamp (integer) for Discord dynamic time support
+    ts = int(time.time())
+    conn.execute("INSERT INTO transactions (user_id, amount, type, timestamp) VALUES (?, ?, ?, ?)", (user_id, amount, trans_type, ts))
     conn.commit()
     conn.close()
 
@@ -134,9 +138,9 @@ class Economy(commands.Cog):
         """Claim your daily JenCoins!"""
         uid = str(ctx.author.id)
         from datetime import datetime, timezone, timedelta
-        # Use GMT+8 as the reset timezone (same as check-in)
-        gmt8 = timezone(timedelta(hours=8))
-        today = datetime.now(gmt8).strftime("%Y-%m-%d")
+        # Use GMT+8 for the daily reset logic (standard for your server)
+        now_gmt8 = datetime.now(timezone(timedelta(hours=8)))
+        today = now_gmt8.strftime("%Y-%m-%d")
         last = get_last_daily(uid)
 
         if last == today:
@@ -160,23 +164,25 @@ class Economy(commands.Cog):
     async def work_command(self, ctx: commands.Context):
         """Work for some JenCoins! (1 hour cooldown)"""
         uid = str(ctx.author.id)
-        from datetime import datetime
-        now = datetime.now()
+        now = int(time.time())
         last_str = get_last_work(uid)
         
         if last_str:
-            last_ts = datetime.fromisoformat(last_str)
-            diff = (now - last_ts).total_seconds()
-            if diff < WORK_COOLDOWN:
-                remaining = int(WORK_COOLDOWN - diff)
-                mins = remaining // 60
-                secs = remaining % 60
-                await ctx.send(f"⏳ {ctx.author.mention}, you're exhausted! Come back in **{mins}m {secs}s**.")
-                return
+            try:
+                last_ts = int(float(last_str))
+                diff = now - last_ts
+                if diff < WORK_COOLDOWN:
+                    remaining = int(WORK_COOLDOWN - diff)
+                    mins = remaining // 60
+                    secs = remaining % 60
+                    await ctx.send(f"⏳ {ctx.author.mention}, you're exhausted! Come back in **{mins}m {secs}s**.")
+                    return
+            except ValueError:
+                pass
 
         reward = random.randint(WORK_MIN, WORK_MAX)
         new_bal = add_balance(uid, reward)
-        set_last_work(uid, now.isoformat())
+        set_last_work(uid, str(now))
         log_transaction(uid, reward, "Work Payment")
 
         jobs = [
@@ -377,9 +383,17 @@ class Economy(commands.Cog):
         for amount, trans_type, timestamp in rows:
             sign = "+" if amount > 0 else ""
             fmt_amount = f"{sign}{amount:,}" if amount != 0 else "0"
-            # Extract just date/time from timestamp
-            ts = timestamp.split(".")[0] if "." in timestamp else timestamp
-            history_text += f"`{ts}` | **{trans_type}**: `{fmt_amount} JC`\n"
+            
+            # Use Discord's dynamic timestamp format <t:UNIX:f>
+            # This automatically shows the time in the viewer's local PC/Phone time!
+            try:
+                ts_int = int(float(timestamp))
+                ts_display = f"<t:{ts_int}:f>"
+            except (ValueError, TypeError):
+                # Fallback for old string timestamps
+                ts_display = f"`{timestamp}`"
+
+            history_text += f"{ts_display} | **{trans_type}**: `{fmt_amount} JC`\n"
 
         embed.description = history_text
         bal = get_balance(uid)
