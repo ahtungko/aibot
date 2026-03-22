@@ -2,6 +2,7 @@ import os
 import random
 import sqlite3
 import time
+import asyncio
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
@@ -35,6 +36,8 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '', last_work TEXT DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, amount INTEGER, type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
+    conn.execute("CREATE TABLE IF NOT EXISTS inventory (user_id TEXT, item_name TEXT, item_type TEXT, item_data TEXT)")
+    # Migration: Add last_work column if it doesn't exist
     try:
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
     except sqlite3.OperationalError:
@@ -84,6 +87,14 @@ def set_last_work(user_id: str, ts_str: str):
 
 def get_top_balances(limit=10) -> list:
     return db_query("SELECT user_id, balance FROM wallets ORDER BY balance DESC LIMIT ?", (limit,), fetchall=True)
+
+def add_item(user_id, item_name, item_type="Collectible", item_data=""):
+    db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, ?, ?, ?)", (user_id, item_name, item_type, item_data), commit=True)
+
+def get_inventory(user_id):
+    return db_query("SELECT item_name, item_type FROM inventory WHERE user_id = ?", (user_id,), fetchall=True)
+
+# --- Helpers ---
 
 async def validate_bet(ctx: commands.Context, amount: int):
     if amount is None or amount <= 0:
@@ -375,6 +386,111 @@ class Economy(commands.Cog):
         )
         embed.set_thumbnail(url="https://cdn.pixabay.com/animation/2023/03/19/02/45/02-45-20-441_512.gif")
         view.message = await channel.send(embed=embed, view=view)
+
+    # --- Shop & Inventory ---
+
+    @commands.command(name='shop', aliases=['store', 'market'])
+    async def shop_command(self, ctx: commands.Context):
+        """Browse the JenBot Shop! 🛍️"""
+        embed = discord.Embed(
+            title="Convenience Store 🎭",
+            description="Spend your JenCoins on unique rewards!",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="✨ **Custom Role** — `50,000 JC`",
+            value="Coming Soon! A custom role with your name and color.",
+            inline=False
+        )
+        embed.add_field(
+            name="🎁 **Mystery Box** — `1,000 JC`",
+            value="High stakes! Win coins or rare collectibles.\nUsage: `!buy box`",
+            inline=False
+        )
+        embed.set_footer(text=f"Your Balance: {get_balance(str(ctx.author.id)):,} JC")
+        await ctx.send(embed=embed)
+
+    @commands.command(name='buy')
+    async def buy_command(self, ctx: commands.Context, item_type: str = None):
+        """Buy an item from the shop."""
+        if item_type is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}buy [item]` (e.g. `!buy box`)")
+            return
+
+        uid = str(ctx.author.id)
+        item_type = item_type.lower()
+        
+        if item_type == 'box':
+            cost = 1000
+            if get_balance(uid) < cost:
+                await ctx.send(f"❌ You need **{cost:,} JC** for a Mystery Box!")
+                return
+            
+            # Deduct cost
+            add_balance(uid, -cost)
+            log_transaction(uid, -cost, "Bought Mystery Box")
+            
+            msg = await ctx.send("🎁 **Buying Mystery Box...**")
+            await asyncio.sleep(1)
+            await msg.edit(content="📦 **Unboxing...**")
+            await asyncio.sleep(1.5)
+            
+            # Loot Table Logic
+            res = random.random()
+            if res < 0.02: # Legendary 2%
+                win = 50000
+                item = "🏆 Golden JenCoin"
+                color = discord.Color.gold()
+                rarity = "LEGENDARY"
+            elif res < 0.10: # Epic 8%
+                win = 10000
+                item = "🥈 Silver Coin"
+                color = discord.Color.purple()
+                rarity = "EPIC"
+            elif res < 0.30: # Rare 20%
+                win = random.randint(1500, 3000)
+                item = None
+                color = discord.Color.blue()
+                rarity = "RARE"
+            else: # Common 70%
+                win = random.randint(200, 500)
+                item = None
+                color = discord.Color.light_grey()
+                rarity = "COMMON"
+
+            add_balance(uid, win)
+            log_transaction(uid, win, f"Box Reveal: {rarity}")
+            if item: add_item(uid, item)
+
+            embed = discord.Embed(title=f"✨ Mystery Box Reveal: {rarity}", color=color)
+            desc = f"You won **{win:,} JenCoins**!"
+            if item: desc += f"\n\n🎁 **Bonus Item Found:** {item}"
+            embed.description = desc
+            embed.set_footer(text=f"New Balance: {get_balance(uid):,} JC")
+            
+            await msg.edit(content=None, embed=embed)
+            
+        else:
+            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box`.")
+
+    @commands.command(name='inventory', aliases=['inv'])
+    async def inv_command(self, ctx: commands.Context):
+        """View your collected items."""
+        uid = str(ctx.author.id)
+        items = get_inventory(uid)
+        
+        if not items:
+            await ctx.send("🎒 Your inventory is empty. Try opening some `!buy box`!")
+            return
+
+        # Group items
+        item_list = {}
+        for name, type in items:
+            item_list[name] = item_list.get(name, 0) + 1
+        
+        display = "\n".join([f"• {name} x{count}" for name, count in item_list.items()])
+        embed = discord.Embed(title=f"🎒 {ctx.author.display_name}'s Inventory", description=display, color=discord.Color.blue())
+        await ctx.send(embed=embed)
 
     # --- Admin Commands ---
 
