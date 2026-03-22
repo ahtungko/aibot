@@ -298,11 +298,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='history', aliases=['logs', 'stats'])
     async def history_command(self, ctx: commands.Context):
-        """View your last 10 economy transactions."""
+        """View your last 5 economy transactions."""
         uid = str(ctx.author.id)
         conn = get_db()
         rows = conn.execute(
-            "SELECT amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 10",
+            "SELECT amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5",
             (uid,)
         ).fetchall()
         conn.close()
@@ -311,7 +311,7 @@ class Economy(commands.Cog):
             await ctx.send("📭 You haven't made any transactions yet!")
             return
 
-        embed = discord.Embed(title=f"📜 {ctx.author.display_name}'s Transaction History", color=discord.Color.blue())
+        embed = discord.Embed(title=f"📜 {ctx.author.display_name}'s Recent Activity", color=discord.Color.blue())
         
         history_text = ""
         for amount, trans_type, timestamp in rows:
