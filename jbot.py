@@ -157,9 +157,10 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "eco":
             embed.title = "💰 Economy & Gambling"
-            embed.add_field(name="JC", value=f"`{p}daily` - Claim daily coins\n`{p}work` - Work for coins\n`{p}bal [@user]` - Check balance\n`{p}give @user [amount]` - Send coins\n`{p}top` - Richest users\n`{p}history` - View transactions", inline=False)
-            embed.add_field(name="Gambling", value=f"`{p}flip [bet] [h/t]` - Coin flip\n`{p}slots [bet]` - Slot machine\n`{p}bj [bet]` - Play Blackjack", inline=False)
-            embed.add_field(name="Events & Shop", value=f"`{p}shop` - Browse the shop\n`{p}buy [item]` - Purchase an item\n`{p}inv` - View owned items\n`{p}rain` - Catch falling coins", inline=False)
+            embed.add_field(name="JC & Social", value=f"`{p}daily` - Claim daily coins\n`{p}work` - Work for coins\n`{p}bal [@user]` - Check balance\n`{p}give @user [amount]` - Send coins\n`{p}top` - Richest users\n`{p}history` - View transactions", inline=False)
+            embed.add_field(name="Gold Market & VIP 👑", value=f"`{p}bg [JC]` - Buy Gold (Live Rate)\n`{p}sg [grams]` - Sell Gold (Live Rate)\n`{p}pf` - View Portfolio & Net Worth\n`{p}vip` - Get VIP Membership (Reduce Fees)\n`{p}vault` - View community fee pool", inline=False)
+            embed.add_field(name="Gambling & Fun", value=f"`{p}flip [bet] [h/t]` - Coin flip\n`{p}slots [bet]` - Slot machine\n`{p}bj [bet]` - Play Blackjack\n`{p}rain` - Catch falling coins", inline=False)
+            embed.add_field(name="Shop & Items", value=f"`{p}shop` - Browse shop items\n`{p}buy [item]` - Purchase item\n`{p}inv` - View owned collectibles", inline=False)
             
         elif val == "social":
             embed.title = "🌟 Daily & Social"

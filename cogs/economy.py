@@ -163,6 +163,23 @@ def set_vip(user_id: str, days: int):
     else:
         db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True)
 
+def set_vip(user_id: str, days: int):
+    now = int(time.time())
+    current_expiry = get_vip_expiry(user_id)
+    
+    start_time = max(now, current_expiry)
+    new_expiry = start_time + (days * 24 * 3600)
+    
+    if current_expiry > 0:
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'VIP'", (str(new_expiry), user_id), commit=True)
+    else:
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True)
+
+def track_fee(amount: int):
+    """Adds to the global fee vault."""
+    current = int(get_setting("fee_vault", "0"))
+    set_setting("fee_vault", str(current + amount))
+
 # --- Helpers ---
 
 async def validate_bet(ctx: commands.Context, amount_str):
@@ -263,9 +280,14 @@ class Economy(commands.Cog):
                 pass
 
         reward = random.randint(WORK_MIN, WORK_MAX)
-        new_bal = add_balance(uid, reward)
+        fee_rate = 0.02 if is_vip(uid) else 0.05
+        tax = max(1, int(reward * fee_rate))
+        net_reward = reward - tax
+        
+        new_bal = add_balance(uid, net_reward)
         set_last_work(uid, str(now))
-        log_transaction(uid, reward, "Work Payment")
+        track_fee(tax)
+        log_transaction(uid, net_reward, "Work Payment")
 
         jobs = [
             "cleaned the server kitchen", "coded a new feature", "moderated a spicy channel",
@@ -279,7 +301,11 @@ class Economy(commands.Cog):
             description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JC!",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Wallet", value=f"**{new_bal:,}** JC", inline=False)
+        tax_percent = int(fee_rate * 100)
+        embed.add_field(name="Income Tax", value=f"**{tax}** JC ({tax_percent}%)", inline=True)
+        embed.add_field(name="Net Received", value=f"**{net_reward:,}** JC", inline=True)
+        embed.add_field(name="New Wallet", value=f"**{new_bal:,}** JC", inline=False)
+        embed.set_footer(text="Tax collected is added to the global fee vault!")
         await ctx.send(embed=embed)
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
@@ -360,7 +386,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='buygold', aliases=['bg'])
     async def buygold_command(self, ctx: commands.Context, amount: str = None):
-        """Buy virtual Gold at the live market rate. (1% Fee) Usage: !buygold [JC amount | max]"""
+        """Buy virtual Gold at the live market rate. (5% Fee) Usage: !buygold [JC amount | max]"""
         uid = str(ctx.author.id)
         jc_amount, err = await validate_bet(ctx, amount)
         if err:
@@ -382,6 +408,7 @@ class Economy(commands.Cog):
         
         add_balance(uid, -jc_amount)
         add_gold_grams(uid, grams_bought)
+        track_fee(fee)
         log_transaction(uid, -jc_amount, "Bought Gold")
         
         embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
@@ -422,7 +449,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='sellgold', aliases=['sg'])
     async def sellgold_command(self, ctx: commands.Context, grams_to_sell: str = None):
-        """Sell your Gold at the live market rate. (1% Fee) Usage: !sellgold [grams | max]"""
+        """Sell your Gold at the live market rate. (5% Fee) Usage: !sellgold [grams | max]"""
         uid = str(ctx.author.id)
         current_grams = get_gold_grams(uid)
         
@@ -463,6 +490,7 @@ class Economy(commands.Cog):
         
         add_gold_grams(uid, -sell_amount)
         add_balance(uid, net_payout)
+        track_fee(fee)
         log_transaction(uid, net_payout, "Sold Gold")
         
         embed = discord.Embed(title="🏦 Gold Sale Receipt", color=discord.Color.green())
@@ -473,6 +501,20 @@ class Economy(commands.Cog):
         embed.set_footer(text="Trade executed successfully at market price.")
         
         await msg.edit(content=None, embed=embed)
+
+    @commands.command(name='vault', aliases=['fees'])
+    async def vault_command(self, ctx: commands.Context):
+        """View the Global JC Fee Vault."""
+        total_fees = int(get_setting("fee_vault", "0"))
+        embed = discord.Embed(
+            title="🏦 Global Fee Vault",
+            description=f"This vault tracks all processing fees collected from Gold traders. "
+                        f"These funds will be periodically returned to the community!\n\n"
+                        f"💰 **Total Collected:** **{total_fees:,}** JC",
+            color=discord.Color.dark_blue()
+        )
+        embed.set_footer(text="Trade fees keep the server economy healthy!")
+        await ctx.send(embed=embed)
 
 
     @commands.command(name='top', aliases=['rich'])
