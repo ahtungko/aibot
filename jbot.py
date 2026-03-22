@@ -1,5 +1,6 @@
 # jbot.py — Slim entry point: bot setup, cog loading, on_message routing, help
 import time
+import asyncio
 import discord
 import aiohttp
 from discord.ext import commands
@@ -101,11 +102,11 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # AI mention handler
+    # AI mention handler (non-blocking)
     if bot.user.mentioned_in(message):
         ai_cog = bot.get_cog("AI")
         if ai_cog:
-            await ai_cog.handle_ai_mention(message)
+            asyncio.create_task(ai_cog.handle_ai_mention(message))
         return
 
     # Currency fallback (dynamic currency codes like !usd, !eur, etc.)
