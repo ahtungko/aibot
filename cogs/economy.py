@@ -128,7 +128,7 @@ async def validate_bet(ctx: commands.Context, amount_str):
         return None, "❌ Please provide a positive bet amount!"
     
     if bal < amount:
-        return None, f"❌ You only have **{bal:,}** JenCoins."
+        return None, f"❌ You only have **{bal:,}** JC."
     
     return amount, None
 
@@ -145,12 +145,12 @@ class Economy(commands.Cog):
 
     @commands.command(name='bal', aliases=['balance', 'wallet'])
     async def balance_command(self, ctx: commands.Context, member: discord.Member = None):
-        """Check your (or someone else's) JenCoin balance."""
+        """Check your (or someone else's) JC balance."""
         target = member or ctx.author
         bal = get_balance(str(target.id))
         embed = discord.Embed(
             title=f"💰 {target.display_name}'s Wallet",
-            description=f"**{bal:,}** JenCoins",
+            description=f"**{bal:,}** JC",
             color=discord.Color.gold()
         )
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -158,7 +158,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='daily')
     async def daily_command(self, ctx: commands.Context):
-        """Claim your daily JenCoins!"""
+        """Claim your daily JC!"""
         uid = str(ctx.author.id)
         now_gmt8 = datetime.now(timezone(timedelta(hours=8)))
         today = now_gmt8.strftime("%Y-%m-%d")
@@ -175,15 +175,15 @@ class Economy(commands.Cog):
 
         embed = discord.Embed(
             title="🎁 Daily Claimed!",
-            description=f"💵 {ctx.author.mention} received **{total:,}** JenCoins!",
+            description=f"💵 {ctx.author.mention} received **{total:,}** JC!",
             color=discord.Color.green()
         )
-        embed.add_field(name="New Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
+        embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC", inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(name='work', aliases=['job'])
     async def work_command(self, ctx: commands.Context):
-        """Work for some JenCoins! (1 hour cooldown)"""
+        """Work for some JC! (1 hour cooldown)"""
         uid = str(ctx.author.id)
         now = int(time.time())
         last_str = get_last_work(uid)
@@ -215,15 +215,15 @@ class Economy(commands.Cog):
 
         embed = discord.Embed(
             title="⚒️ Hard Work Pays Off!",
-            description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JenCoins!",
+            description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JC!",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Wallet", value=f"**{new_bal:,}** JenCoins", inline=False)
+        embed.add_field(name="Wallet", value=f"**{new_bal:,}** JC", inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
     async def give_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
-        """Give JenCoins to another user."""
+        """Give JC to another user."""
         if not member or amount is None:
             await ctx.send(f"Usage: `{COMMAND_PREFIX}give @user [amount]`")
             return
@@ -239,7 +239,7 @@ class Economy(commands.Cog):
 
         sender_bal = get_balance(str(ctx.author.id))
         if sender_bal < amount:
-            await ctx.send(f"❌ You only have **{sender_bal:,}** JenCoins.")
+            await ctx.send(f"❌ You only have **{sender_bal:,}** JC.")
             return
 
         add_balance(str(ctx.author.id), -amount)
@@ -250,7 +250,7 @@ class Economy(commands.Cog):
 
         embed = discord.Embed(
             title="💸 Transfer Complete",
-            description=f"{ctx.author.mention} → {member.mention}\n**{amount:,}** JenCoins",
+            description=f"{ctx.author.mention} → {member.mention}\n**{amount:,}** JC",
             color=discord.Color.blue()
         )
         embed.add_field(name=f"{member.display_name}'s Balance", value=f"**{new_receiver:,}**", inline=True)
@@ -261,10 +261,10 @@ class Economy(commands.Cog):
         """Show the richest users."""
         rows = get_top_balances(10)
         if not rows:
-            await ctx.send("📭 No one has any JenCoins yet! Use `!daily` to get started.")
+            await ctx.send("📭 No one has any JC yet! Use `!daily` to get started.")
             return
 
-        embed = discord.Embed(title="🏦 JenCoin Leaderboard", color=discord.Color.gold())
+        embed = discord.Embed(title="🏦 JC Leaderboard", color=discord.Color.gold())
         medals = ["🥇", "🥈", "🥉"]
         lines = []
         for i, (user_id, balance) in enumerate(rows):
@@ -280,7 +280,7 @@ class Economy(commands.Cog):
 
     # --- Gambling ---
 
-    @commands.command(name='flip', aliases=['coinflip', 'cf'])
+    @commands.command(name='flip', aliases=['coinflip'])
     async def flip_command(self, ctx: commands.Context, amount: str = None, side: str = None):
         """Flip a coin! Guess 'h' or 't'. Win = double, Lose = nothing."""
         val, err = await validate_bet(ctx, amount)
@@ -289,7 +289,7 @@ class Economy(commands.Cog):
             return
         amount = val
         if side is None:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}flip [amount] [h/t]` — bet your JenCoins on heads or tails!")
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}flip [amount] [h/t]` — bet your JC on heads or tails!")
             return
 
         side = side.lower()
@@ -308,15 +308,15 @@ class Economy(commands.Cog):
             new_bal = add_balance(uid, winnings)
             log_transaction(uid, winnings, "Flip Win")
             color = discord.Color.green()
-            msg = f"🎉 You guessed right!\nYou won **{winnings:,}** JenCoins!"
+            msg = f"🎉 You guessed right!\nYou won **{winnings:,}** JC!"
         else:
             new_bal = add_balance(uid, -amount)
             log_transaction(uid, -amount, "Flip Loss")
             color = discord.Color.red()
-            msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JenCoins."
+            msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JC."
 
         embed = discord.Embed(title=f"🪙 Coin Flip — {outcome_full}!", description=msg, color=color)
-        embed.add_field(name="Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
+        embed.add_field(name="Balance", value=f"**{new_bal:,}** JC", inline=False)
         embed.set_footer(text=f"Bet: {amount:,} JC | Picked: {side}")
         await ctx.send(embed=embed)
 
@@ -339,7 +339,7 @@ class Economy(commands.Cog):
             new_bal = add_balance(uid, winnings)
             log_transaction(uid, winnings, f"Slots Win ({reels[0]})")
             title = "🎰 JACKPOT!!! 🎰" if reels[0] == "7️⃣" else "🎰 THREE OF A KIND!"
-            desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JenCoins! (x{multiplier})"
+            desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JC! (x{multiplier})"
             color = discord.Color.gold()
         elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
             new_bal = get_balance(uid)
@@ -351,11 +351,11 @@ class Economy(commands.Cog):
             new_bal = add_balance(uid, -amount)
             log_transaction(uid, -amount, "Slots Loss")
             title = "🎰 No Match"
-            desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JenCoins."
+            desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JC."
             color = discord.Color.red()
 
         embed = discord.Embed(title=title, description=desc, color=color)
-        embed.add_field(name="Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
+        embed.add_field(name="Balance", value=f"**{new_bal:,}** JC", inline=False)
         embed.set_footer(text=f"Bet: {amount:,} JC")
         await ctx.send(embed=embed)
 
@@ -400,7 +400,7 @@ class Economy(commands.Cog):
         view = BlackjackView(ctx, amount)
         await view.start_game()
 
-    # --- JenCoin Rain ---
+    # --- JC Rain ---
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -418,7 +418,7 @@ class Economy(commands.Cog):
     @commands.command(name='rain')
     @commands.is_owner()
     async def rain_command(self, ctx: commands.Context):
-        """Owner Only: Manually trigger a JenCoin Rain 🌧️"""
+        """Owner Only: Manually trigger a JC Rain 🌧️"""
         await self.start_rain(ctx.channel)
 
     @commands.command(name='rainrate')
@@ -434,7 +434,7 @@ class Economy(commands.Cog):
     @commands.command(name='rainamount')
     @commands.is_owner()
     async def rainamount_command(self, ctx: commands.Context, min_amt: int, max_amt: int):
-        """Owner Only: Set the min/max JenCoins awarded in a rain catch."""
+        """Owner Only: Set the min/max JC awarded in a rain catch."""
         if 0 < min_amt <= max_amt:
             set_setting('rain_min', str(min_amt))
             set_setting('rain_max', str(max_amt))
@@ -445,7 +445,7 @@ class Economy(commands.Cog):
     @commands.command(name='raintotal')
     @commands.is_owner()
     async def raintotal_command(self, ctx: commands.Context, total: int):
-        """Owner Only: Set the total JenCoin pool for a rain event."""
+        """Owner Only: Set the total JC pool for a rain event."""
         if total > 0:
             set_setting('rain_pool', str(total))
             await ctx.send(f"✅ Total rain pool set to **{total:,} JC**.")
@@ -475,7 +475,7 @@ class Economy(commands.Cog):
         """Browse the JenBot Shop! 🛍️"""
         embed = discord.Embed(
             title="Convenience Store 🎭",
-            description="Spend your JenCoins on unique rewards!",
+            description="Spend your JC on unique rewards!",
             color=discord.Color.blue()
         )
         embed.add_field(
@@ -520,7 +520,7 @@ class Economy(commands.Cog):
             res = random.random()
             if res < 0.02: # Legendary 2%
                 win = 50000
-                item = "🏆 Golden JenCoin"
+                item = "🏆 Golden JC"
                 color = discord.Color.gold()
                 rarity = "LEGENDARY"
             elif res < 0.10: # Epic 8%
@@ -544,7 +544,7 @@ class Economy(commands.Cog):
             if item: add_item(uid, item)
 
             embed = discord.Embed(title=f"✨ Mystery Box Reveal: {rarity}", color=color)
-            desc = f"You won **{win:,} JenCoins**!"
+            desc = f"You won **{win:,} JC**!"
             if item: desc += f"\n\n🎁 **Bonus Item Found:** {item}"
             embed.description = desc
             embed.set_footer(text=f"New Balance: {get_balance(uid):,} JC")
@@ -578,20 +578,20 @@ class Economy(commands.Cog):
     @commands.command(name='addcoins', aliases=['addjc'])
     @commands.is_owner()
     async def addcoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Owner Only: Add JenCoins to a user."""
+        """Owner Only: Add JC to a user."""
         if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), amount)
         log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})")
-        await ctx.send(f"✅ Added **{amount:,}** JenCoins to {member.mention}. New balance: **{new_bal:,}**.")
+        await ctx.send(f"✅ Added **{amount:,}** JC to {member.mention}. New balance: **{new_bal:,}**.")
 
     @commands.command(name='takecoins', aliases=['removejc', 'takejc'])
     @commands.is_owner()
     async def takecoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Owner Only: Remove JenCoins from a user."""
+        """Owner Only: Remove JC from a user."""
         if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), -amount)
         log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
-        await ctx.send(f"✅ Removed **{amount:,}** JenCoins from {member.mention}. New balance: **{new_bal:,}**.")
+        await ctx.send(f"✅ Removed **{amount:,}** JC from {member.mention}. New balance: **{new_bal:,}**.")
 
 # --- Blackjack Game Logic ---
 
@@ -721,7 +721,7 @@ class BlackjackView(discord.ui.View):
         embed = self.make_embed(finished=True)
         embed.title = f"🃏 {result_text}"
         embed.color = color
-        embed.add_field(name="ResultBalance", value=f"**{new_bal:,}** JenCoins", inline=False)
+        embed.add_field(name="ResultBalance", value=f"**{new_bal:,}** JC", inline=False)
         
         if self.message:
             await self.message.edit(embed=embed, view=None)
@@ -772,7 +772,7 @@ class RainView(discord.ui.View):
         
         self.winners.append({'id': uid, 'name': interaction.user.display_name, 'amount': amount})
         
-        await interaction.response.send_message(f"🧤 **CATCH!** You caught **{amount}** JenCoins! (Remaining Pool: {self.pool:,})", ephemeral=True)
+        await interaction.response.send_message(f"🧤 **CATCH!** You caught **{amount}** JC! (Remaining Pool: {self.pool:,})", ephemeral=True)
 
         if self.pool <= 0:
             await self.finish_rain()

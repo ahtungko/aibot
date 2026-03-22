@@ -126,7 +126,7 @@ class HelpDropdown(discord.ui.Select):
         
         options = [
             discord.SelectOption(label="AI & Utilities", description="Chat, Summarize, AFK, Bookmarks", emoji="🤖", value="ai"),
-            discord.SelectOption(label="Economy & Gambling", description="JenCoins, Work, Slots, Shop", emoji="💰", value="eco"),
+            discord.SelectOption(label="Economy & Gambling", description="JC, Work, Slots, Shop", emoji="💰", value="eco"),
             discord.SelectOption(label="Daily & Social", description="Check-in, Horoscope, Roasts", emoji="🌟", value="social"),
             discord.SelectOption(label="Media & Games", description="Music, Steam Deals", emoji="🎵", value="media"),
             discord.SelectOption(label="Finance", description="Currency, Gold, Silver", emoji="💱", value="finance"),
@@ -157,7 +157,7 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "eco":
             embed.title = "💰 Economy & Gambling"
-            embed.add_field(name="JenCoins", value=f"`{p}daily` - Claim daily coins\n`{p}work` - Work for coins\n`{p}bal [@user]` - Check balance\n`{p}give @user [amount]` - Send coins\n`{p}top` - Richest users\n`{p}history` - View transactions", inline=False)
+            embed.add_field(name="JC", value=f"`{p}daily` - Claim daily coins\n`{p}work` - Work for coins\n`{p}bal [@user]` - Check balance\n`{p}give @user [amount]` - Send coins\n`{p}top` - Richest users\n`{p}history` - View transactions", inline=False)
             embed.add_field(name="Gambling", value=f"`{p}flip [bet] [h/t]` - Coin flip\n`{p}slots [bet]` - Slot machine\n`{p}bj [bet]` - Play Blackjack", inline=False)
             embed.add_field(name="Events & Shop", value=f"`{p}shop` - Browse the shop\n`{p}buy [item]` - Purchase an item\n`{p}inv` - View owned items\n`{p}rain` - Catch falling coins", inline=False)
             
@@ -191,20 +191,31 @@ class HelpView(discord.ui.View):
     def __init__(self, ctx, prefix):
         super().__init__(timeout=120)
         self.add_item(HelpDropdown(ctx, prefix))
+        self.message = None
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 
 @bot.command(name='help')
 async def help_command(ctx):
     embed = discord.Embed(
         title=f"{bot.user.name} Help Menu 📖",
-        description="Welcome to the help menu! Please select a category from the dropdown below to view the available commands.",
+        description="Welcome to the help menu! Please select a category from the dropdown below to view the available commands.\n\n*(Note: This menu will expire after 2 minutes of inactivity)*",
         color=discord.Color.purple()
     )
     embed.set_thumbnail(url=bot.user.display_avatar.url if bot.user.display_avatar else None)
     embed.set_footer(text="Made with ❤️ by Jenny")
     
     view = HelpView(ctx, COMMAND_PREFIX)
-    await ctx.send(embed=embed, view=view)
+    view.message = await ctx.send(embed=embed, view=view)
 
 
 # --- Main ---
