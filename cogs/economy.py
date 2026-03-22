@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
-from config import COMMAND_PREFIX
+from config import COMMAND_PREFIX, TROY_OUNCE_TO_GRAMS
 from utils.storage import load_user_data
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'economy.db')
@@ -37,6 +37,7 @@ def get_db():
     conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '', last_work TEXT DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, amount INTEGER, type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
     conn.execute("CREATE TABLE IF NOT EXISTS inventory (user_id TEXT, item_name TEXT, item_type TEXT, item_data TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS investments (user_id TEXT PRIMARY KEY, gold_grams REAL DEFAULT 0.0)")
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     # Migration: Add last_work column if it doesn't exist
     try:
@@ -101,6 +102,41 @@ def add_item(user_id, item_name, item_type="Collectible", item_data=""):
 
 def get_inventory(user_id):
     return db_query("SELECT item_name, item_type FROM inventory WHERE user_id = ?", (user_id,), fetchall=True)
+
+# --- Investment Helpers ---
+
+def get_gold_grams(user_id: str) -> float:
+    row = db_query("SELECT gold_grams FROM investments WHERE user_id = ?", (user_id,), fetchone=True)
+    return row[0] if row else 0.0
+
+def add_gold_grams(user_id: str, amount: float):
+    current = get_gold_grams(user_id)
+    new_amount = current + amount
+    if new_amount < 0.000001:  # Floating point precision safe zero
+        new_amount = 0.0
+    db_query("INSERT INTO investments (user_id, gold_grams) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET gold_grams = ?", (user_id, new_amount, new_amount), commit=True)
+
+async def fetch_live_gold_price(bot) -> float:
+    """Fetches the live gold price in MYR/g"""
+    currency_code = "MYR"
+    cookies = {'wcid': 'D95hVgSMso1SAAAC', 'react_component_complete': 'true'}
+    headers = {
+        'accept': '*/*', 'accept-language': 'en-US,en-GB;q=0.9,en;q=0.8',
+        'referer': 'https://goldprice.org/spot-gold.html', 'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-origin',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+    }
+    price_api_url = f"https://data-asg.goldprice.org/dbXRates/{currency_code}"
+    try:
+        async with bot.http_session.get(price_api_url, cookies=cookies, headers=headers) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+        price_data = data.get("items")[0]
+        xau_price_gram = price_data.get('xauPrice', 0) / TROY_OUNCE_TO_GRAMS
+        return xau_price_gram
+    except Exception as e:
+        print(f"Error fetching gold price: {e}")
+        return None
 
 # --- Helpers ---
 
@@ -229,7 +265,6 @@ class Economy(commands.Cog):
             return
         if member.id == ctx.author.id:
             await ctx.send("You can't give coins to yourself!")
-            return
         if member.bot:
             await ctx.send("You can't give coins to a bot!")
             return
@@ -255,6 +290,127 @@ class Economy(commands.Cog):
         )
         embed.add_field(name=f"{member.display_name}'s Balance", value=f"**{new_receiver:,}**", inline=True)
         await ctx.send(embed=embed)
+
+    # --- Live Gold Trading ---
+
+    @commands.command(name='portfolio', aliases=['pf'])
+    async def portfolio_command(self, ctx: commands.Context, member: discord.Member = None):
+        """View your Investment Portfolio."""
+        target = member or ctx.author
+        uid = str(target.id)
+        
+        bal = get_balance(uid)
+        gold_grams = get_gold_grams(uid)
+        
+        embed = discord.Embed(title=f"📊 {target.display_name}'s Portfolio", color=discord.Color.dark_gold())
+        embed.set_thumbnail(url=target.display_avatar.url)
+        
+        embed.add_field(name="Wallet Balance", value=f"**{bal:,}** JC", inline=False)
+        
+        if gold_grams > 0:
+            msg = await ctx.send("Fetching live market data...")
+            live_price = await fetch_live_gold_price(self.bot)
+            
+            if live_price:
+                gold_value = int(gold_grams * live_price)
+                net_worth = bal + gold_value
+                
+                embed.add_field(name="Gold Holdings 🥇", value=f"Weight: **{gold_grams:.4f}g**\nLive Value: **{gold_value:,}** JC", inline=False)
+                embed.add_field(name="Total Net Worth", value=f"**{net_worth:,}** JC", inline=False)
+                embed.set_footer(text=f"Live Gold Rate: {live_price:,.2f} JC/g")
+                await msg.edit(content=None, embed=embed)
+            else:
+                embed.add_field(name="Gold Holdings 🥇", value=f"Weight: **{gold_grams:.4f}g**\nLive Value: `API Offline`", inline=False)
+                await msg.edit(content=None, embed=embed)
+        else:
+            embed.add_field(name="Gold Holdings 🥇", value="0.0000g (*No investments yet*)", inline=False)
+            await ctx.send(embed=embed)
+
+    @commands.command(name='buygold', aliases=['bg'])
+    async def buygold_command(self, ctx: commands.Context, amount: str = None):
+        """Buy virtual Gold at the live market rate. (1% Fee) Usage: !buygold [JC amount | max]"""
+        uid = str(ctx.author.id)
+        jc_amount, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+            
+        msg = await ctx.send("<a:loading:111> Fetching live gold exchange rate...")
+        live_price = await fetch_live_gold_price(self.bot)
+        
+        if not live_price:
+            await msg.edit(content="❌ The Gold Market is currently closed. Please try again later.")
+            return
+            
+        fee = max(1, int(jc_amount * 0.01)) # 1% processing fee
+        purchase_power = jc_amount - fee
+        
+        grams_bought = purchase_power / live_price
+        
+        add_balance(uid, -jc_amount)
+        add_gold_grams(uid, grams_bought)
+        log_transaction(uid, -jc_amount, "Bought Gold")
+        
+        embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
+        embed.add_field(name="Spent", value=f"**{jc_amount:,}** JC\n*(Includes **{fee:,}** JC fee)*", inline=True)
+        embed.add_field(name="Acquired", value=f"**{grams_bought:.4f}g** Gold", inline=True)
+        embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g", inline=False)
+        embed.set_footer(text="Trade executed successfully at market price.")
+        
+        await msg.edit(content=None, embed=embed)
+
+    @commands.command(name='sellgold', aliases=['sg'])
+    async def sellgold_command(self, ctx: commands.Context, grams_to_sell: str = None):
+        """Sell your Gold at the live market rate. (1% Fee) Usage: !sellgold [grams | max]"""
+        uid = str(ctx.author.id)
+        current_grams = get_gold_grams(uid)
+        
+        if current_grams <= 0:
+            await ctx.send("❌ You don't own any gold to sell! `!buygold` first.")
+            return
+            
+        if not grams_to_sell:
+            await ctx.send(f"❌ How much? You have **{current_grams:.4f}g**. Usage: `!sellgold [amount | max]`")
+            return
+            
+        sell_amount = 0.0
+        s = str(grams_to_sell).lower()
+        if s in ['max', 'all']:
+            sell_amount = current_grams
+        else:
+            try:
+                sell_amount = float(s)
+            except ValueError:
+                await ctx.send("❌ Invalid amount! Use a number or 'max'.")
+                return
+                
+        if sell_amount <= 0 or sell_amount > current_grams:
+            await ctx.send(f"❌ Invalid amount. You own exactly **{current_grams:.4f}g**.")
+            return
+
+        msg = await ctx.send("<a:loading:111> Fetching live gold exchange rate...")
+        live_price = await fetch_live_gold_price(self.bot)
+        
+        if not live_price:
+            await msg.edit(content="❌ The Gold Market is currently closed. Please try again later.")
+            return
+            
+        gross_value = int(sell_amount * live_price)
+        fee = max(1, int(gross_value * 0.01)) # 1% processing fee
+        net_payout = gross_value - fee
+        
+        add_gold_grams(uid, -sell_amount)
+        add_balance(uid, net_payout)
+        log_transaction(uid, net_payout, "Sold Gold")
+        
+        embed = discord.Embed(title="🏦 Gold Sale Receipt", color=discord.Color.green())
+        embed.add_field(name="Sold", value=f"**{sell_amount:.4f}g** Gold", inline=True)
+        embed.add_field(name="Received", value=f"**{net_payout:,}** JC\n*(After **{fee:,}** JC fee)*", inline=True)
+        embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g", inline=False)
+        embed.set_footer(text="Trade executed successfully at market price.")
+        
+        await msg.edit(content=None, embed=embed)
+
 
     @commands.command(name='top', aliases=['rich'])
     async def top_command(self, ctx: commands.Context):
