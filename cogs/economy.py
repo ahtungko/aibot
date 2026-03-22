@@ -30,8 +30,16 @@ STARTING_BALANCE = 0
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '')")
+    conn.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, amount INTEGER, type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
     conn.commit()
     return conn
+
+
+def log_transaction(user_id: str, amount: int, trans_type: str):
+    conn = get_db()
+    conn.execute("INSERT INTO transactions (user_id, amount, type) VALUES (?, ?, ?)", (user_id, amount, trans_type))
+    conn.commit()
+    conn.close()
 
 
 def get_balance(user_id: str) -> int:
@@ -101,7 +109,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='daily')
     async def daily_command(self, ctx: commands.Context):
-        """Claim your daily JenCoins! Streak from !ck gives bonus."""
+        """Claim your daily JenCoins!"""
         uid = str(ctx.author.id)
         from datetime import datetime, timezone, timedelta
         # Use GMT+8 as the reset timezone (same as check-in)
@@ -113,37 +121,14 @@ class Economy(commands.Cog):
             await ctx.send(f"⏰ {ctx.author.mention}, you already claimed your daily! Come back tomorrow.")
             return
 
-        # Check streak for bonus
-        streak_bonus = 0
-        checkin_cog = self.bot.get_cog("Checkin")
-        if checkin_cog:
-            try:
-                from config import CHECKIN_WORKER_URL, CHECKIN_AUTH_PASS
-                if CHECKIN_WORKER_URL:
-                    payload = {
-                        "user_pass": CHECKIN_AUTH_PASS,
-                        "action": "streak",
-                        "user_id": uid,
-                    }
-                    async with self.bot.http_session.post(CHECKIN_WORKER_URL, json=payload) as resp:
-                        data = await resp.json()
-                        if data.get("success"):
-                            streak = min(data.get("streak", 0), 10)  # cap at 10
-                            streak_bonus = streak * DAILY_STREAK_BONUS
-            except Exception:
-                pass
-
-        total = DAILY_BASE + streak_bonus
+        total = DAILY_BASE
         new_bal = add_balance(uid, total)
         set_last_daily(uid, today)
-
-        parts = [f"💵 +**{DAILY_BASE}** base"]
-        if streak_bonus > 0:
-            parts.append(f"🔥 +**{streak_bonus}** streak bonus")
+        log_transaction(uid, total, "Daily Reward")
 
         embed = discord.Embed(
             title="🎁 Daily Claimed!",
-            description=f"{ctx.author.mention} received **{total:,}** JenCoins!\n" + " | ".join(parts),
+            description=f"💵 {ctx.author.mention} received **{total:,}** JenCoins!",
             color=discord.Color.green()
         )
         embed.add_field(name="New Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
@@ -172,6 +157,9 @@ class Economy(commands.Cog):
 
         add_balance(str(ctx.author.id), -amount)
         new_receiver = add_balance(str(member.id), amount)
+
+        log_transaction(str(ctx.author.id), -amount, f"Transfer to {member.display_name}")
+        log_transaction(str(member.id), amount, f"Transfer from {ctx.author.display_name}")
 
         embed = discord.Embed(
             title="💸 Transfer Complete",
@@ -206,13 +194,18 @@ class Economy(commands.Cog):
     # --- Gambling ---
 
     @commands.command(name='flip', aliases=['coinflip'])
-    async def flip_command(self, ctx: commands.Context, amount: int = None):
-        """Flip a coin! Win = double, Lose = nothing. 50/50."""
-        if amount is None:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}flip [amount]` — bet your JenCoins!")
+    async def flip_command(self, ctx: commands.Context, amount: int = None, side: str = None):
+        """Flip a coin! Guess 'h' or 't'. Win = double, Lose = nothing."""
+        if amount is None or side is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}flip [amount] [h/t]` — bet your JenCoins on heads or tails!")
             return
         if amount <= 0:
             await ctx.send("Bet must be positive!")
+            return
+
+        side = side.lower()
+        if side not in ['h', 'heads', 't', 'tails']:
+            await ctx.send("Please pick `h` (heads) or `t` (tails)!")
             return
 
         uid = str(ctx.author.id)
@@ -221,26 +214,32 @@ class Economy(commands.Cog):
             await ctx.send(f"❌ You only have **{bal:,}** JenCoins.")
             return
 
-        won = random.choice([True, False])
+        outcome = random.choice(['h', 't'])
+        user_choice = 'h' if side in ['h', 'heads'] else 't'
+        won = (user_choice == outcome)
+
+        outcome_full = "Heads" if outcome == 'h' else "Tails"
 
         if won:
             winnings = amount
             new_bal = add_balance(uid, winnings)
+            log_transaction(uid, winnings, "Flip Win")
             embed = discord.Embed(
-                title="🪙 Coin Flip — WIN!",
-                description=f"🎉 It landed on **Heads**!\nYou won **{winnings:,}** JenCoins!",
+                title=f"🪙 Coin Flip — {outcome_full}!",
+                description=f"🎉 You guessed right!\nYou won **{winnings:,}** JenCoins!",
                 color=discord.Color.green()
             )
         else:
             new_bal = add_balance(uid, -amount)
+            log_transaction(uid, -amount, "Flip Loss")
             embed = discord.Embed(
-                title="🪙 Coin Flip — LOSS",
-                description=f"😢 It landed on **Tails**.\nYou lost **{amount:,}** JenCoins.",
+                title=f"🪙 Coin Flip — {outcome_full}",
+                description=f"😢 You guessed wrong.\nYou lost **{amount:,}** JenCoins.",
                 color=discord.Color.red()
             )
 
         embed.add_field(name="Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
-        embed.set_footer(text=f"Bet: {amount:,} JC")
+        embed.set_footer(text=f"Bet: {amount:,} JC | Picked: {side}")
         await ctx.send(embed=embed)
 
     @commands.command(name='slots', aliases=['slot'])
@@ -269,6 +268,7 @@ class Economy(commands.Cog):
             multiplier = SLOT_PAYOUTS.get(reels[0], 2)
             winnings = amount * multiplier
             new_bal = add_balance(uid, winnings)
+            log_transaction(uid, winnings, f"Slots Win ({reels[0]})")
             if reels[0] == "7️⃣":
                 title = "🎰 JACKPOT!!! 🎰"
                 desc = f"**[ {reel_display} ]**\n\n🤑 **MEGA JACKPOT!** You won **{winnings:,}** JenCoins! (x{multiplier})"
@@ -279,12 +279,14 @@ class Economy(commands.Cog):
         elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
             # 2 of a kind — return the bet (net 0)
             new_bal = get_balance(uid)  # no change
+            log_transaction(uid, 0, "Slots Draw")
             title = "🎰 Two of a Kind"
             desc = f"**[ {reel_display} ]**\n\n😌 Two match! You got your bet back."
             color = discord.Color.blue()
         else:
             # No match — lose bet
             new_bal = add_balance(uid, -amount)
+            log_transaction(uid, -amount, "Slots Loss")
             title = "🎰 No Match"
             desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JenCoins."
             color = discord.Color.red()
@@ -293,6 +295,64 @@ class Economy(commands.Cog):
         embed.add_field(name="Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
         embed.set_footer(text=f"Bet: {amount:,} JC")
         await ctx.send(embed=embed)
+
+    @commands.command(name='history', aliases=['logs', 'stats'])
+    async def history_command(self, ctx: commands.Context):
+        """View your last 10 economy transactions."""
+        uid = str(ctx.author.id)
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 10",
+            (uid,)
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            await ctx.send("📭 You haven't made any transactions yet!")
+            return
+
+        embed = discord.Embed(title=f"📜 {ctx.author.display_name}'s Transaction History", color=discord.Color.blue())
+        
+        history_text = ""
+        for amount, trans_type, timestamp in rows:
+            sign = "+" if amount > 0 else ""
+            fmt_amount = f"{sign}{amount:,}" if amount != 0 else "0"
+            # Extract just date/time from timestamp
+            ts = timestamp.split(".")[0] if "." in timestamp else timestamp
+            history_text += f"`{ts}` | **{trans_type}**: `{fmt_amount} JC`\n"
+
+        embed.description = history_text
+        bal = get_balance(uid)
+        embed.set_footer(text=f"Current Balance: {bal:,} JC")
+        await ctx.send(embed=embed)
+
+    # --- Admin Commands ---
+
+    @commands.command(name='addcoins', aliases=['addjc'])
+    @commands.has_permissions(administrator=True)
+    async def addcoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin Only: Add JenCoins to a user."""
+        if amount <= 0:
+            await ctx.send("Amount must be positive.")
+            return
+        
+        new_bal = add_balance(str(member.id), amount)
+        log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})")
+        
+        await ctx.send(f"✅ Added **{amount:,}** JenCoins to {member.mention}. New balance: **{new_bal:,}**.")
+
+    @commands.command(name='takecoins', aliases=['removejc', 'takejc'])
+    @commands.has_permissions(administrator=True)
+    async def takecoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
+        """Admin Only: Remove JenCoins from a user."""
+        if amount <= 0:
+            await ctx.send("Amount must be positive.")
+            return
+        
+        new_bal = add_balance(str(member.id), -amount)
+        log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
+        
+        await ctx.send(f"✅ Removed **{amount:,}** JenCoins from {member.mention}. New balance: **{new_bal:,}**.")
 
 
 async def setup(bot):

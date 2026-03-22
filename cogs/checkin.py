@@ -31,20 +31,7 @@ class Checkin(commands.Cog):
                         ai_reply = data.get("message", "AI is silent today.")
                         streak = data.get("streak", 0)
                         streak_text = f"\n🔥 Streak: **{streak} day{'s' if streak != 1 else ''}**" if streak else ""
-
-                        # Award JenCoins for checking in
-                        coin_text = ""
-                        try:
-                            from cogs.economy import add_balance
-                            base_coins = 50
-                            streak_bonus = min(streak, 10) * 10  # up to +100 bonus
-                            total_coins = base_coins + streak_bonus
-                            new_bal = add_balance(str(ctx.author.id), total_coins)
-                            coin_text = f"\n💰 +**{total_coins}** JenCoins (bal: {new_bal:,})"
-                        except Exception:
-                            pass
-
-                        await ctx.send(f"✅ **Check-in Logged!** ({ctx.author.mention})\n📝 *{note}*\n🤖: *{ai_reply}*{streak_text}{coin_text}")
+                        await ctx.send(f"✅ **Check-in Logged!** ({ctx.author.mention})\n📝 *{note}*\n🤖: *{ai_reply}*{streak_text}")
                     elif response.status == 200 and not data.get("success"):
                         error_msg = data.get("error", "You already checked in today!")
                         await ctx.send(f"⏰ {ctx.author.mention}, {error_msg}")
