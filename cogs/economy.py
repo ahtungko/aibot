@@ -138,6 +138,31 @@ async def fetch_live_gold_price(bot) -> float:
         print(f"Error fetching gold price: {e}")
         return None
 
+# --- VIP Helpers ---
+
+def get_vip_expiry(user_id: str) -> int:
+    row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'VIP'", (user_id,), fetchone=True)
+    try:
+        return int(row[0]) if row else 0
+    except (ValueError, TypeError):
+        return 0
+
+def is_vip(user_id: str) -> bool:
+    expiry = get_vip_expiry(user_id)
+    return expiry > int(time.time())
+
+def set_vip(user_id: str, days: int):
+    now = int(time.time())
+    current_expiry = get_vip_expiry(user_id)
+    
+    start_time = max(now, current_expiry)
+    new_expiry = start_time + (days * 24 * 3600)
+    
+    if current_expiry > 0:
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'VIP'", (str(new_expiry), user_id), commit=True)
+    else:
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True)
+
 # --- Helpers ---
 
 async def validate_bet(ctx: commands.Context, amount_str):
@@ -301,10 +326,17 @@ class Economy(commands.Cog):
         
         bal = get_balance(uid)
         gold_grams = get_gold_grams(uid)
+        vip_active = is_vip(uid)
         
         embed = discord.Embed(title=f"📊 {target.display_name}'s Portfolio", color=discord.Color.dark_gold())
         embed.set_thumbnail(url=target.display_avatar.url)
         
+        vip_status = "❌ None"
+        if vip_active:
+            expiry = get_vip_expiry(uid)
+            vip_status = f"✅ Active (Expires <t:{expiry}:R>)"
+        
+        embed.add_field(name="VIP Membership 👑", value=vip_status, inline=False)
         embed.add_field(name="Wallet Balance", value=f"**{bal:,}** JC", inline=False)
         
         if gold_grams > 0:
@@ -342,7 +374,8 @@ class Economy(commands.Cog):
             await msg.edit(content="❌ The Gold Market is currently closed. Please try again later.")
             return
             
-        fee = max(1, int(jc_amount * 0.01)) # 1% processing fee
+        fee_rate = 0.02 if is_vip(uid) else 0.05
+        fee = max(1, int(jc_amount * fee_rate)) 
         purchase_power = jc_amount - fee
         
         grams_bought = purchase_power / live_price
@@ -354,10 +387,38 @@ class Economy(commands.Cog):
         embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
         embed.add_field(name="Spent", value=f"**{jc_amount:,}** JC\n*(Includes **{fee:,}** JC fee)*", inline=True)
         embed.add_field(name="Acquired", value=f"**{grams_bought:.4f}g** Gold", inline=True)
-        embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g", inline=False)
+        fee_percent = int(fee_rate * 100)
+        embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g ({fee_percent}% Fee)", inline=False)
         embed.set_footer(text="Trade executed successfully at market price.")
         
         await msg.edit(content=None, embed=embed)
+
+    @commands.command(name='buyvip', aliases=['vip'])
+    async def buy_vip_command(self, ctx: commands.Context):
+        """Purchase 30 days of VIP Membership for 10,000 JC. Reduces Gold fees to 2%."""
+        uid = str(ctx.author.id)
+        cost = 10000
+        bal = get_balance(uid)
+        
+        if bal < cost:
+            await ctx.send(f"❌ VIP Membership costs **{cost:,}** JC. You only have **{bal:,}** JC.")
+            return
+            
+        add_balance(uid, -cost)
+        set_vip(uid, 30)
+        log_transaction(uid, -cost, "Purchased VIP")
+        
+        expiry = get_vip_expiry(uid)
+        embed = discord.Embed(
+            title="👑 VIP Membership Activated!",
+            description=f"Congratulations {ctx.author.mention}! Your VIP status is now active.\n\n"
+                        f"✨ **Perks unlocked:**\n"
+                        f"- Gold Trading Fees reduced from **5%** to **2%**!\n"
+                        f"- Shiny VIP Badge in `!pf`.\n\n"
+                        f"📅 **Expiry:** <t:{expiry}:F> (<t:{expiry}:R>)",
+            color=discord.Color.purple()
+        )
+        await ctx.send(embed=embed)
 
     @commands.command(name='sellgold', aliases=['sg'])
     async def sellgold_command(self, ctx: commands.Context, grams_to_sell: str = None):
@@ -396,7 +457,8 @@ class Economy(commands.Cog):
             return
             
         gross_value = int(sell_amount * live_price)
-        fee = max(1, int(gross_value * 0.01)) # 1% processing fee
+        fee_rate = 0.02 if is_vip(uid) else 0.05
+        fee = max(1, int(gross_value * fee_rate)) 
         net_payout = gross_value - fee
         
         add_gold_grams(uid, -sell_amount)
@@ -406,7 +468,8 @@ class Economy(commands.Cog):
         embed = discord.Embed(title="🏦 Gold Sale Receipt", color=discord.Color.green())
         embed.add_field(name="Sold", value=f"**{sell_amount:.4f}g** Gold", inline=True)
         embed.add_field(name="Received", value=f"**{net_payout:,}** JC\n*(After **{fee:,}** JC fee)*", inline=True)
-        embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g", inline=False)
+        fee_percent = int(fee_rate * 100)
+        embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g ({fee_percent}% Fee)", inline=False)
         embed.set_footer(text="Trade executed successfully at market price.")
         
         await msg.edit(content=None, embed=embed)
