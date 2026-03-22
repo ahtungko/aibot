@@ -119,27 +119,92 @@ async def on_message(message):
 
 # --- Help Command ---
 
+class HelpDropdown(discord.ui.Select):
+    def __init__(self, ctx, prefix):
+        self.ctx = ctx
+        self.p = prefix
+        
+        options = [
+            discord.SelectOption(label="AI & Utilities", description="Chat, Summarize, AFK, Bookmarks", emoji="🤖", value="ai"),
+            discord.SelectOption(label="Economy & Gambling", description="JenCoins, Work, Slots, Shop", emoji="💰", value="eco"),
+            discord.SelectOption(label="Daily & Social", description="Check-in, Horoscope, Roasts", emoji="🌟", value="social"),
+            discord.SelectOption(label="Media & Games", description="Music, Steam Deals", emoji="🎵", value="media"),
+            discord.SelectOption(label="Finance", description="Currency, Gold, Silver", emoji="💱", value="finance"),
+        ]
+        
+        if ctx.author.id == ctx.bot.owner_id or ctx.author.guild_permissions.administrator:
+            options.append(discord.SelectOption(label="Admin Setup", description="Owner/Admin Commands", emoji="👑", value="admin"))
+            
+        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This help menu is not for you! Type `!help` to open your own.", ephemeral=True)
+            return
+
+        p = self.p
+        val = self.values[0]
+        bot_name = self.ctx.bot.user.name
+        
+        embed = discord.Embed(color=discord.Color.purple())
+        
+        if val == "ai":
+            embed.title = "🤖 AI & Utilities"
+            embed.add_field(name="AI Chat", value=f"Simply mention the bot (`@{bot_name}`) followed by your question.", inline=False)
+            embed.add_field(name="AI Tools", value=f"`{p}tldr [count]` - Summarize chat\n`{p}clear` - Clear AI memory", inline=False)
+            embed.add_field(name="Utilities", value=f"`{p}dict [word]` - Dictionary\n`{p}afk [reason]` - Set AFK status", inline=False)
+            embed.add_field(name="Bookmarks", value=f"Reply with `{p}pin` to pin\n`{p}pins` - View pins\n`{p}unpin [num]` - Remove pin", inline=False)
+            
+        elif val == "eco":
+            embed.title = "💰 Economy & Gambling"
+            embed.add_field(name="JenCoins", value=f"`{p}daily` - Claim daily coins\n`{p}work` - Work for coins\n`{p}bal [@user]` - Check balance\n`{p}give @user [amount]` - Send coins\n`{p}top` - Richest users\n`{p}history` - View transactions", inline=False)
+            embed.add_field(name="Gambling", value=f"`{p}flip [bet] [h/t]` - Coin flip\n`{p}slots [bet]` - Slot machine\n`{p}bj [bet]` - Play Blackjack", inline=False)
+            embed.add_field(name="Events & Shop", value=f"`{p}shop` - Browse the shop\n`{p}buy [item]` - Purchase an item\n`{p}inv` - View owned items\n`{p}rain` - Catch falling coins", inline=False)
+            
+        elif val == "social":
+            embed.title = "🌟 Daily & Social"
+            embed.add_field(name="Daily Check-in", value=f"`{p}ck [note]` - Check in\n`{p}streak` - View streak\n`{p}lb` - Leaderboard", inline=False)
+            embed.add_field(name="Horoscope", value=f"`{p}reg` - Register\n`{p}mod` - Modify sign\n`{p}modtz` - Modify Timezone\n`{p}list` - Show in channel\n`{p}remove` - Remove record", inline=False)
+            embed.add_field(name="Fun", value=f"`{p}c` - Cat Picture\n`{p}cf` - Cat Fact\n`{p}roast @user` - AI Roast", inline=False)
+            
+        elif val == "media":
+            embed.title = "🎵 Media & Games"
+            embed.add_field(name="Music", value=f"`{p}ss [query]` - Search song\n`{p}d [number]` - Download song", inline=False)
+            embed.add_field(name="Games", value=f"`{p}deals` - Top Steam Deals\n`{p}price [game]` - Check Game Price", inline=False)
+            
+        elif val == "finance":
+            embed.title = "💱 Finance"
+            embed.add_field(name="Currency Exchange", value=f"`{p}usd` - Get Daily Rates\n`{p}usd 100 myr` - Convert (Daily Rate)\n`{p}liverate` or `{p}r [amount] <src> <tgt>` - Convert (LIVE)", inline=False)
+            embed.add_field(name="Precious Metals", value=f"`{p}gold [currency]` - Gold Price\n`{p}silver [currency]` - Silver Price", inline=False)
+            
+        elif val == "admin":
+            embed.title = "👑 Admin Setup"
+            embed.description = "Owner/Administrator Commands"
+            embed.add_field(name="Economy Controls", value=f"`{p}addcoins @user [amt]` - Give coins\n`{p}takecoins @user [amt]` - Take coins\n`{p}rainrate [0-100]` - Set random rain %\n`{p}rainamount [min] [max]` - Set prize range\n`{p}raintotal [amt]` - Set jackpot pool\n`{p}rain` - Force start rain", inline=False)
+            embed.add_field(name="System", value=f"`{p}olist` - List active users\n`{p}test` - Test horoscope delivery", inline=False)
+            
+        embed.set_footer(text="Made with ❤️ by Jenny")
+        await interaction.response.edit_message(embed=embed)
+
+
+class HelpView(discord.ui.View):
+    def __init__(self, ctx, prefix):
+        super().__init__(timeout=120)
+        self.add_item(HelpDropdown(ctx, prefix))
+
+
 @bot.command(name='help')
 async def help_command(ctx):
-    p = COMMAND_PREFIX
-    embed = discord.Embed(title=f"{bot.user.name} Help", description="This bot provides AI Chat, Currency Exchange, and Horoscope functionalities.", color=discord.Color.purple())
-    embed.add_field(name="🤖 AI Chat Functionality", value=f"To chat with the AI, simply mention the bot (`@{bot.user.name}`) followed by your question.", inline=False)
-    embed.add_field(name=f"💱 Currency Exchange (Prefix: `{p}`)", value=(f"**Get Daily Rates:** `{p}usd`\n" f"**Convert (Daily Rate):** `{p}usd 100 myr`\n" f"**Convert (LIVE Rate):** `{p}liverate` or `{p}r [amount] <source> <target>`\n\n" f"Click `📈` to see a graph for daily rate conversions."), inline=False)
-    embed.add_field(name=f"✨ Daily Horoscope (Prefix: `{p}`)", value=(f"**Register:** `{p}reg`\n" f"**Modify Sign:** `{p}mod`\n" f"**Modify Timezone:** `{p}modtz`\n" f"**Remove your record:** `{p}remove`\n" f"**Show in channel:** `{p}list`\n\n" f"Receive a daily horoscope in your timezone!"), inline=False)
-    embed.add_field(name=f"🎵 Music Download (Prefix: `{p}`)", value=(f"**Search for a song:** `{p}ss [query]`\n" f"**Download a song from results:** `{p}d [number]`"), inline=False)
-    embed.add_field(name=f"🐱 Fun Commands (Prefix: `{p}`)", value=(f"**Cat Picture:** `{p}c`\n" f"**Cat Fact:** `{p}cf`\n" f"**Roast someone:** `{p}roast @user`"), inline=False)
-    embed.add_field(name=f"🎮 Game Deals (Prefix: `{p}`)", value=(f"**Top Steam Deals:** `{p}deals`\n" f"**Check Game Price:** `{p}price [game name]`"), inline=False)
-    embed.add_field(name=f"📚 Utility Commands (Prefix: `{p}`)", value=(f"**Dictionary:** `{p}dict [word]`\n" f"**Gold Price:** `{p}gold [currency]`\n" f"**Silver Price:** `{p}silver [currency]`"), inline=False)
-    embed.add_field(name=f"📝 Daily Check-in (Prefix: `{p}`)", value=(f"**Check in:** `{p}ck [note]`\n" f"**Your streak:** `{p}streak`\n" f"**Leaderboard:** `{p}lb`\n" f"Once per day, resets at midnight GMT+8."), inline=False)
-    embed.add_field(name=f"🧹 AI Tools", value=(f"**Summarize chat:** `{p}tldr [count]`\n" f"**Clear AI memory:** `{p}clear`\n" f"The AI remembers your last few messages."), inline=False)
-    embed.add_field(name=f"💤 AFK", value=(f"**Set AFK:** `{p}afk [reason]`\n" f"Auto-clears when you send a message."), inline=False)
-    embed.add_field(name=f"📌 Bookmarks", value=(f"**Pin:** Reply to a message with `{p}pin`\n" f"**View pins:** `{p}pins`\n" f"**Remove pin:** `{p}unpin [number]`"), inline=False)
-    embed.add_field(name=f"💰 JenCoin Economy", value=(f"**Daily coins:** `{p}daily`\n" f"**Work for coins:** `{p}work`\n" f"**Balance:** `{p}bal [@user]`\n" f"**Give coins:** `{p}give @user [amount]`\n" f"**Richest users:** `{p}top`\n" f"**Check history:** `{p}history`\n" f"**Coin flip:** `{p}flip [bet] [h/t]`\n" f"**Slot machine:** `{p}slots [bet]`"), inline=False)
-
-    if ctx.author.id == bot.owner_id or ctx.author.guild_permissions.administrator:
-        embed.add_field(name=f"👑 Admin Commands", value=f"**Add Coins:** `{p}addcoins @user [amount]`\n**Take Coins:** `{p}takecoins @user [amount]`\n**List all users:** `{p}olist`\n**Test horoscope:** `{p}test`", inline=False)
+    embed = discord.Embed(
+        title=f"{bot.user.name} Help Menu 📖",
+        description="Welcome to the help menu! Please select a category from the dropdown below to view the available commands.",
+        color=discord.Color.purple()
+    )
+    embed.set_thumbnail(url=bot.user.display_avatar.url if bot.user.display_avatar else None)
     embed.set_footer(text="Made with ❤️ by Jenny")
-    await ctx.send(embed=embed)
+    
+    view = HelpView(ctx, COMMAND_PREFIX)
+    await ctx.send(embed=embed, view=view)
 
 
 # --- Main ---
