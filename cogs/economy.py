@@ -341,6 +341,16 @@ class Economy(commands.Cog):
         embed.set_footer(text=f"Current Balance: {bal:,} JC")
         await ctx.send(embed=embed)
 
+    # --- Blackjack ---
+
+    @commands.command(name='blackjack', aliases=['bj'])
+    async def bj_command(self, ctx: commands.Context, amount: int = None):
+        """Play a game of Blackjack! 🃏"""
+        if not await validate_bet(ctx, amount): return
+
+        view = BlackjackView(ctx, amount)
+        await view.start_game()
+
     # --- Admin Commands ---
 
     @commands.command(name='addcoins', aliases=['addjc'])
@@ -361,6 +371,146 @@ class Economy(commands.Cog):
         log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
         await ctx.send(f"✅ Removed **{amount:,}** JenCoins from {member.mention}. New balance: **{new_bal:,}**.")
 
+# --- Blackjack Game Logic ---
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, ctx, bet):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.bet = bet
+        self.deck = self.create_deck()
+        self.player_hand = [self.draw_card(), self.draw_card()]
+        self.dealer_hand = [self.draw_card(), self.draw_card()]
+        self.message = None
+        self.game_over = False
+
+    def create_deck(self):
+        suits = ['♠️', '♥️', '♣️', '♦️']
+        ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+        deck = [f"{r} {s}" for r in ranks for s in suits]
+        random.shuffle(deck)
+        return deck
+
+    def draw_card(self):
+        return self.deck.pop()
+
+    def calculate_value(self, hand):
+        value = 0
+        aces = 0
+        for card in hand:
+            rank = card.split()[0]
+            if rank in ['J', 'Q', 'K']: value += 10
+            elif rank == 'A':
+                value += 11
+                aces += 1
+            else: value += int(rank)
+        
+        while value > 21 and aces:
+            value -= 10
+            aces -= 1
+        return value
+
+    def get_hand_str(self, hand, hide_first=False):
+        if hide_first:
+            return f"❓ | {hand[1]}"
+        return " | ".join(hand)
+
+    async def start_game(self):
+        player_val = self.calculate_value(self.player_hand)
+        if player_val == 21:
+            await self.finish_game("Blackjack! 🎊", win=True)
+            return
+
+        embed = self.make_embed()
+        self.message = await self.ctx.send(embed=embed, view=self)
+
+    def make_embed(self, finished=False):
+        player_val = self.calculate_value(self.player_hand)
+        dealer_val = self.calculate_value(self.dealer_hand)
+        
+        embed = discord.Embed(title="🃏 Blackjack Table", color=discord.Color.blue())
+        embed.add_field(name=f"Your Hand ({player_val})", value=self.get_hand_str(self.player_hand), inline=False)
+        
+        if finished:
+            embed.add_field(name=f"Dealer's Hand ({dealer_val})", value=self.get_hand_str(self.dealer_hand), inline=False)
+        else:
+            embed.add_field(name="Dealer's Hand", value=self.get_hand_str(self.dealer_hand, hide_first=True), inline=False)
+        
+        embed.set_footer(text=f"Bet: {self.bet:,} JC")
+        return embed
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, emoji="➕")
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id: return
+        
+        self.player_hand.append(self.draw_card())
+        val = self.calculate_value(self.player_hand)
+        
+        if val > 21:
+            await interaction.response.defer()
+            await self.finish_game("Bust! 💥 You went over 21.", win=False)
+        elif val == 21:
+            await interaction.response.defer()
+            await self.stand_logic()
+        else:
+            await interaction.response.edit_message(embed=self.make_embed())
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.grey, emoji="🛑")
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id: return
+        await interaction.response.defer()
+        await self.stand_logic()
+
+    async def stand_logic(self):
+        # Dealer's turn
+        while self.calculate_value(self.dealer_hand) < 17:
+            self.dealer_hand.append(self.draw_card())
+        
+        p_val = self.calculate_value(self.player_hand)
+        d_val = self.calculate_value(self.dealer_hand)
+        
+        if d_val > 21:
+            await self.finish_game("Dealer Busts! 🥳", win=True)
+        elif d_val > p_val:
+            await self.finish_game("Dealer wins. 📉", win=False)
+        elif d_val < p_val:
+            await self.finish_game("You win! 🏆", win=True)
+        else:
+            await self.finish_game("It's a Tie! (Push) 🤝", win=None)
+
+    async def finish_game(self, result_text, win):
+        self.game_over = True
+        self.stop()
+        
+        uid = str(self.ctx.author.id)
+        if win is True:
+            new_bal = add_balance(uid, self.bet)
+            log_transaction(uid, self.bet, "Blackjack Win")
+            color = discord.Color.green()
+        elif win is False:
+            new_bal = add_balance(uid, -self.bet)
+            log_transaction(uid, -self.bet, "Blackjack Loss")
+            color = discord.Color.red()
+        else: # Tie
+            new_bal = get_balance(uid)
+            log_transaction(uid, 0, "Blackjack Push")
+            color = discord.Color.blue()
+
+        embed = self.make_embed(finished=True)
+        embed.title = f"🃏 {result_text}"
+        embed.color = color
+        embed.add_field(name="ResultBalance", value=f"**{new_bal:,}** JenCoins", inline=False)
+        
+        if self.message:
+            await self.message.edit(embed=embed, view=None)
+        else:
+            await self.ctx.send(embed=embed)
+
+    async def on_timeout(self):
+        if not self.game_over:
+            await self.finish_game("Game Timed Out (Bust)", win=False)
+
 
 async def setup(bot):
     await bot.add_cog(Economy(bot))
+
