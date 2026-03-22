@@ -1,11 +1,12 @@
-# cogs/economy.py — JenCoin economy: wallet, daily, gambling, transfers
 import os
 import random
 import sqlite3
 import time
+from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands
 from config import COMMAND_PREFIX
+from utils.storage import load_user_data
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'economy.db')
 
@@ -29,91 +30,76 @@ WORK_MIN = 20
 WORK_MAX = 50
 STARTING_BALANCE = 0
 
-STARTING_BALANCE = 0
-
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '', last_work TEXT DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, amount INTEGER, type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
-    
-    # Migration: Add last_work column if it doesn't exist (for existing databases)
     try:
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
     except sqlite3.OperationalError:
-        pass # Column already exists
-        
+        pass
     conn.commit()
     return conn
 
+def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
+    conn = get_db()
+    cursor = conn.execute(query, params)
+    result = None
+    if fetchone: result = cursor.fetchone()
+    if fetchall: result = cursor.fetchall()
+    if commit: conn.commit()
+    conn.close()
+    return result
 
 def log_transaction(user_id: str, amount: int, trans_type: str):
-    conn = get_db()
-    # Store as a Unix timestamp (integer) for Discord dynamic time support
     ts = int(time.time())
-    conn.execute("INSERT INTO transactions (user_id, amount, type, timestamp) VALUES (?, ?, ?, ?)", (user_id, amount, trans_type, ts))
-    conn.commit()
-    conn.close()
-
+    db_query("INSERT INTO transactions (user_id, amount, type, timestamp) VALUES (?, ?, ?, ?)", (user_id, amount, trans_type, ts), commit=True)
 
 def get_balance(user_id: str) -> int:
-    conn = get_db()
-    row = conn.execute("SELECT balance FROM wallets WHERE user_id = ?", (user_id,)).fetchone()
-    conn.close()
+    row = db_query("SELECT balance FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
     return row[0] if row else STARTING_BALANCE
 
-
 def set_balance(user_id: str, amount: int):
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = ?",
-        (user_id, amount, amount)
-    )
-    conn.commit()
-    conn.close()
-
+    db_query("INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = ?", (user_id, amount, amount), commit=True)
 
 def add_balance(user_id: str, amount: int) -> int:
-    bal = get_balance(user_id)
-    new_bal = max(0, bal + amount)
+    new_bal = max(0, get_balance(user_id) + amount)
     set_balance(user_id, new_bal)
     return new_bal
 
-
 def get_last_daily(user_id: str) -> str:
-    conn = get_db()
-    row = conn.execute("SELECT last_daily FROM wallets WHERE user_id = ?", (user_id,)).fetchone()
-    conn.close()
+    row = db_query("SELECT last_daily FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
     return row[0] if row else ""
 
-
 def set_last_daily(user_id: str, date_str: str):
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO wallets (user_id, last_daily) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_daily = ?",
-        (user_id, date_str, date_str)
-    )
-    conn.commit()
-    conn.close()
+    db_query("INSERT INTO wallets (user_id, last_daily) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_daily = ?", (user_id, date_str, date_str), commit=True)
 
 def get_last_work(user_id: str) -> str:
-    conn = get_db()
-    row = conn.execute("SELECT last_work FROM wallets WHERE user_id = ?", (user_id,)).fetchone()
-    conn.close()
+    row = db_query("SELECT last_work FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
     return row[0] if row else ""
 
 def set_last_work(user_id: str, ts_str: str):
-    conn = get_db()
-    conn.execute("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str))
-    conn.commit()
-    conn.close()
-
+    db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
 
 def get_top_balances(limit=10) -> list:
-    conn = get_db()
-    rows = conn.execute("SELECT user_id, balance FROM wallets ORDER BY balance DESC LIMIT ?", (limit,)).fetchall()
-    conn.close()
-    return rows
+    return db_query("SELECT user_id, balance FROM wallets ORDER BY balance DESC LIMIT ?", (limit,), fetchall=True)
+
+async def validate_bet(ctx: commands.Context, amount: int):
+    if amount is None or amount <= 0:
+        await ctx.send("❌ Please provide a positive bet amount!")
+        return False
+    bal = get_balance(str(ctx.author.id))
+    if bal < amount:
+        await ctx.send(f"❌ You only have **{bal:,}** JenCoins.")
+        return False
+    return True
+
+async def validate_admin_amount(ctx: commands.Context, amount: int):
+    if amount <= 0:
+        await ctx.send("❌ Amount must be positive.")
+        return False
+    return True
 
 
 class Economy(commands.Cog):
@@ -137,8 +123,6 @@ class Economy(commands.Cog):
     async def daily_command(self, ctx: commands.Context):
         """Claim your daily JenCoins!"""
         uid = str(ctx.author.id)
-        from datetime import datetime, timezone, timedelta
-        # Use GMT+8 for the daily reset logic (standard for your server)
         now_gmt8 = datetime.now(timezone(timedelta(hours=8)))
         today = now_gmt8.strftime("%Y-%m-%d")
         last = get_last_daily(uid)
@@ -262,11 +246,9 @@ class Economy(commands.Cog):
     @commands.command(name='flip', aliases=['coinflip'])
     async def flip_command(self, ctx: commands.Context, amount: int = None, side: str = None):
         """Flip a coin! Guess 'h' or 't'. Win = double, Lose = nothing."""
-        if amount is None or side is None:
+        if not await validate_bet(ctx, amount): return
+        if side is None:
             await ctx.send(f"Usage: `{COMMAND_PREFIX}flip [amount] [h/t]` — bet your JenCoins on heads or tails!")
-            return
-        if amount <= 0:
-            await ctx.send("Bet must be positive!")
             return
 
         side = side.lower()
@@ -275,35 +257,24 @@ class Economy(commands.Cog):
             return
 
         uid = str(ctx.author.id)
-        bal = get_balance(uid)
-        if bal < amount:
-            await ctx.send(f"❌ You only have **{bal:,}** JenCoins.")
-            return
-
         outcome = random.choice(['h', 't'])
         user_choice = 'h' if side in ['h', 'heads'] else 't'
         won = (user_choice == outcome)
-
         outcome_full = "Heads" if outcome == 'h' else "Tails"
 
         if won:
             winnings = amount
             new_bal = add_balance(uid, winnings)
             log_transaction(uid, winnings, "Flip Win")
-            embed = discord.Embed(
-                title=f"🪙 Coin Flip — {outcome_full}!",
-                description=f"🎉 You guessed right!\nYou won **{winnings:,}** JenCoins!",
-                color=discord.Color.green()
-            )
+            color = discord.Color.green()
+            msg = f"🎉 You guessed right!\nYou won **{winnings:,}** JenCoins!"
         else:
             new_bal = add_balance(uid, -amount)
             log_transaction(uid, -amount, "Flip Loss")
-            embed = discord.Embed(
-                title=f"🪙 Coin Flip — {outcome_full}",
-                description=f"😢 You guessed wrong.\nYou lost **{amount:,}** JenCoins.",
-                color=discord.Color.red()
-            )
+            color = discord.Color.red()
+            msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JenCoins."
 
+        embed = discord.Embed(title=f"🪙 Coin Flip — {outcome_full}!", description=msg, color=color)
         embed.add_field(name="Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
         embed.set_footer(text=f"Bet: {amount:,} JC | Picked: {side}")
         await ctx.send(embed=embed)
@@ -311,46 +282,27 @@ class Economy(commands.Cog):
     @commands.command(name='slots', aliases=['slot'])
     async def slots_command(self, ctx: commands.Context, amount: int = None):
         """Spin the slot machine! 🎰"""
-        if amount is None:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}slots [amount]` — bet your JenCoins!")
-            return
-        if amount <= 0:
-            await ctx.send("Bet must be positive!")
-            return
+        if not await validate_bet(ctx, amount): return
 
         uid = str(ctx.author.id)
-        bal = get_balance(uid)
-        if bal < amount:
-            await ctx.send(f"❌ You only have **{bal:,}** JenCoins.")
-            return
-
-        # Spin 3 reels
         reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
         reel_display = " | ".join(reels)
 
-        # Determine outcome
         if reels[0] == reels[1] == reels[2]:
-            # Jackpot! 3 of a kind
             multiplier = SLOT_PAYOUTS.get(reels[0], 2)
             winnings = amount * multiplier
             new_bal = add_balance(uid, winnings)
             log_transaction(uid, winnings, f"Slots Win ({reels[0]})")
-            if reels[0] == "7️⃣":
-                title = "🎰 JACKPOT!!! 🎰"
-                desc = f"**[ {reel_display} ]**\n\n🤑 **MEGA JACKPOT!** You won **{winnings:,}** JenCoins! (x{multiplier})"
-            else:
-                title = "🎰 THREE OF A KIND!"
-                desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JenCoins! (x{multiplier})"
+            title = "🎰 JACKPOT!!! 🎰" if reels[0] == "7️⃣" else "🎰 THREE OF A KIND!"
+            desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JenCoins! (x{multiplier})"
             color = discord.Color.gold()
         elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
-            # 2 of a kind — return the bet (net 0)
-            new_bal = get_balance(uid)  # no change
+            new_bal = get_balance(uid)
             log_transaction(uid, 0, "Slots Draw")
             title = "🎰 Two of a Kind"
             desc = f"**[ {reel_display} ]**\n\n😌 Two match! You got your bet back."
             color = discord.Color.blue()
         else:
-            # No match — lose bet
             new_bal = add_balance(uid, -amount)
             log_transaction(uid, -amount, "Slots Loss")
             title = "🎰 No Match"
@@ -366,33 +318,22 @@ class Economy(commands.Cog):
     async def history_command(self, ctx: commands.Context):
         """View your last 5 economy transactions."""
         uid = str(ctx.author.id)
-        conn = get_db()
-        rows = conn.execute(
-            "SELECT amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5",
-            (uid,)
-        ).fetchall()
-        conn.close()
+        rows = db_query("SELECT amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5", (uid,), fetchall=True)
 
         if not rows:
             await ctx.send("📭 You haven't made any transactions yet!")
             return
 
         embed = discord.Embed(title=f"📜 {ctx.author.display_name}'s Recent Activity", color=discord.Color.blue())
-        
         history_text = ""
         for amount, trans_type, timestamp in rows:
             sign = "+" if amount > 0 else ""
             fmt_amount = f"{sign}{amount:,}" if amount != 0 else "0"
-            
-            # Use Discord's dynamic timestamp format <t:UNIX:f>
-            # This automatically shows the time in the viewer's local PC/Phone time!
             try:
                 ts_int = int(float(timestamp))
                 ts_display = f"<t:{ts_int}:f>"
             except (ValueError, TypeError):
-                # Fallback for old string timestamps
                 ts_display = f"`{timestamp}`"
-
             history_text += f"{ts_display} | **{trans_type}**: `{fmt_amount} JC`\n"
 
         embed.description = history_text
@@ -406,26 +347,18 @@ class Economy(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def addcoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin Only: Add JenCoins to a user."""
-        if amount <= 0:
-            await ctx.send("Amount must be positive.")
-            return
-        
+        if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), amount)
         log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})")
-        
         await ctx.send(f"✅ Added **{amount:,}** JenCoins to {member.mention}. New balance: **{new_bal:,}**.")
 
     @commands.command(name='takecoins', aliases=['removejc', 'takejc'])
     @commands.has_permissions(administrator=True)
     async def takecoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
         """Admin Only: Remove JenCoins from a user."""
-        if amount <= 0:
-            await ctx.send("Amount must be positive.")
-            return
-        
+        if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), -amount)
         log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
-        
         await ctx.send(f"✅ Removed **{amount:,}** JenCoins from {member.mention}. New balance: **{new_bal:,}**.")
 
 
