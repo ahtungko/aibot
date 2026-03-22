@@ -24,13 +24,23 @@ SLOT_PAYOUTS = {
 
 DAILY_BASE = 100        # base daily coins
 DAILY_STREAK_BONUS = 20 # extra per streak day (capped at 10)
+WORK_COOLDOWN = 3600  # 1 hour in seconds
+WORK_MIN = 20
+WORK_MAX = 50
 STARTING_BALANCE = 0
 
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '')")
+    conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '', last_work TEXT DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, amount INTEGER, type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
+    
+    # Migration: Add last_work column if it doesn't exist (for existing databases)
+    try:
+        conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass # Column already exists
+        
     conn.commit()
     return conn
 
@@ -79,6 +89,18 @@ def set_last_daily(user_id: str, date_str: str):
         "INSERT INTO wallets (user_id, last_daily) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_daily = ?",
         (user_id, date_str, date_str)
     )
+    conn.commit()
+    conn.close()
+
+def get_last_work(user_id: str) -> str:
+    conn = get_db()
+    row = conn.execute("SELECT last_work FROM wallets WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row else ""
+
+def set_last_work(user_id: str, ts_str: str):
+    conn = get_db()
+    conn.execute("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str))
     conn.commit()
     conn.close()
 
@@ -132,6 +154,44 @@ class Economy(commands.Cog):
             color=discord.Color.green()
         )
         embed.add_field(name="New Balance", value=f"**{new_bal:,}** JenCoins", inline=False)
+        await ctx.send(embed=embed)
+
+    @commands.command(name='work', aliases=['job'])
+    async def work_command(self, ctx: commands.Context):
+        """Work for some JenCoins! (1 hour cooldown)"""
+        uid = str(ctx.author.id)
+        from datetime import datetime
+        now = datetime.now()
+        last_str = get_last_work(uid)
+        
+        if last_str:
+            last_ts = datetime.fromisoformat(last_str)
+            diff = (now - last_ts).total_seconds()
+            if diff < WORK_COOLDOWN:
+                remaining = int(WORK_COOLDOWN - diff)
+                mins = remaining // 60
+                secs = remaining % 60
+                await ctx.send(f"⏳ {ctx.author.mention}, you're exhausted! Come back in **{mins}m {secs}s**.")
+                return
+
+        reward = random.randint(WORK_MIN, WORK_MAX)
+        new_bal = add_balance(uid, reward)
+        set_last_work(uid, now.isoformat())
+        log_transaction(uid, reward, "Work Payment")
+
+        jobs = [
+            "cleaned the server kitchen", "coded a new feature", "moderated a spicy channel",
+            "organized the bot's database", "helped a new member", "fixed a bunch of bugs",
+            "wrote some elegant documentation", "designed a new logo", "streamed for 2 hours"
+        ]
+        job = random.choice(jobs)
+
+        embed = discord.Embed(
+            title="⚒️ Hard Work Pays Off!",
+            description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JenCoins!",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Wallet", value=f"**{new_bal:,}** JenCoins", inline=False)
         await ctx.send(embed=embed)
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
