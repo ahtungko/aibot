@@ -10,6 +10,7 @@ discord/abc.txt
 dashboard_data.json
 pins.json
 afk.json
+economy.db
 
 # --- Python ---
 __pycache__/

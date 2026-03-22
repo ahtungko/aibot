@@ -36,6 +36,7 @@ COGS = [
     'cogs.ai',
     'cogs.checkin',
     'cogs.currency',
+    'cogs.economy',
     'cogs.fun',
     'cogs.horoscope',
     'cogs.music',
@@ -132,6 +133,7 @@ async def help_command(ctx):
     embed.add_field(name=f"🧹 AI Tools", value=(f"**Summarize chat:** `{p}tldr [count]`\n" f"**Clear AI memory:** `{p}clear`\n" f"The AI remembers your last few messages."), inline=False)
     embed.add_field(name=f"💤 AFK", value=(f"**Set AFK:** `{p}afk [reason]`\n" f"Auto-clears when you send a message."), inline=False)
     embed.add_field(name=f"📌 Bookmarks", value=(f"**Pin:** Reply to a message with `{p}pin`\n" f"**View pins:** `{p}pins`\n" f"**Remove pin:** `{p}unpin [number]`"), inline=False)
+    embed.add_field(name=f"💰 JenCoin Economy", value=(f"**Daily coins:** `{p}daily`\n" f"**Balance:** `{p}bal [@user]`\n" f"**Give coins:** `{p}give @user [amount]`\n" f"**Richest users:** `{p}top`\n" f"**Coin flip:** `{p}flip [bet]`\n" f"**Slot machine:** `{p}slots [bet]`"), inline=False)
 
     if ctx.author.id == bot.owner_id:
         embed.add_field(name=f"👑 Owner Commands", value=f"**List all horoscope users:** `{p}olist`\n**Test your horoscope DM:** `{p}test`", inline=False)
