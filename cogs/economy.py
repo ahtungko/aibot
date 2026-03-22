@@ -37,6 +37,7 @@ def get_db():
     conn.execute("CREATE TABLE IF NOT EXISTS wallets (user_id TEXT PRIMARY KEY, balance INTEGER DEFAULT 0, last_daily TEXT DEFAULT '', last_work TEXT DEFAULT '')")
     conn.execute("CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, amount INTEGER, type TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
     conn.execute("CREATE TABLE IF NOT EXISTS inventory (user_id TEXT, item_name TEXT, item_type TEXT, item_data TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     # Migration: Add last_work column if it doesn't exist
     try:
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
@@ -44,6 +45,13 @@ def get_db():
         pass
     conn.commit()
     return conn
+
+def get_setting(key: str, default: str = None) -> str:
+    row = db_query("SELECT value FROM settings WHERE key = ?", (key,), fetchone=True)
+    return row[0] if row else default
+
+def set_setting(key: str, value: str):
+    db_query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?", (key, value, value), commit=True)
 
 def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn = get_db()
@@ -96,15 +104,33 @@ def get_inventory(user_id):
 
 # --- Helpers ---
 
-async def validate_bet(ctx: commands.Context, amount: int):
-    if amount is None or amount <= 0:
-        await ctx.send("❌ Please provide a positive bet amount!")
-        return False
-    bal = get_balance(str(ctx.author.id))
+async def validate_bet(ctx: commands.Context, amount_str):
+    """
+    Validates a bet amount, handling commas and 'max'/'all'.
+    Returns (amount_int, error_message)
+    """
+    uid = str(ctx.author.id)
+    bal = get_balance(uid)
+
+    if amount_str is None:
+        return None, "❌ Please provide a positive bet amount!"
+
+    s = str(amount_str).lower().replace(',', '')
+    if s in ['max', 'all']:
+        amount = bal
+    else:
+        try:
+            amount = int(s)
+        except ValueError:
+            return None, "❌ Invalid amount! Use numbers or 'max'."
+
+    if amount <= 0:
+        return None, "❌ Please provide a positive bet amount!"
+    
     if bal < amount:
-        await ctx.send(f"❌ You only have **{bal:,}** JenCoins.")
-        return False
-    return True
+        return None, f"❌ You only have **{bal:,}** JenCoins."
+    
+    return amount, None
 
 async def validate_admin_amount(ctx: commands.Context, amount: int):
     if amount <= 0:
@@ -254,10 +280,14 @@ class Economy(commands.Cog):
 
     # --- Gambling ---
 
-    @commands.command(name='flip', aliases=['coinflip'])
-    async def flip_command(self, ctx: commands.Context, amount: int = None, side: str = None):
+    @commands.command(name='flip', aliases=['coinflip', 'cf'])
+    async def flip_command(self, ctx: commands.Context, amount: str = None, side: str = None):
         """Flip a coin! Guess 'h' or 't'. Win = double, Lose = nothing."""
-        if not await validate_bet(ctx, amount): return
+        val, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+        amount = val
         if side is None:
             await ctx.send(f"Usage: `{COMMAND_PREFIX}flip [amount] [h/t]` — bet your JenCoins on heads or tails!")
             return
@@ -291,9 +321,13 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='slots', aliases=['slot'])
-    async def slots_command(self, ctx: commands.Context, amount: int = None):
+    async def slots_command(self, ctx: commands.Context, amount: str = None):
         """Spin the slot machine! 🎰"""
-        if not await validate_bet(ctx, amount): return
+        val, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+        amount = val
 
         uid = str(ctx.author.id)
         reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
@@ -355,9 +389,13 @@ class Economy(commands.Cog):
     # --- Blackjack ---
 
     @commands.command(name='blackjack', aliases=['bj'])
-    async def bj_command(self, ctx: commands.Context, amount: int = None):
+    async def bj_command(self, ctx: commands.Context, amount: str = None):
         """Play a game of Blackjack! 🃏"""
-        if not await validate_bet(ctx, amount): return
+        val, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+        amount = val
 
         view = BlackjackView(ctx, amount)
         await view.start_game()
@@ -367,21 +405,64 @@ class Economy(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot: return
-        # 0.5% chance of random rain
-        if random.random() < 0.005:
+        # Dynamic rain rate (default 0.1% if not set)
+        rate_str = get_setting('rain_rate', '0.1')
+        try:
+            rate = float(rate_str) / 100.0
+        except ValueError:
+            rate = 0.001
+            
+        if random.random() < rate:
             await self.start_rain(message.channel)
 
     @commands.command(name='rain')
-    @commands.has_permissions(administrator=True)
+    @commands.is_owner()
     async def rain_command(self, ctx: commands.Context):
-        """Admin Only: Manually trigger a JenCoin Rain 🌧️"""
+        """Owner Only: Manually trigger a JenCoin Rain 🌧️"""
         await self.start_rain(ctx.channel)
 
+    @commands.command(name='rainrate')
+    @commands.is_owner()
+    async def rainrate_command(self, ctx: commands.Context, rate: float):
+        """Owner Only: Set the percentage chance of random rain (0-100)."""
+        if 0 <= rate <= 100:
+            set_setting('rain_rate', str(rate))
+            await ctx.send(f"✅ Random rain rate set to **{rate}%**.")
+        else:
+            await ctx.send("❌ Please provide a rate between 0 and 100.")
+
+    @commands.command(name='rainamount')
+    @commands.is_owner()
+    async def rainamount_command(self, ctx: commands.Context, min_amt: int, max_amt: int):
+        """Owner Only: Set the min/max JenCoins awarded in a rain catch."""
+        if 0 < min_amt <= max_amt:
+            set_setting('rain_min', str(min_amt))
+            set_setting('rain_max', str(max_amt))
+            await ctx.send(f"✅ Rain catch range set to **{min_amt:,} - {max_amt:,} JC**.")
+        else:
+            await ctx.send("❌ Invalid range! Ensure 0 < min <= max.")
+
+    @commands.command(name='raintotal')
+    @commands.is_owner()
+    async def raintotal_command(self, ctx: commands.Context, total: int):
+        """Owner Only: Set the total JenCoin pool for a rain event."""
+        if total > 0:
+            set_setting('rain_pool', str(total))
+            await ctx.send(f"✅ Total rain pool set to **{total:,} JC**.")
+        else:
+            await ctx.send("❌ Please provide a positive amount.")
+
     async def start_rain(self, channel):
-        view = RainView()
+        # Fetch pool or use default
+        try:
+            pool = int(get_setting('rain_pool', '500'))
+        except (ValueError, TypeError):
+            pool = 500
+            
+        view = RainView(pool=pool)
         embed = discord.Embed(
             title="🌧️ IT'S RAINING JENCOINS!",
-            description="Quick! Click the button below to catch some before they hit the ground!\n\n**Limit: First 5 people!**",
+            description=f"A total pool of **{pool:,} JC** is falling! Quick! Click below to catch some!\n\n**Catch 'em before the pool runs dry!**",
             color=discord.Color.blue()
         )
         embed.set_thumbnail(url="https://cdn.pixabay.com/animation/2023/03/19/02/45/02-45-20-441_512.gif")
@@ -495,18 +576,18 @@ class Economy(commands.Cog):
     # --- Admin Commands ---
 
     @commands.command(name='addcoins', aliases=['addjc'])
-    @commands.has_permissions(administrator=True)
+    @commands.is_owner()
     async def addcoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Admin Only: Add JenCoins to a user."""
+        """Owner Only: Add JenCoins to a user."""
         if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), amount)
         log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})")
         await ctx.send(f"✅ Added **{amount:,}** JenCoins to {member.mention}. New balance: **{new_bal:,}**.")
 
     @commands.command(name='takecoins', aliases=['removejc', 'takejc'])
-    @commands.has_permissions(administrator=True)
+    @commands.is_owner()
     async def takecoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
-        """Admin Only: Remove JenCoins from a user."""
+        """Owner Only: Remove JenCoins from a user."""
         if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), -amount)
         log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
@@ -654,9 +735,9 @@ class BlackjackView(discord.ui.View):
 # --- Rain Event Logic ---
 
 class RainView(discord.ui.View):
-    def __init__(self, limit=5):
+    def __init__(self, pool):
         super().__init__(timeout=60)
-        self.limit = limit
+        self.pool = pool
         self.winners = []
         self.message = None
 
@@ -669,15 +750,31 @@ class RainView(discord.ui.View):
             await interaction.response.send_message("❌ You already caught some rain! Let others have a chance.", ephemeral=True)
             return
 
-        amount = random.randint(20, 100)
+        if self.pool <= 0:
+            await interaction.response.send_message("❌ The rain has already dried up!", ephemeral=True)
+            return
+
+        # Fetch dynamic range or use defaults
+        try:
+            r_min = int(get_setting('rain_min', '20'))
+            r_max = int(get_setting('rain_max', '100'))
+        except (ValueError, TypeError):
+            r_min, r_max = 20, 100
+
+        # Amount is random but capped by the remaining pool
+        amount = random.randint(r_min, r_max)
+        if amount > self.pool:
+            amount = self.pool
+        
+        self.pool -= amount
         new_bal = add_balance(uid, amount)
         log_transaction(uid, amount, "Caught Rain")
         
         self.winners.append({'id': uid, 'name': interaction.user.display_name, 'amount': amount})
         
-        await interaction.response.send_message(f"🧤 **CATCH!** You caught **{amount}** JenCoins! (New Balance: {new_bal:,})", ephemeral=True)
+        await interaction.response.send_message(f"🧤 **CATCH!** You caught **{amount}** JenCoins! (Remaining Pool: {self.pool:,})", ephemeral=True)
 
-        if len(self.winners) >= self.limit:
+        if self.pool <= 0:
             await self.finish_rain()
 
     async def finish_rain(self):
