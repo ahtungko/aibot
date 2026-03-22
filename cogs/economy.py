@@ -28,7 +28,7 @@ DAILY_BASE = 100        # base daily coins
 DAILY_STREAK_BONUS = 20 # extra per streak day (capped at 10)
 WORK_COOLDOWN = 3600  # 1 hour in seconds
 WORK_MIN = 20
-WORK_MAX = 50
+WORK_MAX = 500
 STARTING_BALANCE = 0
 
 
