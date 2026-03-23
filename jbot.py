@@ -195,6 +195,7 @@ class HelpDropdown(discord.ui.Select):
             embed.description = "Owner/Administrator Commands"
             embed.add_field(name="Economy Controls", value=f"`{p}addcoins @user [amt]` - Give coins\n`{p}takecoins @user [amt]` - Take coins\n`{p}grantvip @user [days]` - Give VIP", inline=False)
             embed.add_field(name="Rain Controls", value=f"`{p}rainrate [0-100]` - Set random rain %\n`{p}rainamount [min] [max]` - Set prize range\n`{p}raintotal [amt]` - Set jackpot pool\n`{p}rain` - Force start rain", inline=False)
+            embed.add_field(name="Mystery Box", value=f"`{p}setbox [leg%] [epic%] [rare%] [min]` - Start loot event\n`{p}boxrates` - View current box rates", inline=False)
             embed.add_field(name="System", value=f"`{p}olist` - List active users\n`{p}test` - Test horoscope delivery", inline=False)
             
         embed.set_footer(text="Made with ❤️ by Jenny")

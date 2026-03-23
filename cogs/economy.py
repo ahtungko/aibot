@@ -267,6 +267,30 @@ def track_gold_fee(amount: float):
     current = float(get_setting("gold_fee_vault", "0.0"))
     set_setting("gold_fee_vault", str(current + amount))
 
+def get_box_rates():
+    """Returns the currently active Mystery Box loot rates."""
+    now = int(time.time())
+    expiry = int(float(get_setting('box_event_expiry', '0')))
+    
+    if now < expiry:
+        leg = float(get_setting('box_legendary_event', '0.001'))
+        epic = float(get_setting('box_epic_event', '0.01'))
+        rare = float(get_setting('box_rare_event', '0.03'))
+        is_event = True
+    else:
+        leg = float(get_setting('box_legendary_rate', '0.001'))
+        epic = float(get_setting('box_epic_rate', '0.01'))
+        rare = float(get_setting('box_rare_rate', '0.03'))
+        is_event = False
+        
+    return {
+        'legendary': leg,
+        'epic': epic,
+        'rare': rare,
+        'is_event': is_event,
+        'expiry': expiry
+    }
+
 def get_last_gold_fee(user_id: str):
     res = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True)
     return int(res[0]) if res else None
@@ -705,6 +729,7 @@ class Economy(commands.Cog):
                         f"✨ **Payment:** {pay_msg}\n\n"
                         f"✨ **Exclusive Perks:**\n"
                         f"- 🪙 **Market Discount:** Gold fees reduced from **5%** to **2%**.\n"
+                        f"- ⚒️ **Tax Haven:** Work taxes reduced from **5%** to **2%**.\n"
                         f"- 🥷 **Low Bail:** Failed robbery fines reduced from **10%** to **5%**.\n"
                         f"- 📉 **Vault Access:** Weekly Gold storage fees reduced from **10%** to **8%**.\n"
                         f"- 🛡️ **Elusive:** You are **10% harder to rob** than normal players.\n\n"
@@ -991,7 +1016,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='rob', aliases=['steal', 'stolen'])
     async def rob_command(self, ctx: commands.Context, member: discord.Member = None):
-        """Try to rob another user's JC! (4 hour cooldown)"""
+        """Try to rob another user's JC! (20 minute cooldown)"""
         if not member:
             await ctx.send(f"Usage: `{COMMAND_PREFIX}rob @user`")
             return
@@ -1009,7 +1034,7 @@ class Economy(commands.Cog):
         
         # Cooldown Check
         now = int(time.time())
-        cooldown = 4 * 3600 # 4 hours
+        cooldown = 20 * 60 # 20 minutes
         last_str = get_last_rob(uid)
         if last_str:
             try:
@@ -1017,7 +1042,7 @@ class Economy(commands.Cog):
                 diff = now - last_ts
                 if diff < cooldown:
                     rem = cooldown - diff
-                    await ctx.send(f"⏳ {ctx.author.mention}, you're still lying low! Try again in **{rem//3600}h {(rem%3600)//60}m**.")
+                    await ctx.send(f"⏳ {ctx.author.mention}, you're still lying low! Try again in **{rem//60}m {rem%60}s**.")
                     return
             except ValueError: pass
 
@@ -1119,8 +1144,9 @@ class Economy(commands.Cog):
             gold_fine_vault = 0
             gold_msg = ""
             if t_gold > 0.001:
-                gold_fine_victim = int(t_gold * 0.05 * 1000) / 1000.0
-                gold_fine_vault = int(t_gold * 0.05 * 1000) / 1000.0
+                # 5% to victim, 5% to vault (10% total)
+                gold_fine_victim = round(t_gold * 0.05, 3)
+                gold_fine_vault = round(t_gold * 0.05, 3)
                 
                 add_gold_grams(uid, -(gold_fine_victim + gold_fine_vault))
                 add_gold_grams(vid, gold_fine_victim)
@@ -1128,37 +1154,29 @@ class Economy(commands.Cog):
                 
                 log_transaction(uid, 0, f"Robbery Fine: {gold_fine_victim}g to victim, {gold_fine_vault}g to vault")
                 log_transaction(vid, 0, f"Restitution: Received {gold_fine_victim}g from failed thief")
-                gold_msg = f"\n⚠️ **FATAL**: You also paid **{gold_fine_victim}g** to {member.name} and **{gold_fine_vault}g** as legal fees!"
+                gold_msg = f"\n⚠️ **EXTRA**: You also paid **{gold_fine_victim}g** to {member.display_name} and **{gold_fine_vault}g** in legal fees!"
 
-            embed = discord.Embed(title="👮 Robbery Failed!", color=discord.Color.red())
-            embed.description = f"You were caught trying to rob {member.mention}!{gold_msg}"
-            embed.add_field(name="Fine Paid", value=f"**{fine:,}** JC ({pay_msg})", inline=True)
-            embed.add_field(name="Restitution", value=f"**{restitution:,}** JC (Paid to Victim)", inline=True)
-            if gold_fine_victim > 0:
-                embed.add_field(name="Gold Penalty", value=f"**{gold_fine_victim + gold_fine_vault}g**", inline=True)
-            embed.set_footer(text="Better luck next time... if you still have teeth.")
-            await ctx.send(embed=embed)
-            log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""))
-            log_transaction(vid, restitution, f"Compensated for Attempted Robbery")
-            
+            # Consolidate failure embed
             if has_shield:
                 remove_item(vid, "Vault Shield")
                 embed = discord.Embed(title="🛡️ SHIELD ACTIVATED!", color=discord.Color.blue())
                 embed.description = (f"{member.mention}'s **Vault Shield** blocked the robbery attempt!\n\n"
-                                    f"🚔 {ctx.author.mention} was caught and forced to pay a fine.")
-                embed.add_field(name="Thief Paid", value=f"**{fine:,}** JC", inline=True)
-                embed.add_field(name="Victim Restitution", value=f"**{restitution:,}** JC", inline=True)
-                embed.add_field(name="Vault Fees", value=f"**{legal_fee:,}** JC", inline=True)
-                embed.set_footer(text="The shield was consumed in the process.")
+                                     f"🚔 {ctx.author.mention} was still caught and forced to pay a fine.{gold_msg}")
             else:
                 embed = discord.Embed(title="🚔 CAUGHT IN THE ACT!", color=discord.Color.red())
-                embed.description = (f"You were spotted and forced to pay a fine to {member.mention}!\n\n"
-                                    f"💸 **You lost {fine:,} JC**. ({pay_msg})")
-                embed.add_field(name="Victim Restitution", value=f"**{restitution:,}** JC", inline=True)
-                embed.add_field(name="Legal Fees", value=f"**{legal_fee:,}** JC (Sent to Vault)", inline=True)
-                embed.set_footer(text="Better luck next time, thief!")
+                embed.description = f"You were spotted trying to rob {member.mention} and forced to pay a fine!{gold_msg}"
+
+            embed.add_field(name="Fine Paid", value=f"**{fine:,}** JC ({pay_msg})", inline=True)
+            embed.add_field(name="Victim Restit.", value=f"**{restitution:,}** JC", inline=True)
+            embed.add_field(name="Legal Fees", value=f"**{legal_fee:,}** JC", inline=True)
             
+            if gold_fine_victim > 0:
+                embed.add_field(name="Gold Penalty", value=f"**{gold_fine_victim + gold_fine_vault:.3f}g**", inline=True)
+                
+            embed.set_footer(text="The law always catches up... eventually.")
             await ctx.send(embed=embed)
+            log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""))
+            log_transaction(vid, restitution, f"Compensated for Attempted Robbery")
 
     @commands.command(name='history', aliases=['logs', 'stats'])
     async def history_command(self, ctx: commands.Context):
@@ -1224,8 +1242,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='rainrate')
     @commands.is_owner()
-    async def rainrate_command(self, ctx: commands.Context, rate: float):
+    async def rainrate_command(self, ctx: commands.Context, rate: float = None):
         """Owner Only: Set the percentage chance of random rain (0-100)."""
+        if rate is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}rainrate [0-100]`")
+            return
         if 0 <= rate <= 100:
             set_setting('rain_rate', str(rate))
             await ctx.send(f"✅ Random rain rate set to **{rate}%**.")
@@ -1234,8 +1255,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='rainamount')
     @commands.is_owner()
-    async def rainamount_command(self, ctx: commands.Context, min_amt: int, max_amt: int):
+    async def rainamount_command(self, ctx: commands.Context, min_amt: int = None, max_amt: int = None):
         """Owner Only: Set the min/max JC awarded in a rain catch."""
+        if min_amt is None or max_amt is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}rainamount [min] [max]`")
+            return
         if 0 < min_amt <= max_amt:
             set_setting('rain_min', str(min_amt))
             set_setting('rain_max', str(max_amt))
@@ -1245,8 +1269,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='raintotal')
     @commands.is_owner()
-    async def raintotal_command(self, ctx: commands.Context, total: int):
+    async def raintotal_command(self, ctx: commands.Context, total: int = None):
         """Owner Only: Set the total JC pool for a rain event."""
+        if total is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}raintotal [amount]`")
+            return
         if total > 0:
             set_setting('rain_pool', str(total))
             await ctx.send(f"✅ Total rain pool set to **{total:,} JC**.")
@@ -1281,7 +1308,7 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="👑 **VIP Membership** — `10,000 JC`",
-            value="30 days of elite perks: **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, and **+10% Robbery defense**.\nUsage: `!buyvip`",
+            value="30 days of elite perks: **2% Work Tax**, **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, and **+10% Robbery defense**.\nUsage: `!buyvip`",
             inline=False
         )
         embed.add_field(
@@ -1389,10 +1416,11 @@ class Economy(commands.Cog):
             for _ in range(count):
                 res = random.random()
                 
-                # Dynamic loot rates
-                rate_leg = float(get_setting('box_legendary_rate', '0.001'))
-                rate_epic = float(get_setting('box_epic_rate', '0.01'))
-                rate_rare = float(get_setting('box_rare_rate', '0.03'))
+                # Dynamic loot rates (respects active events)
+                rates = get_box_rates()
+                rate_leg = rates['legendary']
+                rate_epic = rates['epic']
+                rate_rare = rates['rare']
                 
                 # Thresholds
                 thresh_leg = rate_leg
@@ -1781,8 +1809,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='addcoins', aliases=['addjc'])
     @commands.is_owner()
-    async def addcoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
+    async def addcoins_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
         """Owner Only: Add JC to a user."""
+        if member is None or amount is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}addcoins @user [amount]`")
+            return
         if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), amount)
         log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})")
@@ -1790,8 +1821,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='takecoins', aliases=['removejc', 'takejc'])
     @commands.is_owner()
-    async def takecoins_command(self, ctx: commands.Context, member: discord.Member, amount: int):
+    async def takecoins_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
         """Owner Only: Remove JC from a user."""
+        if member is None or amount is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}takecoins @user [amount]`")
+            return
         if not await validate_admin_amount(ctx, amount): return
         new_bal = add_balance(str(member.id), -amount)
         log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
@@ -1799,8 +1833,11 @@ class Economy(commands.Cog):
 
     @commands.command(name='grantvip', aliases=['givevip'])
     @commands.is_owner()
-    async def grantvip_command(self, ctx: commands.Context, member: discord.Member, days: int = 30):
+    async def grantvip_command(self, ctx: commands.Context, member: discord.Member = None, days: int = 30):
         """Owner Only: Grant VIP membership to a user."""
+        if member is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}grantvip @user [days]`")
+            return
         if days <= 0:
             await ctx.send("❌ Please provide a positive number of days.")
             return
@@ -1810,6 +1847,133 @@ class Economy(commands.Cog):
         log_transaction(str(member.id), 0, f"Admin VIP Grant ({days}d by {ctx.author.display_name})")
         
         await ctx.send(f"👑 Granted **{days} days** of VIP to {member.mention}!\n📅 Expires: <t:{expiry}:F> (<t:{expiry}:R>)")
+
+    @commands.command(name='setbox')
+    @commands.is_owner()
+    async def setbox_command(self, ctx: commands.Context, legendary: str = None, epic: str = None, rare: str = None, minutes: str = None):
+        """Owner Only: Start a Mystery Box loot event. Usage: !setbox [leg%] [epic%] [rare%] [minutes]"""
+        if not all([legendary, epic, rare, minutes]):
+            await ctx.send(f"❌ Usage: `{COMMAND_PREFIX}setbox [legendary%] [epic%] [rare%] [minutes]`\n"
+                           f"Example: `{COMMAND_PREFIX}setbox 0.1 2 3 30` → Leg 0.1%, Epic 2%, Rare 3%, Common 94.9% for 30min")
+            return
+        
+        try:
+            leg_pct = float(legendary)
+            epic_pct = float(epic)
+            rare_pct = float(rare)
+            duration = int(float(minutes))
+        except ValueError:
+            await ctx.send("❌ Invalid input! All rates must be numbers and duration must be in minutes.")
+            return
+        
+        if leg_pct < 0 or epic_pct < 0 or rare_pct < 0:
+            await ctx.send("❌ Rates cannot be negative!")
+            return
+        
+        total_pct = leg_pct + epic_pct + rare_pct
+        if total_pct >= 100:
+            await ctx.send(f"❌ Combined rates ({total_pct:.2f}%) must be less than 100%!")
+            return
+        
+        if duration <= 0:
+            await ctx.send("❌ Duration must be at least 1 minute!")
+            return
+        
+        # Convert percentages to decimal (e.g., 0.1% → 0.001)
+        leg_dec = leg_pct / 100
+        epic_dec = epic_pct / 100
+        rare_dec = rare_pct / 100
+        common_pct = 100 - total_pct
+        
+        now = int(time.time())
+        expiry = now + (duration * 60)
+        
+        # Save event rates and expiry
+        set_setting('box_legendary_event', str(leg_dec))
+        set_setting('box_epic_event', str(epic_dec))
+        set_setting('box_rare_event', str(rare_dec))
+        set_setting('box_event_expiry', str(expiry))
+        
+        # Build announcement embed
+        embed = discord.Embed(
+            title="🎁✨ MYSTERY BOX EVENT! ✨🎁",
+            description=f"A special loot event has begun! Mystery Box rates are boosted for a limited time!",
+            color=discord.Color.gold()
+        )
+        embed.add_field(
+            name="🎲 Event Rates",
+            value=(
+                f"🏆 Legendary: **{leg_pct}%**\n"
+                f"💜 Epic: **{epic_pct}%**\n"
+                f"💙 Rare: **{rare_pct}%**\n"
+                f"⬜ Common: **{common_pct:.2f}%**"
+            ),
+            inline=True
+        )
+        embed.add_field(
+            name="⏰ Duration",
+            value=f"Ends <t:{expiry}:R> (<t:{expiry}:T>)",
+            inline=True
+        )
+        embed.set_footer(text="Open some boxes before the event ends! Use !buy box")
+        
+        # Broadcast to all guilds
+        sent_count = 0
+        for guild in self.bot.guilds:
+            target_channel = guild.system_channel
+            if not target_channel or not target_channel.permissions_for(guild.me).send_messages:
+                # Fallback: find the first text channel we can send to
+                for ch in guild.text_channels:
+                    if ch.permissions_for(guild.me).send_messages:
+                        target_channel = ch
+                        break
+                else:
+                    continue
+            try:
+                await target_channel.send(embed=embed)
+                sent_count += 1
+            except Exception:
+                pass
+        
+        await ctx.send(f"✅ **Mystery Box Event started!** Announced to **{sent_count}** server(s).\n"
+                       f"🏆 Leg: {leg_pct}% | 💜 Epic: {epic_pct}% | 💙 Rare: {rare_pct}% | ⬜ Common: {common_pct:.2f}%\n"
+                       f"⏰ Ends <t:{expiry}:R>")
+
+    @commands.command(name='boxrates', aliases=['boxrate', 'br'])
+    async def boxrates_command(self, ctx: commands.Context):
+        """View the current Mystery Box loot rates."""
+        rates = get_box_rates()
+        leg_pct = rates['legendary'] * 100
+        epic_pct = rates['epic'] * 100
+        rare_pct = rates['rare'] * 100
+        common_pct = 100 - leg_pct - epic_pct - rare_pct
+        
+        if rates['is_event']:
+            expiry = rates['expiry']
+            embed = discord.Embed(
+                title="🎁✨ Mystery Box Rates (EVENT ACTIVE!)",
+                description=f"A loot event is currently active! Ends <t:{expiry}:R>.",
+                color=discord.Color.gold()
+            )
+        else:
+            embed = discord.Embed(
+                title="🎁 Mystery Box Rates",
+                description="Standard loot rates are active.",
+                color=discord.Color.greyple()
+            )
+        
+        embed.add_field(
+            name="🎲 Current Rates",
+            value=(
+                f"🏆 Legendary: **{leg_pct:.2f}%**\n"
+                f"💜 Epic: **{epic_pct:.2f}%**\n"
+                f"💙 Rare: **{rare_pct:.2f}%**\n"
+                f"⬜ Common: **{common_pct:.2f}%**"
+            ),
+            inline=False
+        )
+        embed.set_footer(text=f"Open boxes with {COMMAND_PREFIX}buy box")
+        await ctx.send(embed=embed)
 
 # --- Blackjack Game Logic ---
 

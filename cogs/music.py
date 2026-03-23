@@ -12,8 +12,11 @@ class Music(commands.Cog):
         self.search_results_cache = {}  # {user_id: [song1, song2, ...]}
 
     @commands.command(name='ss', aliases=['searchsong'])
-    async def search_song(self, ctx: commands.Context, *, query: str):
+    async def search_song(self, ctx: commands.Context, *, query: str = None):
         """Searches for a song and displays the top 10 results."""
+        if query is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}ss [query]`")
+            return
         user_id = ctx.author.id
         self.search_results_cache[user_id] = []
 
@@ -59,8 +62,11 @@ class Music(commands.Cog):
                 await ctx.send("Sorry, an error occurred while searching for music.")
 
     @commands.command(name='d', aliases=['downloadsong'])
-    async def download_song(self, ctx: commands.Context, song_number: int):
+    async def download_song(self, ctx: commands.Context, song_number: int = None):
         """Downloads a song from the previous search results."""
+        if song_number is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}d [number]` — choose a number from your search results.")
+            return
         user_id = ctx.author.id
         if user_id not in self.search_results_cache or not self.search_results_cache[user_id]:
             await ctx.send("Please use `!ss [query]` first to get a list of songs.")

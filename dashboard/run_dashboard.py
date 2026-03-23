@@ -156,6 +156,36 @@ def index():
     box_rare_rate = cursor.fetchone()
     box_rare_rate = box_rare_rate['value'] if box_rare_rate else '0.03'
 
+    # 8. Mystery Box Event Settings
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_legendary_event'")
+    box_leg_event = cursor.fetchone()
+    box_leg_event = float(box_leg_event['value']) if box_leg_event else None
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_epic_event'")
+    box_epic_event = cursor.fetchone()
+    box_epic_event = float(box_epic_event['value']) if box_epic_event else None
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_rare_event'")
+    box_rare_event = cursor.fetchone()
+    box_rare_event = float(box_rare_event['value']) if box_rare_event else None
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_event_expiry'")
+    box_event_expiry = cursor.fetchone()
+    box_event_expiry = int(box_event_expiry['value']) if box_event_expiry else 0
+
+    now = int(datetime.now().timestamp())
+    is_event_active = box_event_expiry > now
+    
+    event_remaining = ""
+    if is_event_active:
+        rem = box_event_expiry - now
+        mins, secs = divmod(rem, 60)
+        hours, mins = divmod(mins, 60)
+        if hours > 0:
+            event_remaining = f"{hours}h {mins}m"
+        else:
+            event_remaining = f"{mins}m {secs}s"
+
     conn.close()
     
     # Enrich with discord data and format timestamps
@@ -190,7 +220,13 @@ def index():
         rain_pool=rain_pool,
         box_legendary_rate=box_legendary_rate,
         box_epic_rate=box_epic_rate,
-        box_rare_rate=box_rare_rate
+        box_rare_rate=box_rare_rate,
+        is_event_active=is_event_active,
+        box_leg_event=box_leg_event,
+        box_epic_event=box_epic_event,
+        box_rare_event=box_rare_event,
+        event_remaining=event_remaining,
+        event_expiry_ts=box_event_expiry
     )
 
 if __name__ == '__main__':

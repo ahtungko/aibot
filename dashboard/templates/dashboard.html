@@ -170,36 +170,80 @@
         </div>
 
         <!-- Box Loot Rates Grid -->
-        <h2 class="text-lg font-semibold text-white mb-4 mt-8 flex items-center"><i class="fa-solid fa-gift mr-2 text-brand-accent"></i> Mystery Box Loot Rates</h2>
+        <div class="flex items-center justify-between mb-4 mt-8">
+            <h2 class="text-lg font-semibold text-white flex items-center"><i class="fa-solid fa-gift mr-2 text-brand-accent"></i> Mystery Box Loot Rates</h2>
+            {% if is_event_active %}
+            <div class="flex items-center space-x-3">
+                <div class="px-3 py-1 rounded-full bg-brand-gold/10 border border-brand-gold/30 flex items-center shadow-lg shadow-brand-gold/5">
+                    <i class="fa-solid fa-bolt text-brand-gold mr-2 animate-pulse"></i>
+                    <span class="text-xs font-bold text-brand-gold uppercase tracking-wider">Event Active</span>
+                </div>
+                <div class="px-3 py-1 rounded-full bg-brand-accent/10 border border-brand-accent/30 flex items-center">
+                    <i class="fa-solid fa-clock text-brand-accent mr-2"></i>
+                    <span class="text-xs font-bold text-brand-accent uppercase tracking-wider">{{ event_remaining }} left</span>
+                </div>
+            </div>
+            {% endif %}
+        </div>
         
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
             <!-- Legendary -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group {% if is_event_active %}border-brand-gold/30 shadow-lg shadow-brand-gold/5{% endif %}">
                 <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                     <i class="fa-solid fa-trophy text-6xl text-brand-gold"></i>
                 </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Legendary</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ (box_legendary_rate|float * 100)|round(3) }}<span class="text-lg text-brand-gold font-semibold">%</span></h3>
+                <div class="flex items-center justify-between mb-1">
+                    <p class="text-sm font-medium text-gray-400">Legendary</p>
+                    {% if is_event_active %}<span class="text-[10px] font-bold text-brand-gold bg-brand-gold/10 px-1.5 py-0.5 rounded border border-brand-gold/20 uppercase">Boosted</span>{% endif %}
+                </div>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
+                    {% if is_event_active %}
+                        {{ (box_leg_event|float * 100)|round(3) }}
+                    {% else %}
+                        {{ (box_legendary_rate|float * 100)|round(3) }}
+                    {% endif %}
+                    <span class="text-lg text-brand-gold font-semibold">%</span>
+                </h3>
                 <p class="text-xs text-brand-gold font-medium">Jackpots & Mythical items</p>
             </div>
 
             <!-- Epic -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group {% if is_event_active %}border-purple-500/30 shadow-lg shadow-purple-500/5{% endif %}">
                 <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                     <i class="fa-solid fa-star text-6xl text-purple-500"></i>
                 </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Epic</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ (box_epic_rate|float * 100)|round(2) }}<span class="text-lg text-purple-400 font-semibold">%</span></h3>
+                <div class="flex items-center justify-between mb-1">
+                    <p class="text-sm font-medium text-gray-400">Epic</p>
+                    {% if is_event_active %}<span class="text-[10px] font-bold text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20 uppercase">Boosted</span>{% endif %}
+                </div>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
+                    {% if is_event_active %}
+                        {{ (box_epic_event|float * 100)|round(2) }}
+                    {% else %}
+                        {{ (box_epic_rate|float * 100)|round(2) }}
+                    {% endif %}
+                    <span class="text-lg text-purple-400 font-semibold">%</span>
+                </h3>
                 <p class="text-xs text-purple-500 font-medium">Rare coins & special perks</p>
             </div>
 
             <!-- Rare -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group {% if is_event_active %}border-blue-500/30 shadow-lg shadow-blue-500/5{% endif %}">
                 <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                     <i class="fa-solid fa-gem text-6xl text-blue-500"></i>
                 </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Rare</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ (box_rare_rate|float * 100)|round(2) }}<span class="text-lg text-blue-400 font-semibold">%</span></h3>
+                <div class="flex items-center justify-between mb-1">
+                    <p class="text-sm font-medium text-gray-400">Rare</p>
+                    {% if is_event_active %}<span class="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20 uppercase">Boosted</span>{% endif %}
+                </div>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
+                    {% if is_event_active %}
+                        {{ (box_rare_event|float * 100)|round(2) }}
+                    {% else %}
+                        {{ (box_rare_rate|float * 100)|round(2) }}
+                    {% endif %}
+                    <span class="text-lg text-blue-400 font-semibold">%</span>
+                </h3>
                 <p class="text-xs text-blue-500 font-medium">High JC rewards</p>
             </div>
 
@@ -209,7 +253,14 @@
                     <i class="fa-solid fa-box-open text-6xl text-gray-500"></i>
                 </div>
                 <p class="text-sm font-medium text-gray-400 mb-1">Common</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ (100 - (box_legendary_rate|float * 100) - (box_epic_rate|float * 100) - (box_rare_rate|float * 100))|round(2) }}<span class="text-lg text-gray-400 font-semibold">%</span></h3>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
+                    {% if is_event_active %}
+                        {{ (100 - (box_leg_event|float * 100) - (box_epic_event|float * 100) - (box_rare_event|float * 100))|round(2) }}
+                    {% else %}
+                        {{ (100 - (box_legendary_rate|float * 100) - (box_epic_rate|float * 100) - (box_rare_rate|float * 100))|round(2) }}
+                    {% endif %}
+                    <span class="text-lg text-gray-400 font-semibold">%</span>
+                </h3>
                 <p class="text-xs text-gray-500 font-medium">Standard JC amounts</p>
             </div>
         </div>
