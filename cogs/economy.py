@@ -1388,22 +1388,22 @@ class Economy(commands.Cog):
             
             for _ in range(count):
                 res = random.random()
-                if res < 0.01:
+                if res < 0.001:  # 0.1% Legendary
                     win = 50000
                     item = "🏆 Golden JC"
                     rarity = "LEGENDARY"
                     color = discord.Color.gold()
-                elif res < 0.03:
+                elif res < 0.011:  # 1% Epic (0.1 + 1.0)
                     win = 10000
                     item = "🥈 Silver Coin"
                     rarity = "EPIC"
                     color = discord.Color.purple()
-                elif res < 0.30:
+                elif res < 0.041:  # 3% Rare (1.1 + 3.0)
                     win = random.randint(1500, 3000)
                     item = None
                     rarity = "RARE"
                     color = discord.Color.blue()
-                else:
+                else:  # 95.9% Common
                     win = random.randint(200, 500)
                     item = None
                     rarity = "COMMON"
@@ -2002,6 +2002,8 @@ class BlackjackDuelView(discord.ui.View):
         if not finished:
             status = f"Current Turn: **{self.current_player.display_name}**"
             embed.set_footer(text=f"{status} | Pot: {self.bet*2:,} JC")
+            # Show payments while playing
+            embed.add_field(name="Status", value="Bets locked in Vault 🔒", inline=False)
         else:
             embed.set_footer(text=f"Duel Finished | Total Pot: {self.bet*2:,} JC")
             
@@ -2077,21 +2079,27 @@ class BlackjackDuelView(discord.ui.View):
             fee = int(total_pot * 0.05)
             winnings = total_pot - fee
             track_fee(fee)
-            add_balance(str(winner.id), winnings)
+            new_bal = add_balance(str(winner.id), winnings)
             log_transaction(str(winner.id), winnings, "BJ Duel Win")
-            log_transaction(uid1 if winner.id != self.ctx.author.id else uid2, -self.bet, "BJ Duel Loss")
-            desc = f"🏆 **{winner.display_name}** wins **{winnings:,} JC** (after 5% vault fee)!"
+            log_transaction(uid1 if str(winner.id) != uid1 else uid2, -self.bet, "BJ Duel Loss")
+            
+            embed = self.make_embed(finished=True)
+            embed.title = f"⚔️ {result_text}"
+            embed.add_field(name="💰 Payout", value=f"**{winnings:,}** JC awarded to **{winner.display_name}**", inline=False)
+            embed.add_field(name="💳 New Balance", value=f"**{new_bal:,}** JC", inline=False)
+            embed.color = discord.Color.green()
         else:
             # Tie: Refund both
             add_balance(uid1, self.bet)
             add_balance(uid2, self.bet)
             log_transaction(uid1, self.bet, "BJ Duel Push (Refund)")
             log_transaction(uid2, self.bet, "BJ Duel Push (Refund)")
-            desc = "Both players were refunded their bets."
-
-        embed = self.make_embed(finished=True)
-        embed.title = f"⚔️ {result_text}"
-        embed.description = desc
+            
+            embed = self.make_embed(finished=True)
+            embed.title = f"⚔️ {result_text}"
+            embed.add_field(name="🤝 Refund", value=f"**{self.bet:,}** JC returned to both players", inline=False)
+            embed.color = discord.Color.blue()
+            
         await self.message.edit(embed=embed, view=None)
 
     async def on_timeout(self):
@@ -2178,7 +2186,8 @@ class BlackjackView(discord.ui.View):
             embed.add_field(name="Dealer's Hand", value=self.get_hand_str(self.dealer_hand, hide_first=True), inline=False)
         
         embed.set_footer(text=f"Bet: {self.bet:,} JC")
-        embed.add_field(name="Payment", value=self.pay_msg, inline=False)
+        if not finished:
+            embed.add_field(name="Payment", value=self.pay_msg, inline=False)
         return embed
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, emoji="➕")
@@ -2245,7 +2254,15 @@ class BlackjackView(discord.ui.View):
         embed = self.make_embed(finished=True)
         embed.title = f"🃏 {result_text}"
         embed.color = color
-        embed.add_field(name="ResultBalance", value=f"**{new_bal:,}** JC", inline=False)
+        
+        if win is True:
+            profit_multiplier = 1.5 if self.is_natural else 1.0
+            payout = int(self.bet + (self.bet * profit_multiplier))
+            embed.add_field(name="💰 Payout", value=f"**{payout:,}** JC returned to Wallet", inline=False)
+        elif win is None:
+            embed.add_field(name="🤝 Refund", value=f"**{self.bet:,}** JC returned to Wallet", inline=False)
+            
+        embed.add_field(name="💳 New Balance", value=f"**{new_bal:,}** JC", inline=False)
         
         if self.message:
             await self.message.edit(embed=embed, view=None)
