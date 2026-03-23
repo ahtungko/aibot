@@ -1388,22 +1388,33 @@ class Economy(commands.Cog):
             
             for _ in range(count):
                 res = random.random()
-                if res < 0.001:  # 0.1% Legendary
+                
+                # Dynamic loot rates
+                rate_leg = float(get_setting('box_legendary_rate', '0.001'))
+                rate_epic = float(get_setting('box_epic_rate', '0.01'))
+                rate_rare = float(get_setting('box_rare_rate', '0.03'))
+                
+                # Thresholds
+                thresh_leg = rate_leg
+                thresh_epic = thresh_leg + rate_epic
+                thresh_rare = thresh_epic + rate_rare
+                
+                if res < thresh_leg:  # Legendary
                     win = 50000
                     item = "🏆 Golden JC"
                     rarity = "LEGENDARY"
                     color = discord.Color.gold()
-                elif res < 0.011:  # 1% Epic (0.1 + 1.0)
+                elif res < thresh_epic:  # Epic
                     win = 10000
                     item = "🥈 Silver Coin"
                     rarity = "EPIC"
                     color = discord.Color.purple()
-                elif res < 0.041:  # 3% Rare (1.1 + 3.0)
+                elif res < thresh_rare:  # Rare
                     win = random.randint(1500, 3000)
                     item = None
                     rarity = "RARE"
                     color = discord.Color.blue()
-                else:  # 95.9% Common
+                else:  # Common
                     win = random.randint(200, 500)
                     item = None
                     rarity = "COMMON"

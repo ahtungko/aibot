@@ -126,6 +126,36 @@ def index():
     ''')
     recent_transactions = cursor.fetchall()
     
+    # 6. Rain Settings
+    cursor.execute("SELECT value FROM settings WHERE key = 'rain_rate'")
+    rain_rate = cursor.fetchone()
+    rain_rate = rain_rate['value'] if rain_rate else '0.1'
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'rain_min'")
+    rain_min = cursor.fetchone()
+    rain_min = rain_min['value'] if rain_min else '100'
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'rain_max'")
+    rain_max = cursor.fetchone()
+    rain_max = rain_max['value'] if rain_max else '500'
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'rain_pool'")
+    rain_pool = cursor.fetchone()
+    rain_pool = rain_pool['value'] if rain_pool else '5000'
+
+    # 7. Mystery Box Settings
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_legendary_rate'")
+    box_legendary_rate = cursor.fetchone()
+    box_legendary_rate = box_legendary_rate['value'] if box_legendary_rate else '0.001'
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_epic_rate'")
+    box_epic_rate = cursor.fetchone()
+    box_epic_rate = box_epic_rate['value'] if box_epic_rate else '0.01'
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'box_rare_rate'")
+    box_rare_rate = cursor.fetchone()
+    box_rare_rate = box_rare_rate['value'] if box_rare_rate else '0.03'
+
     conn.close()
     
     # Enrich with discord data and format timestamps
@@ -153,7 +183,14 @@ def index():
         vault_jc=vault_jc,
         vault_gold=vault_gold,
         top_players=enriched_top_players,
-        transactions=enriched_transactions
+        transactions=enriched_transactions,
+        rain_rate=rain_rate,
+        rain_min=rain_min,
+        rain_max=rain_max,
+        rain_pool=rain_pool,
+        box_legendary_rate=box_legendary_rate,
+        box_epic_rate=box_epic_rate,
+        box_rare_rate=box_rare_rate
     )
 
 if __name__ == '__main__':
