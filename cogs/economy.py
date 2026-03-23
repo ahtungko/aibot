@@ -160,7 +160,7 @@ def add_item(user_id, item_name, item_type="Collectible", item_data=""):
     db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, ?, ?, ?)", (user_id, item_name, item_type, item_data), commit=True)
 
 def get_inventory(user_id):
-    return db_query("SELECT item_name, item_type FROM inventory WHERE user_id = ?", (user_id,), fetchall=True)
+    return db_query("SELECT item_name, item_type, item_data FROM inventory WHERE user_id = ?", (user_id,), fetchall=True)
 
 # --- Investment Helpers ---
 
@@ -229,6 +229,18 @@ def get_inventory_item(user_id, item_name):
 def remove_item(user_id, item_name):
     # Remove only ONE instance of the item
     db_query("DELETE FROM inventory WHERE ROWID = (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT 1)", (user_id, item_name), commit=True)
+
+def get_luck_bonus(user_id: str) -> float:
+    """Returns 0.05 if a Lucky Charm is active, else 0."""
+    now = int(time.time())
+    row = db_query("SELECT MAX(item_data) FROM inventory WHERE user_id = ? AND item_name = 'Lucky Charm'", (user_id,), fetchone=True)
+    if row and row[0]:
+        try:
+            expiry = int(row[0])
+            if expiry > now:
+                return 0.05
+        except: pass
+    return 0.0
 
 def get_last_rob(user_id: str) -> int:
     row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
@@ -493,6 +505,13 @@ class Economy(commands.Cog):
                 pass
 
         reward = random.randint(WORK_MIN, WORK_MAX)
+        
+        # Golden Pickaxe Bonus (+10%)
+        bonus = 0
+        if get_inventory_item(uid, "Golden Pickaxe"):
+            bonus = int(reward * 0.10)
+            reward += bonus
+
         fee_rate = 0.02 if is_vip(uid) else 0.05
         tax = max(1, int(reward * fee_rate))
         net_reward = reward - tax
@@ -514,6 +533,9 @@ class Economy(commands.Cog):
             description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JC!",
             color=discord.Color.blue()
         )
+        if bonus > 0:
+            embed.description += f"\n✨ *Includes **{bonus} JC** bonus from your Golden Pickaxe!*"
+
         tax_percent = int(fee_rate * 100)
         embed.add_field(name="Income Tax", value=f"**{tax}** JC ({tax_percent}%)", inline=True)
         embed.add_field(name="Net Received", value=f"**{net_reward:,}** JC", inline=True)
@@ -809,8 +831,14 @@ class Economy(commands.Cog):
             return
 
         uid = str(ctx.author.id)
-        outcome = random.choice(['h', 't'])
+        
+        # Lucky Charm Bonus (+5% odds)
+        luck_bonus = get_luck_bonus(uid)
+        win_chance = 0.50 + luck_bonus
+        won = random.random() < win_chance
+        
         user_choice = 'h' if side in ['h', 'heads'] else 't'
+        outcome = user_choice if won else ("t" if user_choice == "h" else "h")
         won = (user_choice == outcome)
         outcome_full = "Heads" if outcome == 'h' else "Tails"
 
@@ -843,9 +871,18 @@ class Economy(commands.Cog):
             await ctx.send(err)
             return
         amount = val
-
         uid = str(ctx.author.id)
-        reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
+
+        # Lucky Charm Bonus
+        luck_bonus = get_luck_bonus(uid)
+        
+        # Reels simulation
+        # If luck is active, slightly bias towards matches
+        if luck_bonus > 0 and random.random() < 0.15: # 15% chance to 'nudge' a reel
+            reels = [random.choice(SLOT_EMOJIS)] * 3
+        else:
+            reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
+            
         reel_display = " | ".join(reels)
 
         # Auto-deduct payment
@@ -877,6 +914,43 @@ class Economy(commands.Cog):
         embed.add_field(name="Payment", value=pay_msg, inline=True)
         embed.set_footer(text=f"Bet: {amount:,} JC")
         await ctx.send(embed=embed)
+
+    @commands.command(name='duel', aliases=['challenge'])
+    async def duel_command(self, ctx: commands.Context, member: discord.Member = None, amount: str = None):
+        """Challenge another user to a PVP Coin Flip!"""
+        if not member or amount is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}duel @user [amount]`")
+            return
+        if member.id == ctx.author.id:
+            await ctx.send("You can't duel yourself!")
+            return
+        if member.bot:
+            await ctx.send("Bots won't duel you!")
+            return
+
+        val, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+        amount = val
+
+        # Check if receiver can afford it
+        if get_balance(str(member.id)) < amount:
+            await ctx.send(f"❌ {member.display_name} doesn't have enough JC to accept a **{amount:,} JC** duel!")
+            return
+
+        # Take P1's bet upfront
+        uid = str(ctx.author.id)
+        _, pay_msg = pay_jc(uid, amount)
+
+        view = DuelView(ctx, member, amount, pay_msg)
+        embed = discord.Embed(
+            title="⚔️ Duel Challenge!",
+            description=f"{ctx.author.mention} has challenged {member.mention} to a **{amount:,} JC** coin flip!\n\n**Winner takes the pot (minus 5% fee)!**",
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="Challenge expires in 60 seconds.")
+        view.message = await ctx.send(content=member.mention, embed=embed, view=view)
 
     @commands.command(name='rob', aliases=['steal', 'stolen'])
     async def rob_command(self, ctx: commands.Context, member: discord.Member = None):
@@ -926,6 +1000,13 @@ class Economy(commands.Cog):
         # Luck & VIP Logic
         success_rate = 0.40
         if is_vip(vid): success_rate -= 0.10 # Harder to rob VIPs
+        
+        # Sticky Gloves Bonus (+5%)
+        gloves_active = False
+        if get_inventory_item(uid, "Sticky Gloves"):
+            success_rate += 0.05
+            remove_item(uid, "Sticky Gloves")
+            gloves_active = True
 
         # Result Calculation
         success_roll = random.random() < success_rate
@@ -1177,6 +1258,21 @@ class Economy(commands.Cog):
             inline=False
         )
         embed.add_field(
+            name="⛏️ **Golden Pickaxe** — `50,000 JC`",
+            value="Permanent **+10% earnings** on every `!work` attempt.\nUsage: `!buy pickaxe`",
+            inline=False
+        )
+        embed.add_field(
+            name="🍀 **Lucky Charm** — `2,000 JC`",
+            value="Increases gambling win chance by **+5%** for **1 hour**.\nUsage: `!buy charm`",
+            inline=True
+        )
+        embed.add_field(
+            name="🧤 **Sticky Gloves** — `5,000 JC`",
+            value="Increases robbery success rate by **+5%** for **1 attempt**.\nUsage: `!buy gloves`",
+            inline=True
+        )
+        embed.add_field(
             name="🛡️ **Vault Shield** — `2,000 JC`",
             value="Protects you from **1** robbery attempt (100% block). **Max 3 in inventory!**\nUsage: `!buy shield`",
             inline=False
@@ -1396,8 +1492,58 @@ class Economy(commands.Cog):
             await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
 
+        elif item_type in ['pickaxe', 'golden pickaxe']:
+            cost = 50000
+            if get_inventory_item(uid, "Golden Pickaxe"):
+                await ctx.send("⛏️ You already own a **Golden Pickaxe**!")
+                return
+            
+            success, msg_text = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(msg_text)
+                return
+                
+            add_item(uid, "Golden Pickaxe", "Equipment")
+            log_transaction(uid, -cost, "Bought Golden Pickaxe")
+            await ctx.send(f"⛏️ {ctx.author.mention}, you purchased a **Golden Pickaxe**! {msg_text} You now earn **+10% JC** from every `!work` attempt.")
+
+        elif item_type in ['charm', 'lucky charm']:
+            cost = 2000
+            now = int(time.time())
+            expiry = now + 3600 # 1 hour
+            
+            success, msg_text = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(msg_text)
+                return
+                
+            # Lucky Charms stack in duration
+            existing_expiry = 0
+            row = db_query("SELECT MAX(item_data) FROM inventory WHERE user_id = ? AND item_name = 'Lucky Charm'", (uid,), fetchone=True)
+            if row and row[0]:
+                try: 
+                    existing_expiry = int(row[0])
+                    if existing_expiry > now:
+                        expiry = existing_expiry + 3600
+                except: pass
+            
+            add_item(uid, "Lucky Charm", "Charm", str(expiry))
+            log_transaction(uid, -cost, "Bought Lucky Charm")
+            await ctx.send(f"🍀 {ctx.author.mention}, you purchased a **Lucky Charm**! {msg_text} Your gambling luck is boosted until <t:{expiry}:t>.")
+
+        elif item_type in ['gloves', 'sticky gloves']:
+            cost = 5000
+            success, msg_text = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(msg_text)
+                return
+                
+            add_item(uid, "Sticky Gloves", "Tool")
+            log_transaction(uid, -cost, "Bought Sticky Gloves")
+            await ctx.send(f"🧤 {ctx.author.mention}, you purchased **Sticky Gloves**! {msg_text} Your next robbery attempt will have a **+5% success rate**.")
+
         else:
-            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box`, `!buy iron`, `!buy steel`, or `!buy bunker`.")
+            await ctx.send("🛒 Item not found or restocked! Try `!buy box`, `!buy pickaxe`, `!buy charm`, `!buy gloves`, etc.")
 
     @commands.command(name='inventory', aliases=['inv'])
     async def inv_command(self, ctx: commands.Context):
@@ -1410,11 +1556,40 @@ class Economy(commands.Cog):
             return
 
         # Group items
-        item_list = {}
-        for name, type in items:
-            item_list[name] = item_list.get(name, 0) + 1
+        item_list = {} # name: count
+        item_details = {} # name: list of data strings
         
-        display = "\n".join([f"• {name} x{count}" for name, count in item_list.items()])
+        for name, type, data in items:
+            item_list[name] = item_list.get(name, 0) + 1
+            if data and data.strip():
+                if name not in item_details: item_details[name] = []
+                item_details[name].append(data)
+        
+        lines = []
+        for name, count in item_list.items():
+            line = f"• **{name}** x{count}"
+            
+            # Special case for Lucky Charm expiry
+            if name == "Lucky Charm" and name in item_details:
+                # Show the latest expiry
+                try:
+                    expiries = [int(d) for d in item_details[name] if d.isdigit()]
+                    if expiries:
+                        latest = max(expiries)
+                        if latest > int(time.time()):
+                            line += f" (Expires: <t:{latest}:R>)"
+                        else:
+                            line += " (Expired)"
+                except: pass
+            elif name == "VIP" and name in item_details:
+                try:
+                    expiry = int(item_details[name][0])
+                    line += f" (Expires: <t:{expiry}:d>)"
+                except: pass
+                
+            lines.append(line)
+        
+        display = "\n".join(lines)
         embed = discord.Embed(title=f"🎒 {ctx.author.display_name}'s Inventory", description=display, color=discord.Color.blue())
         await ctx.send(embed=embed)
 
@@ -1589,6 +1764,85 @@ class Economy(commands.Cog):
         await ctx.send(f"👑 Granted **{days} days** of VIP to {member.mention}!\n📅 Expires: <t:{expiry}:F> (<t:{expiry}:R>)")
 
 # --- Blackjack Game Logic ---
+
+class DuelView(discord.ui.View):
+    def __init__(self, ctx, target, bet, pay_msg):
+        super().__init__(timeout=60)
+        self.ctx = ctx
+        self.target = target
+        self.bet = bet
+        self.pay_msg = pay_msg # P1's payment status
+        self.message = None
+        self.resolved = False
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, emoji="⚔️")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message("This challenge isn't for you!", ephemeral=True)
+            return
+
+        uid1 = str(self.ctx.author.id)
+        uid2 = str(self.target.id)
+
+        # Check if P2 still has money
+        if get_balance(uid2) < self.bet:
+            await interaction.response.send_message("You don't have enough JC to accept this duel anymore!", ephemeral=True)
+            return
+
+        self.resolved = True
+        self.stop()
+        
+        # Deduct from P2
+        _, pay_msg2 = pay_jc(uid2, self.bet)
+
+        # Flip the coin
+        winner = random.choice([self.ctx.author, self.target])
+        
+        # Pot calculation (Total - 5% fee)
+        total_pot = self.bet * 2
+        fee = int(total_pot * 0.05)
+        winnings = total_pot - fee
+        
+        track_fee(fee)
+        add_balance(str(winner.id), winnings)
+        log_transaction(str(winner.id), winnings, "Duel Win")
+        log_transaction(uid1 if winner.id != self.ctx.author.id else uid2, -self.bet, "Duel Loss")
+
+        embed = discord.Embed(
+            title="⚔️ Duel Results!",
+            description=f"The coin spins in the air...\n\n🏆 **{winner.display_name}** wins the duel!\n💰 They take home **{winnings:,} JC** (after 5% vault fee).",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="Participants", value=f"{self.ctx.author.display_name} vs {self.target.display_name}", inline=False)
+        embed.set_footer(text=f"Total Pot: {total_pot:,} | Vault Fee: {fee:,}")
+        
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in [self.ctx.author.id, self.target.id]:
+            await interaction.response.send_message("You can't do that!", ephemeral=True)
+            return
+
+        self.resolved = True
+        self.stop()
+        
+        # Refund P1
+        add_balance(str(self.ctx.author.id), self.bet)
+        log_transaction(str(self.ctx.author.id), self.bet, "Duel Cancelled (Refund)")
+
+        msg = "declined the challenge." if interaction.user.id == self.target.id else "cancelled the challenge."
+        await interaction.response.edit_message(content=f"❌ Duel {msg} (Refunded)", embed=None, view=None)
+
+    async def on_timeout(self):
+        if not self.resolved:
+            # Refund P1
+            add_balance(str(self.ctx.author.id), self.bet)
+            log_transaction(str(self.ctx.author.id), self.bet, "Duel Timed Out (Refund)")
+            if self.message:
+                try:
+                    await self.message.edit(content="⏰ Duel challenge timed out. (Refunded)", embed=None, view=None)
+                except: pass
 
 class BlackjackView(discord.ui.View):
     def __init__(self, ctx, bet):
