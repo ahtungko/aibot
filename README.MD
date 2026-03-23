@@ -172,13 +172,49 @@ sudo journalctl -u jenbot -n 50
 
 ### Step 8: Run the Owner Web Dashboard (Optional)
 
-The Flask dashboard runs locally to provide live economy insights without disrupting the Discord bot. To start it, run it in a new terminal:
+The Flask dashboard runs locally to provide live economy insights without disrupting the Discord bot. You can start it manually:
 
 ```bash
 cd ~/JenBot
 python3 dashboard/run_dashboard.py
 ```
-*(The dashboard will be available at `http://127.0.0.1:5000`. You can proxy this via Nginx if you wish to expose it externally).*
+
+**Run the Dashboard as a Background Service (systemd)**
+To keep the dashboard running automatically in the background, create a dedicated service:
+
+```bash
+sudo nano /etc/systemd/system/jenbot-dashboard.service
+```
+
+Paste the following configuration:
+
+```ini
+[Unit]
+Description=JenBot Web Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/JenBot
+ExecStart=/root/JenBot/.venv/bin/python3 dashboard/run_dashboard.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then start and enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable jenbot-dashboard
+sudo systemctl start jenbot-dashboard
+```
+
+*(The dashboard will be available at `http://127.0.0.1:5000`. You can proxy this port via Nginx if you wish to securely expose it to the web).*
 
 ### Updating the Bot
 
