@@ -1213,6 +1213,22 @@ class Economy(commands.Cog):
         except discord.HTTPException as e:
             await ctx.send(f"❌ An error occurred while managing the role. Make sure the name isn't too long or contains invalid characters. Details: {e}")
 
+    @commands.command(name='debugroles')
+    async def debugroles_command(self, ctx: commands.Context):
+        """Diagnostic tool for role hierarchy."""
+        bot_top = ctx.guild.me.top_role
+        user_roles = sorted(ctx.author.roles, key=lambda r: r.position, reverse=True)
+        
+        server_roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)[:10]
+        role_list = "\n".join([f"{r.position}: {r.name} ({r.color})" for r in server_roles])
+        
+        embed = discord.Embed(title="🔍 Role Hierarchy Debug", color=discord.Color.orange())
+        embed.add_field(name="🤖 Bot Top Role", value=f"{bot_top.name} (Pos: {bot_top.position})", inline=False)
+        embed.add_field(name="👤 Your Top Role", value=f"{user_roles[0].name} (Pos: {user_roles[0].position}, Color: {user_roles[0].color})", inline=False)
+        embed.add_field(name="📜 Server Top 10", value=role_list, inline=False)
+        
+        await ctx.send(embed=embed)
+
     @commands.command(name='sell')
     async def sell_command(self, ctx: commands.Context, *, item_name: str = None):
         """Sell a collectible item for JC. Usage: !sell [item name]"""
