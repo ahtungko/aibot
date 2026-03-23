@@ -1027,27 +1027,28 @@ class Economy(commands.Cog):
             return
         amount = val
         uid = str(ctx.author.id)
-
-        # --- JC Sink Logic: 15% Entry Fee ---
-        entry_fee = int(amount * 0.15)
+        # --- JC Sink Logic: VIP Perks ---
+        is_user_vip = is_vip(uid)
+        entry_rate = 0.10 if is_user_vip else 0.15
+        entry_fee = int(amount * entry_rate)
         active_bet = amount - entry_fee
         
-        # Deduct TOTAL bet upfront (Burned)
+        # Deduct TOTAL bet upfront
         _, pay_msg = pay_jc(uid, amount)
         log_transaction(uid, -amount, f"Crash Game (Fee: {entry_fee} JC)")
 
-        view = CrashView(ctx, active_bet, amount) # Pass active bet and original bet
+        view = CrashView(ctx, active_bet, amount, is_user_vip) # Pass VIP status
         embed = discord.Embed(
             title="🚀 Preparing for Takeoff...",
             description=(
                 f"Multiplier: **1.00x**\n"
                 f"Potential Win: **{active_bet:,}** JC\n\n"
-                f"💰 **Entry Fee**: `{entry_fee:,} JC` (Burned)\n"
+                f"💰 **Entry Fee**: `{entry_fee:,} JC` {'⭐ (VIP)' if is_user_vip else ''}\n"
                 f"🛡️ **Active Bet**: `{active_bet:,} JC`"
             ),
             color=discord.Color.blue()
         )
-        embed.set_footer(text=f"Total Bet: {amount:,} JC | Sink Rate: 15%")
+        embed.set_footer(text=f"Total Bet: {amount:,} JC | Sink Rate: {int(entry_rate*100)}%")
         
         view.message = await ctx.send(embed=embed, view=view)
         # Start the game loop
@@ -1347,7 +1348,7 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="👑 **VIP Membership** — `10,000 JC`",
-            value="30 days of elite perks: **2% Work Tax**, **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, and **+10% Robbery defense**.\nUsage: `!buyvip`",
+            value="30 days of elite perks: **2% Work Tax**, **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, **+10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
             inline=False
         )
         embed.add_field(
@@ -2508,21 +2509,23 @@ def should_game_crash(multiplier: float) -> bool:
     return random.random() < total_chance
 
 class CrashView(discord.ui.View):
-    def __init__(self, ctx, active_bet, original_bet):
+    def __init__(self, ctx, active_bet, original_bet, is_vip=False):
         super().__init__(timeout=300)
         self.ctx = ctx
         self.active_bet = active_bet
         self.original_bet = original_bet
+        self.is_vip = is_vip
         self.multiplier = 1.00
         self.cashed_out = False
         self.crashed = False
         self.message = None
 
     def get_tax_rate(self):
-        """Returns the tax rate based on current multiplier."""
-        if self.multiplier < 2.0: return 0.50 # 50% tax (was 70%)
-        if self.multiplier < 5.0: return 0.35 # 35% tax (was 50%)
-        return 0.20 # 20% tax (was 30%)
+        """Returns the tax rate based on current multiplier (VIPs get 3% discount)."""
+        bonus = 0.03 if self.is_vip else 0.0
+        if self.multiplier < 2.0: return 0.50 - bonus
+        if self.multiplier < 5.0: return 0.35 - bonus
+        return 0.20 - bonus
 
     async def run_game(self):
         """The background loop that drives the multiplier and crash checks."""
@@ -2606,7 +2609,7 @@ class CrashView(discord.ui.View):
             f"You cashed out at **{self.multiplier:.2f}x**!\n\n"
             f"💰 **Final Payout**: **{final_payout:,}** JC\n"
             f"💸 **Tax Deducted**: `{tax_deducted:,} JC` ({int(tax_rate*100)}%)\n"
-            f"🧤 **Entry Fee**: `{self.original_bet - self.active_bet:,} JC` (Burned)\n"
+            f"🧤 **Entry Fee**: `{self.original_bet - self.active_bet:,} JC` {'⭐ (VIP)' if self.is_vip else ''}\n"
             f"📊 **Net Profit/Loss**: **{result_str}** JC"
         )
         embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC")
