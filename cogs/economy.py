@@ -1131,9 +1131,9 @@ class Economy(commands.Cog):
     async def start_rain(self, channel):
         # Fetch pool or use default
         try:
-            pool = int(get_setting('rain_pool', '500'))
+            pool = int(get_setting('rain_pool', '5000'))
         except (ValueError, TypeError):
-            pool = 500
+            pool = 5000
             
         view = RainView(pool=pool)
         embed = discord.Embed(
@@ -1761,10 +1761,10 @@ class RainView(discord.ui.View):
 
         # Fetch dynamic range or use defaults
         try:
-            r_min = int(get_setting('rain_min', '20'))
-            r_max = int(get_setting('rain_max', '100'))
+            r_min = int(get_setting('rain_min', '100'))
+            r_max = int(get_setting('rain_max', '500'))
         except (ValueError, TypeError):
-            r_min, r_max = 20, 100
+            r_min, r_max = 100, 500
 
         # Amount is random but capped by the remaining pool
         amount = random.randint(r_min, r_max)
