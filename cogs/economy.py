@@ -1184,7 +1184,8 @@ class Economy(commands.Cog):
                 
         # Position calculation: Just below the bot's top role
         bot_top = ctx.guild.me.top_role
-        target_pos = max(1, bot_top.position - 1)
+        target_pos = bot_top.position - 1
+        if target_pos < 1: target_pos = 1
 
         try:
             zero_perms = discord.Permissions.none()
@@ -1199,14 +1200,14 @@ class Economy(commands.Cog):
                 log_transaction(uid, -edit_cost, "Edited Custom Role")
                 
                 await my_role.edit(name="JC", color=role_color, permissions=zero_perms, hoist=True, mentionable=False, position=target_pos, reason=f"Custom role edit by {ctx.author.name}")
-                await ctx.send(f"✨ Successfully updated your custom role color to `{color_display}` and moved it to the top! *(Cost: **{edit_cost:,} JC**)*")
+                await ctx.send(f"✨ Successfully updated color to `{color_display}` and moved it to the top! *(Cost: **{edit_cost:,} JC**)*")
             else:
                 # Create new role and assign it (First time free)
                 my_role = await ctx.guild.create_role(name="JC", color=role_color, permissions=zero_perms, hoist=True, mentionable=False, reason=f"Custom role creation by {ctx.author.name}")
                 await my_role.edit(position=target_pos)
                 await ctx.author.add_roles(my_role)
                 db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Custom Role Pass'", (str(my_role.id), uid), commit=True)
-                await ctx.send(f"✨ Successfully created and equipped your new custom role: **JC** with color `{color_display}`! (First time free - Auto-positioned to top)")
+                await ctx.send(f"✨ Successfully created role **JC** with color `{color_display}`! (First time free - Auto-positioned to top)")
         except discord.Forbidden:
             await ctx.send("❌ I don't have permission to manage roles! Please make sure my bot role is higher than the custom roles and has the 'Manage Roles' permission.")
         except discord.HTTPException as e:
