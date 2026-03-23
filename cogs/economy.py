@@ -1004,12 +1004,12 @@ class Economy(commands.Cog):
             
             for _ in range(count):
                 res = random.random()
-                if res < 0.02:
+                if res < 0.01:
                     win = 50000
                     item = "🏆 Golden JC"
                     rarity = "LEGENDARY"
                     color = discord.Color.gold()
-                elif res < 0.10:
+                elif res < 0.03:
                     win = 10000
                     item = "🥈 Silver Coin"
                     rarity = "EPIC"
