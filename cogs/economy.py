@@ -1504,9 +1504,12 @@ class Economy(commands.Cog):
                 db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Custom Role Pass'", (str(my_role.id), uid), commit=True)
                 await ctx.send(f"✨ Successfully created role **JC** with color `{color_display}`! (First time free - Auto-positioned to top)")
         except discord.Forbidden:
-            await ctx.send("❌ I don't have permission to manage roles! Please make sure my bot role is higher than the custom roles and has the 'Manage Roles' permission.")
+            await ctx.send("❌ **Permission Denied!** I don't have the **'Manage Roles'** permission, or I am trying to edit a role that is higher than mine. Please move my **JenBot** role to the top of the list in Server Settings!")
         except discord.HTTPException as e:
-            await ctx.send(f"❌ An error occurred while managing the role. Make sure the name isn't too long or contains invalid characters. Details: {e}")
+            if e.code == 50013:
+                await ctx.send("❌ **Role Hierarchy Error!** I don't have permission to manage this role. Please go to **Server Settings -> Roles** and drag the **JenBot** role to the **TOP** of the list (above all custom roles).")
+            else:
+                await ctx.send(f"❌ An error occurred while managing the role. Make sure the name isn't too long or contains invalid characters. Details: {e}")
 
     @commands.command(name='sell')
     async def sell_command(self, ctx: commands.Context, *, item_name: str = None):
