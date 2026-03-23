@@ -78,22 +78,34 @@ def index():
     cursor.execute("SELECT SUM(gold_grams) as total_gold FROM investments")
     total_gold = cursor.fetchone()['total_gold'] or 0.0
 
-    # 3. Global Fee Vault
+    # 3. Global Fee Vaults
+    # JC Vault
     cursor.execute("SELECT value FROM settings WHERE key = 'fee_vault'")
     vault_row = cursor.fetchone()
-    vault_data = {"jc_total": 0, "gold_total": 0.0}
+    vault_jc = 0
     if vault_row:
         try:
+            # Try to parse as JSON in case it's in the old/alternate format
             parsed = json.loads(vault_row['value'])
             if isinstance(parsed, dict):
-                vault_data = parsed
-            elif isinstance(parsed, (int, float)):
-                vault_data["jc_total"] = int(parsed)
-        except json.JSONDecodeError:
+                vault_jc = int(parsed.get('jc_total', 0))
+            else:
+                vault_jc = int(parsed)
+        except (json.JSONDecodeError, ValueError, TypeError):
             try:
-                vault_data["jc_total"] = int(vault_row['value'])
-            except ValueError:
+                vault_jc = int(vault_row['value'])
+            except (ValueError, TypeError):
                 pass
+
+    # Gold Vault
+    cursor.execute("SELECT value FROM settings WHERE key = 'gold_fee_vault'")
+    gold_vault_row = cursor.fetchone()
+    vault_gold = 0.0
+    if gold_vault_row:
+        try:
+            vault_gold = float(gold_vault_row['value'])
+        except (ValueError, TypeError):
+            pass
 
 
     # 4. Top 5 Richest Players
@@ -138,8 +150,8 @@ def index():
         'dashboard.html',
         total_jc=total_jc,
         total_gold=total_gold,
-        vault_jc=vault_data.get('jc_total', 0),
-        vault_gold=vault_data.get('gold_total', 0.0),
+        vault_jc=vault_jc,
+        vault_gold=vault_gold,
         top_players=enriched_top_players,
         transactions=enriched_transactions
     )
