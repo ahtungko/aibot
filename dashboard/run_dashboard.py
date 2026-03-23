@@ -145,5 +145,5 @@ def index():
     )
 
 if __name__ == '__main__':
-    # Run securely locally
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    # Bind to '::' to support IPv6-only VPS hosting
+    app.run(host='::', port=5000, debug=True)
