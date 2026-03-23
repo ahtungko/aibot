@@ -2,7 +2,11 @@
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timezone
+import sqlite3
+import os
 from config import TROY_OUNCE_TO_GRAMS
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'economy.db')
 
 
 class Precious(commands.Cog):
@@ -44,6 +48,19 @@ class Precious(commands.Cog):
 
             activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
             await self.bot.change_presence(activity=activity)
+            
+            # Cache the price for the dashboard
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+                    ('last_gold_price', str(xau_price_gram), str(xau_price_gram))
+                )
+                conn.commit()
+                conn.close()
+            except Exception as db_e:
+                print(f"Failed to cache gold price: {db_e}")
+
             print(f"Updated bot status: {status_text}")
 
         except Exception as e:

@@ -71,8 +71,8 @@ def index():
     cursor = conn.cursor()
 
     # 1. Total JC in Circulation (Wallet + Bank)
-    cursor.execute("SELECT SUM(balance + bank) as total_jc FROM wallets")
-    total_jc = cursor.fetchone()['total_jc'] or 0
+    cursor.execute("SELECT CAST(SUM(balance + bank) AS INTEGER) as total_jc FROM wallets")
+    total_jc = int(cursor.fetchone()['total_jc'] or 0)
 
     # 2. Total Gold Grams
     cursor.execute("SELECT SUM(gold_grams) as total_gold FROM investments")
@@ -107,14 +107,19 @@ def index():
         except (ValueError, TypeError):
             pass
 
+    # 4. Get Latest Gold Price for Net Worth calculation
+    cursor.execute("SELECT value FROM settings WHERE key = 'last_gold_price'")
+    price_row = cursor.fetchone()
+    last_gold_price = float(price_row['value']) if price_row else 0.0
 
-    # 4. Top 5 Richest Players
+    # 5. Top 5 Richest Players (Wallet + Bank + Gold Value)
     cursor.execute('''
-        SELECT user_id, (balance + bank) as net_worth 
-        FROM wallets 
+        SELECT w.user_id, CAST((w.balance + w.bank + (COALESCE(i.gold_grams, 0) * ?)) AS INTEGER) as net_worth 
+        FROM wallets w
+        LEFT JOIN investments i ON w.user_id = i.user_id
         ORDER BY net_worth DESC 
         LIMIT 5
-    ''')
+    ''', (last_gold_price,))
     top_players = cursor.fetchall()
 
     # 5. Recent Transactions
