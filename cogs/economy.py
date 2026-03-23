@@ -169,11 +169,28 @@ def set_vip(user_id: str, days: int):
     
     start_time = max(now, current_expiry)
     new_expiry = start_time + (days * 24 * 3600)
+def get_inventory_item(user_id, item_name):
+    row = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True)
+    return row is not None
+
+def remove_item(user_id, item_name):
+    # Remove only ONE instance of the item
+    db_query("DELETE FROM inventory WHERE ROWID = (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT 1)", (user_id, item_name), commit=True)
+
+def get_last_rob(user_id: str) -> int:
+    row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
+    try:
+        return int(row[0]) if row and row[0] else 0
+    except (ValueError, TypeError):
+        return 0
+
+def set_last_rob(user_id: str, ts: int):
+    existing_rob_entry = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
     
-    if current_expiry > 0:
-        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'VIP'", (str(new_expiry), user_id), commit=True)
+    if existing_rob_entry:
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'last_rob'", (str(ts), user_id), commit=True)
     else:
-        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True)
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'last_rob', 'Cooldown', ?)", (user_id, str(ts)), commit=True)
 
 def track_fee(amount: int):
     """Adds to the global fee vault."""
@@ -620,6 +637,115 @@ class Economy(commands.Cog):
         embed.set_footer(text=f"Bet: {amount:,} JC")
         await ctx.send(embed=embed)
 
+    @commands.command(name='rob', aliases=['steal', 'stolen'])
+    async def rob_command(self, ctx: commands.Context, member: discord.Member = None):
+        """Try to rob another user's JC! (4 hour cooldown)"""
+        if not member:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}rob @user`")
+            return
+        
+        if member.id == ctx.author.id:
+            await ctx.send("You can't rob yourself, silly!")
+            return
+            
+        if member.bot:
+            await ctx.send("Bots don't carry any coins!")
+            return
+
+        uid = str(ctx.author.id)
+        vid = str(member.id)
+        
+        # Cooldown Check
+        now = int(time.time())
+        cooldown = 4 * 3600 # 4 hours
+        last_str = get_last_rob(uid)
+        if last_str:
+            try:
+                last_ts = int(float(last_str))
+                diff = now - last_ts
+                if diff < cooldown:
+                    rem = cooldown - diff
+                    await ctx.send(f"⏳ {ctx.author.mention}, you're still lying low! Try again in **{rem//3600}h {(rem%3600)//60}m**.")
+                    return
+            except ValueError: pass
+
+        t_bal = get_balance(uid)
+        v_bal = get_balance(vid)
+        
+        if t_bal < 500:
+            await ctx.send("❌ You need at least **500 JC** to risk a robbery!")
+            return
+        if v_bal < 200:
+            await ctx.send(f"❌ {member.display_name} is too poor to be worth robbing!")
+            return
+
+        # --- SHIELD CHECK ---
+        has_shield = get_inventory_item(vid, "Vault Shield")
+        
+        # Luck & VIP Logic
+        success_rate = 0.40
+        if is_vip(vid): success_rate -= 0.10 # Harder to rob VIPs
+        
+        success = random.random() < success_rate and not has_shield
+        set_last_rob(uid, now)
+        
+        if success:
+            # Stolen amount: 10-25%
+            percent = random.uniform(0.10, 0.25)
+            stolen = int(v_bal * percent)
+            
+            # Guild Tax (5%)
+            tax = int(stolen * 0.05)
+            net_gain = stolen - tax
+            
+            add_balance(vid, -stolen)
+            add_balance(uid, net_gain)
+            track_fee(tax)
+            log_transaction(uid, net_gain, f"Robbed {member.display_name}")
+            log_transaction(vid, -stolen, f"Robbed by {ctx.author.display_name}")
+            
+            embed = discord.Embed(title="🥷 Successful Robbery!", color=discord.Color.green())
+            embed.description = f"You managed to snatch **{stolen:,}** JC from {member.mention}!"
+            embed.add_field(name="Net Gain", value=f"**{net_gain:,}** JC", inline=True)
+            embed.add_field(name="Guild Tax", value=f"**{tax:,}** JC (Sent to Vault)", inline=True)
+            embed.set_footer(text="Crime pays... for now.")
+            await ctx.send(embed=embed)
+        else:
+            # Penalty: 10% of thief's wallet
+            penalty_rate = 0.10
+            if is_vip(uid): penalty_rate = 0.05 # VIPs pay half penalty
+            
+            fine = int(t_bal * penalty_rate)
+            
+            # Legal Fees (2%)
+            legal_fee = int(fine * 0.02)
+            restitution = fine - legal_fee
+            
+            add_balance(uid, -fine)
+            add_balance(vid, restitution)
+            track_fee(legal_fee)
+            log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""))
+            log_transaction(vid, restitution, f"Compensated for Attempted Robbery")
+            
+            if has_shield:
+                remove_item(vid, "Vault Shield")
+                embed = discord.Embed(title="🛡️ SHIELD ACTIVATED!", color=discord.Color.blue())
+                embed.description = (f"{member.mention}'s **Vault Shield** blocked the robbery attempt!\n\n"
+                                    f"🚔 {ctx.author.mention} was caught and forced to pay a fine.")
+                embed.add_field(name="Thief Paid", value=f"**{fine:,}** JC", inline=True)
+                embed.add_field(name="Victim Restitution", value=f"**{restitution:,}** JC", inline=True)
+                embed.add_field(name="Vault Fees", value=f"**{legal_fee:,}** JC", inline=True)
+                embed.set_footer(text="The shield was consumed in the process.")
+            else:
+                embed = discord.Embed(title="🚔 CAUGHT IN THE ACT!", color=discord.Color.red())
+                embed.description = (f"You were spotted and forced to pay a fine to {member.mention}!\n\n"
+                                    f"💸 **You lost {fine:,} JC**.")
+                embed.add_field(name="Victim Restitution", value=f"**{restitution:,}** JC", inline=True)
+                embed.add_field(name="Legal Fees", value=f"**{legal_fee:,}** JC (Sent to Vault)", inline=True)
+                embed.set_footer(text="Better luck next time, thief!")
+            
+            await ctx.send(embed=embed)
+
     @commands.command(name='history', aliases=['logs', 'stats'])
     async def history_command(self, ctx: commands.Context):
         """View your last 5 economy transactions."""
@@ -749,6 +875,11 @@ class Economy(commands.Cog):
             value="High stakes! Win coins or rare collectibles.\nUsage: `!buy box`",
             inline=False
         )
+        embed.add_field(
+            name="🛡️ **Vault Shield** — `2,000 JC`",
+            value="Protects you from **1** robbery attempt (100% block). **Max 3 in inventory!**\nUsage: `!buy shield`",
+            inline=False
+        )
         embed.set_footer(text=f"Your Balance: {get_balance(str(ctx.author.id)):,} JC")
         await ctx.send(embed=embed)
 
@@ -812,8 +943,26 @@ class Economy(commands.Cog):
             
             await msg.edit(content=None, embed=embed)
             
+        elif item_type in ['shield', 'vault shield', 'vaultshield']:
+            cost = 2000
+            if get_balance(uid) < cost:
+                await ctx.send(f"❌ You need **{cost:,} JC** for a Vault Shield!")
+                return
+            
+            # Limit check: Max 3 shields
+            shield_count = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Vault Shield'", (uid,), fetchone=True)
+            if shield_count and shield_count[0] >= 3:
+                await ctx.send("🛡️ You already have the maximum of **3 Vault Shields**! You must use one before buying more.")
+                return
+            
+            add_balance(uid, -cost)
+            add_item(uid, "Vault Shield", "Protection")
+            log_transaction(uid, -cost, "Bought Vault Shield")
+            
+            await ctx.send(f"🛡️ {ctx.author.mention}, you purchased a **Vault Shield**! You now have **{shield_count[0]+1}/3** active shields. (1 Use each)")
+
         else:
-            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box`.")
+            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box` or `!buy shield`.")
 
     @commands.command(name='inventory', aliases=['inv'])
     async def inv_command(self, ctx: commands.Context):
@@ -865,6 +1014,7 @@ class BlackjackView(discord.ui.View):
         self.player_hand = [self.draw_card(), self.draw_card()]
         self.dealer_hand = [self.draw_card(), self.draw_card()]
         self.message = None
+        self.is_natural = False
         self.game_over = False
 
     def create_deck(self):
@@ -901,7 +1051,8 @@ class BlackjackView(discord.ui.View):
     async def start_game(self):
         player_val = self.calculate_value(self.player_hand)
         if player_val == 21:
-            await self.finish_game("Blackjack! 🎊", win=True)
+            self.is_natural = True
+            await self.finish_game("Natural Blackjack! 🎊", win=True)
             return
 
         embed = self.make_embed()
@@ -967,8 +1118,12 @@ class BlackjackView(discord.ui.View):
         
         uid = str(self.ctx.author.id)
         if win is True:
-            new_bal = add_balance(uid, self.bet)
-            log_transaction(uid, self.bet, "Blackjack Win")
+            # Payout logic: 3:2 for natural, 1:1 for standard
+            multiplier = 1.5 if self.is_natural else 1.0
+            payout = int(self.bet * multiplier)
+            
+            new_bal = add_balance(uid, payout)
+            log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
             color = discord.Color.green()
         elif win is False:
             new_bal = add_balance(uid, -self.bet)
