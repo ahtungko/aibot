@@ -180,7 +180,7 @@
                 </div>
                 <div class="px-3 py-1 rounded-full bg-brand-accent/10 border border-brand-accent/30 flex items-center">
                     <i class="fa-solid fa-clock text-brand-accent mr-2"></i>
-                    <span class="text-xs font-bold text-brand-accent uppercase tracking-wider">{{ event_remaining }} left</span>
+                    <span id="event-timer" class="text-xs font-bold text-brand-accent uppercase tracking-wider" data-expiry="{{ event_expiry_ts }}">{{ event_remaining }} left</span>
                 </div>
             </div>
             {% endif %}
@@ -341,5 +341,41 @@
 
         </div>
     </div>
+
+    <script>
+        function updateTimer() {
+            const timerEl = document.getElementById('event-timer');
+            if (!timerEl) return;
+            
+            const expiry = parseInt(timerEl.getAttribute('data-expiry'));
+            const now = Math.floor(Date.now() / 1000);
+            const rem = expiry - now;
+            
+            if (rem <= 0) {
+                location.reload(); // Refresh to show standard rates
+                return;
+            }
+            
+            let h = Math.floor(rem / 3600);
+            let m = Math.floor((rem % 3600) / 60);
+            let s = rem % 60;
+            
+            let timeStr = "";
+            if (h > 0) {
+                timeStr = `${h}h ${m}m ${s}s`;
+            } else if (m > 0) {
+                timeStr = `${m}m ${s}s`;
+            } else {
+                timeStr = `${s}s`;
+            }
+            
+            timerEl.textContent = `${timeStr} left`;
+        }
+        
+        // Start ticking if timer exists
+        if (document.getElementById('event-timer')) {
+            setInterval(updateTimer, 1000);
+        }
+    </script>
 </body>
 </html>
