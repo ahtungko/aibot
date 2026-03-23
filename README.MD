@@ -9,16 +9,14 @@ A feature-rich Discord bot with AI chat, currency exchange, horoscopes, music do
 
 | Category | Commands |
 |---|---|
-| 🤖 **AI Chat** | `@JenBot [message]`, `!tldr [count]`, `!clear` |
-| 💱 **Currency** | `!usd`, `!usd 100 myr`, `!liverate 100 EUR USD` |
-| ✨ **Horoscope** | `!reg`, `!mod`, `!modtz`, `!remove`, `!list` |
-| 🎵 **Music** | `!ss [query]`, `!d [number]` |
-| 🐱 **Fun** | `!c`, `!cf`, `!roast @user` |
-| 🎮 **Game Deals** | `!deals`, `!price [game]` |
-| 📚 **Utility** | `!dict [word]`, `!gold`, `!silver` |
-| 📝 **Check-in** | `!ck [note]`, `!streak`, `!lb` |
-| 💤 **AFK** | `!afk [reason]` |
-| 📌 **Bookmarks** | `!pin`, `!pins`, `!unpin [#]` |
+| 🤖 **AI Chat & Utils** | `@JenBot [message]`, `!tldr [count]`, `!clear`, `!afk [reason]`, `!pin`, `!pins` |
+| 💰 **Economy & Bank**   | `!bal`, `!daily`, `!work`, `!dep [amount]`, `!with [amount]`, `!pf`, `!vault` |
+| 🎲 **Gambling & Duels** | `!flip`, `!slots`, `!bj`, `!duel @user`, `!bjduel @user`, `!rob @user` |
+| 🏪 **Shop & Inventory** | `!shop`, `!buy [item]`, `!inv`, `!sell [item]`, `!setrole [color]` |
+| 📈 **Market & VIP**     | `!gold`, `!silver`, `!bg [amount]`, `!sg [grams]`, `!liverate` |
+| 🌟 **Daily & Fun**      | `!ck`, `!streak`, `!horoscope`, `!roast @user`, `!c`, `!cf` |
+| 🎵 **Media & Music**    | `!s [query]`, `!d [id]`, `!deals`, `!price [game]` |
+| 🌐 **Owner Dashboard**  | Local Flask web application showing live economy insights |
 
 ## Project Structure
 
@@ -32,14 +30,18 @@ JenBot/
 │   ├── ai.py            # AI chat, !tldr, !clear
 │   ├── checkin.py       # !ck, !streak, !lb
 │   ├── currency.py      # Currency exchange, !liverate
+│   ├── economy.py       # Economy, Bank, Casino, Duels, Shop, Market
 │   ├── fun.py           # !c, !cf, !deals, !price, !dict, !afk, !roast
 │   ├── horoscope.py     # Horoscope commands + daily task
-│   ├── music.py         # !ss, !d
+│   ├── music.py         # !s, !d (Music streaming and downloads)
 │   ├── pins.py          # !pin, !pins, !unpin
-│   └── precious.py      # !gold, !silver, status task
+│   └── precious.py      # !gold, !silver, live gold status task
+├── dashboard/           # JenBot Owner Web Dashboard
+│   ├── run_dashboard.py # Python Flask server logic
+│   └── templates/       # HTML frontend components
 ├── utils/               # Shared helpers
 │   ├── helpers.py       # Utility functions
-│   └── storage.py       # File I/O helpers
+│   └── storage.py       # SQLite database logic and File I/O
 └── cf/worker/           # Cloudflare Worker (check-in backend)
 ```
 
@@ -168,6 +170,16 @@ sudo systemctl stop jenbot
 sudo journalctl -u jenbot -n 50
 ```
 
+### Step 8: Run the Owner Web Dashboard (Optional)
+
+The Flask dashboard runs locally to provide live economy insights without disrupting the Discord bot. To start it, run it in a new terminal:
+
+```bash
+cd ~/JenBot
+python3 dashboard/run_dashboard.py
+```
+*(The dashboard will be available at `http://127.0.0.1:5000`. You can proxy this via Nginx if you wish to expose it externally).*
+
 ### Updating the Bot
 
 ```bash
@@ -188,7 +200,12 @@ python -m venv .venv
 pip install -r requirements.txt
 copy .env.example .env
 # Edit .env with your values
+
+# 1. Start the main bot:
 python jbot.py
+
+# 2. In a separate terminal, start the web UI:
+python dashboard/run_dashboard.py
 ```
 
 ---

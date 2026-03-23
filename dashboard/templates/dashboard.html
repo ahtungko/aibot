@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JenBot Owner Dashboard</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            gold: '#FFD700',
+                            dark: '#0B0F19',
+                            card: '#151A2C',
+                            border: '#2A3042',
+                            accent: '#3B82F6'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: theme('colors.brand.dark');
+            color: #E2E8F0;
+        }
+        .glass-card {
+            background: rgba(21, 26, 44, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        .stat-card {
+            transition: transform 0.2s ease-in-out;
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+            border-color: theme('colors.brand.accent');
+        }
+        .table-row-hover:hover {
+            background-color: rgba(255, 255, 255, 0.02);
+        }
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: theme('colors.brand.dark');
+        }
+        ::-webkit-scrollbar-thumb {
+            background: theme('colors.brand.border');
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4A5568;
+        }
+    </style>
+</head>
+<body class="min-h-screen font-sans selection:bg-brand-accent selection:text-white">
+
+    <!-- Top Navigation -->
+    <nav class="glass-card sticky top-0 z-50 px-6 py-4 flex justify-between items-center mb-8 border-b border-brand-border">
+        <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-full bg-brand-accent flex items-center justify-center shadow-lg shadow-brand-accent/20">
+                <i class="fa-solid fa-robot text-white text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-xl font-bold text-white tracking-tight">JenBot</h1>
+                <p class="text-xs text-gray-400 font-medium">Owner Dashboard v1.0</p>
+            </div>
+        </div>
+        <div class="flex items-center space-x-4">
+            <div class="px-3 py-1 rounded-full bg-green-500/10 border border-green-500/20 flex items-center">
+                <div class="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></div>
+                <span class="text-xs font-semibold text-green-400 uppercase tracking-wider">System Online</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mx-auto px-4 max-w-7xl pb-12">
+        
+        <!-- Metrics Grid -->
+        <h2 class="text-lg font-semibold text-white mb-4 flex items-center"><i class="fa-solid fa-chart-line mr-2 text-brand-accent"></i> Global Economy Metrics</h2>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+            <!-- Total JC -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-coins text-6xl text-brand-gold"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">Total Circulation</p>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,}".format(total_jc) }} <span class="text-lg text-brand-gold font-semibold">JC</span></h3>
+                <p class="text-xs text-brand-accent font-medium">Combined Wallet & Bank balances</p>
+            </div>
+
+            <!-- Total Gold -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-cubes-stacked text-6xl text-brand-gold"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">Global Gold Reserves</p>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,.4f}".format(total_gold) }} <span class="text-lg text-brand-gold font-semibold">g</span></h3>
+                <p class="text-xs text-brand-accent font-medium">Total user investments</p>
+            </div>
+
+            <!-- Vault JC -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-vault text-6xl text-green-500"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">Vault Fees (JC)</p>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,}".format(vault_jc) }} <span class="text-lg text-green-400 font-semibold">JC</span></h3>
+                <p class="text-xs text-green-500/80 font-medium">Collected from taxes & games</p>
+            </div>
+
+            <!-- Vault Gold -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-scale-balanced text-6xl text-green-500"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">Vault Fees (Gold)</p>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,.4f}".format(vault_gold) }} <span class="text-lg text-green-400 font-semibold">g</span></h3>
+                <p class="text-xs text-green-500/80 font-medium">Collected from trading/storage fees</p>
+            </div>
+        </div>
+
+        <!-- Main Content Split -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Left Column: Leaderboard -->
+            <div class="lg:col-span-1">
+                <div class="glass-card rounded-2xl border border-brand-border h-full flex flex-col">
+                    <div class="px-6 py-5 border-b border-brand-border/50 flex items-center justify-between">
+                        <h2 class="text-lg font-semibold text-white"><i class="fa-solid fa-trophy mr-2 text-brand-gold"></i> Richest Entities</h2>
+                    </div>
+                    <div class="p-6 flex-1">
+                        <ul class="space-y-4">
+                            {% for row in top_players %}
+                            <li class="flex items-center justify-between p-4 rounded-xl bg-brand-border/20 border border-transparent hover:border-brand-border/50 transition-colors">
+                                <div class="flex items-center space-x-3">
+                                    <div class="w-8 h-8 rounded-full bg-brand-dark flex flex-shrink-0 items-center justify-center font-bold text-sm text-gray-400 border border-brand-border overflow-hidden">
+                                        <img src="{{ row.avatar_url }}" alt="avatar" class="w-full h-full object-cover">
+                                    </div>
+                                    <div class="font-medium text-gray-200">{{ row.discord_name }} <br><span class="text-xs text-gray-500 font-mono">ID: {{ row.user_id }}</span></div>
+                                </div>
+                                <div class="font-bold text-white">{{ "{:,}".format(row.net_worth) }} <span class="text-xs text-brand-gold font-normal">JC</span></div>
+                            </li>
+                            {% else %}
+                            <li class="text-gray-500 text-sm italic text-center py-4">No data available</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Transactions -->
+            <div class="lg:col-span-2">
+                <div class="glass-card rounded-2xl border border-brand-border h-full flex flex-col overflow-hidden">
+                    <div class="px-6 py-5 border-b border-brand-border/50 flex items-center justify-between bg-brand-card/50">
+                        <h2 class="text-lg font-semibold text-white"><i class="fa-solid fa-list-ul mr-2 text-gray-400"></i> Live Server Txns</h2>
+                        <span class="text-xs font-medium px-2.5 py-1 rounded bg-brand-border text-gray-300">Last 50</span>
+                    </div>
+                    
+                    <div class="flex-1 overflow-auto max-h-[500px]">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-sm z-10">
+                                <tr>
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">Time</th>
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">User ID</th>
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">Amount</th>
+                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-brand-border/30">
+                                {% for tx in transactions %}
+                                <tr class="table-row-hover transition-colors">
+                                    <td class="px-6 py-3.5 whitespace-nowrap text-sm text-gray-400 font-mono">{{ tx.timestamp_formatted }}</td>
+                                    <td class="px-6 py-3.5 whitespace-nowrap text-sm text-gray-300">
+                                        <div class="flex items-center space-x-2">
+                                            <img src="{{ tx.avatar_url }}" alt="avatar" class="w-6 h-6 rounded-full border border-brand-border bg-brand-dark">
+                                            <span>{{ tx.discord_name }}</span>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-3.5 whitespace-nowrap text-sm font-semibold 
+                                        {% if tx.amount > 0 %}text-green-400{% elif tx.amount < 0 %}text-red-400{% else %}text-gray-400{% endif %}">
+                                        {% if tx.amount > 0 %}+{% endif %}{{ "{:,}".format(tx.amount) }} JC
+                                    </td>
+                                    <td class="px-6 py-3.5 text-sm text-gray-300">{{ tx.reason }}</td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="4" class="px-6 py-8 text-center text-gray-500 text-sm italic">No recent transactions found.</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</body>
+</html>
