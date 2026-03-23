@@ -121,7 +121,7 @@ def pay_jc(user_id: str, amount: int) -> tuple[bool, str]:
 def get_bank_limit(user_id: str) -> float:
     """
     Calculates the user's total bank storage limit (Base + Upgrades).
-    Base = 50,000 JC.
+    Upgrades are stackable (+50k per Safe, +250k per Vault).
     """
     base = 50000
     
@@ -129,14 +129,14 @@ def get_bank_limit(user_id: str) -> float:
     if get_inventory_item(user_id, "Titanium Bunker"):
         return float('inf')
         
-    extra = 0
-    # Iron Safe (+50k)
-    if get_inventory_item(user_id, "Iron Safe"):
-        extra += 50000
-    # Steel Vault (+250k)
-    if get_inventory_item(user_id, "Steel Vault"):
-        extra += 250000
-        
+    # Count instances of stackable upgrades
+    iron_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Iron Safe'", (user_id,), fetchone=True)
+    steel_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Steel Vault'", (user_id,), fetchone=True)
+    
+    iron_count = iron_count_row[0] if iron_count_row else 0
+    steel_count = steel_count_row[0] if steel_count_row else 0
+    
+    extra = (iron_count * 50000) + (steel_count * 250000)
     return base + extra
 
 def get_last_daily(user_id: str) -> str:
@@ -1365,10 +1365,6 @@ class Economy(commands.Cog):
             
         elif item_type == "iron":
             cost = shop["iron"]
-            if get_inventory_item(uid, "Iron Safe"):
-                await ctx.send("❌ You already own an Iron Safe!")
-                return
-                
             success, pay_msg = pay_jc(uid, cost)
             if not success:
                 await ctx.send(pay_msg)
@@ -1376,15 +1372,12 @@ class Economy(commands.Cog):
                 
             add_item(uid, "Iron Safe", "Upgrades", "")
             log_transaction(uid, -cost, "Bought Iron Safe")
-            await ctx.send(f"📦 **{ctx.author.name}**, you purchased an **Iron Safe**! Your bank capacity increased by **50,000 JC**. ({pay_msg})")
+            new_limit = get_bank_limit(uid)
+            await ctx.send(f"📦 **{ctx.author.name}**, you purchased an **Iron Safe**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
             
         elif item_type == "steel":
             cost = shop["steel"]
-            if get_inventory_item(uid, "Steel Vault"):
-                await ctx.send("❌ You already own a Steel Vault!")
-                return
-                
             success, pay_msg = pay_jc(uid, cost)
             if not success:
                 await ctx.send(pay_msg)
@@ -1392,7 +1385,8 @@ class Economy(commands.Cog):
                 
             add_item(uid, "Steel Vault", "Upgrades", "")
             log_transaction(uid, -cost, "Bought Steel Vault")
-            await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your bank capacity increased by **250,000 JC**. ({pay_msg})")
+            new_limit = get_bank_limit(uid)
+            await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
 
         else:
