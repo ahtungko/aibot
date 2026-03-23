@@ -597,9 +597,9 @@ class Economy(commands.Cog):
         vip_active = is_vip(uid)
         
         # Get Inventory Collectibles
-        inv_items = get_inventory(uid) or [] # returns list of (name, type)
+        inv_items = get_inventory(uid) or [] # returns list of (name, type, data)
         collectibles = {}
-        for name, itype in inv_items:
+        for name, itype, idata in inv_items:
             if itype in ["Collectible", "Perk"]:
                 collectibles[name] = collectibles.get(name, 0) + 1
         
