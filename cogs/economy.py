@@ -97,6 +97,48 @@ def add_bank(user_id: str, amount: int) -> int:
     set_bank(user_id, new_bank)
     return new_bank
 
+def pay_jc(user_id: str, amount: int) -> tuple[bool, str]:
+    """
+    Attempts to deduct 'amount' from user's Wallet first, then Bank.
+    Returns (Success, Description)
+    """
+    wallet = get_balance(user_id)
+    bank = get_bank(user_id)
+    
+    if wallet + bank < amount:
+        return False, f"❌ You need **{amount:,} JC**, but you only have **{wallet + bank:,} JC** (Wallet + Bank)!"
+    
+    if wallet >= amount:
+        add_balance(user_id, -amount)
+        return True, f"💸 Paid **{amount:,} JC** from your Wallet."
+    else:
+        remainder = amount - wallet
+        if wallet > 0:
+            set_balance(user_id, 0)
+        add_bank(user_id, -remainder)
+        return True, f"💸 Paid **{wallet:,} JC** from Wallet and **{remainder:,} JC** from Bank."
+
+def get_bank_limit(user_id: str) -> float:
+    """
+    Calculates the user's total bank storage limit (Base + Upgrades).
+    Base = 50,000 JC.
+    """
+    base = 50000
+    
+    # Check for Unlimited Bunker
+    if get_inventory_item(user_id, "Titanium Bunker"):
+        return float('inf')
+        
+    extra = 0
+    # Iron Safe (+50k)
+    if get_inventory_item(user_id, "Iron Safe"):
+        extra += 50000
+    # Steel Vault (+250k)
+    if get_inventory_item(user_id, "Steel Vault"):
+        extra += 250000
+        
+    return base + extra
+
 def get_last_daily(user_id: str) -> str:
     row = db_query("SELECT last_daily FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
     return row[0] if row else ""
@@ -213,17 +255,20 @@ def track_fee(amount: int):
 async def validate_bet(ctx: commands.Context, amount_str):
     """
     Validates a bet amount, handling commas and 'max'/'all'.
+    Checks total (Wallet + Bank) balance.
     Returns (amount_int, error_message)
     """
     uid = str(ctx.author.id)
-    bal = get_balance(uid)
+    wallet = get_balance(uid)
+    bank = get_bank(uid)
+    total_bal = wallet + bank
 
     if amount_str is None:
         return None, "❌ Please provide a positive bet amount!"
 
     s = str(amount_str).lower().replace(',', '')
     if s in ['max', 'all']:
-        amount = bal
+        amount = total_bal
     else:
         try:
             amount = int(s)
@@ -233,8 +278,8 @@ async def validate_bet(ctx: commands.Context, amount_str):
     if amount <= 0:
         return None, "❌ Please provide a positive bet amount!"
     
-    if bal < amount:
-        return None, f"❌ You only have **{bal:,}** JC."
+    if total_bal < amount:
+        return None, f"❌ You only have **{total_bal:,}** JC (Wallet + Bank)."
     
     return amount, None
 
@@ -258,6 +303,8 @@ class Economy(commands.Cog):
         wallet = get_balance(uid)
         bank = get_bank(uid)
         total = wallet + bank
+        limit = get_bank_limit(uid)
+        limit_str = f"{limit:,}" if limit != float('inf') else "Unlimited"
         
         embed = discord.Embed(
             title=f"💰 {target.display_name}'s Balances",
@@ -265,7 +312,7 @@ class Economy(commands.Cog):
         )
         embed.set_thumbnail(url=target.display_avatar.url)
         embed.add_field(name="💵 Wallet", value=f"**{wallet:,}** JC", inline=True)
-        embed.add_field(name="🏦 Bank", value=f"**{bank:,}** JC", inline=True)
+        embed.add_field(name="🏦 Bank", value=f"**{bank:,}** / {limit_str} JC", inline=True)
         embed.add_field(name="Total Net Worth", value=f"**{total:,}** JC", inline=False)
         await ctx.send(embed=embed)
         
@@ -273,16 +320,28 @@ class Economy(commands.Cog):
     async def deposit_command(self, ctx: commands.Context, amount_str: str = None):
         """Deposit JC into your secure Bank. Usage: !deposit [amount | max]"""
         uid = str(ctx.author.id)
+        current_bank = get_bank(uid)
+        limit = get_bank_limit(uid)
+
+        # Handle max/all properly with the limit
         amount, err = await validate_bet(ctx, amount_str)
         if err:
             await ctx.send(err)
+            return
+            
+        if current_bank + amount > limit:
+            if current_bank >= limit:
+                await ctx.send(f"❌ Your bank is already at or above its current capacity (**{limit:,}** JC)! Upgrade your vault in the `!shop` to store more.")
+            else:
+                allowed = int(limit - current_bank)
+                await ctx.send(f"❌ You only have room for **{allowed:,}** more JC in your bank (Current Limit: **{limit:,}**).")
             return
             
         add_balance(uid, -amount)
         new_bank = add_bank(uid, amount)
         log_transaction(uid, amount, "Bank Deposit")
         
-        await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** JC.")
+        await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** / {limit if limit != float('inf') else 'Unlimited':,} JC.")
 
     @commands.command(name='withdraw', aliases=['with'])
     async def withdraw_command(self, ctx: commands.Context, amount_str: str = None):
@@ -495,7 +554,7 @@ class Economy(commands.Cog):
         
         grams_bought = purchase_power / live_price
         
-        add_balance(uid, -jc_amount)
+        success, pay_msg = pay_jc(uid, jc_amount)
         add_gold_grams(uid, grams_bought)
         track_fee(fee)
         log_transaction(uid, -jc_amount, "Bought Gold")
@@ -503,6 +562,7 @@ class Economy(commands.Cog):
         embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
         embed.add_field(name="Spent", value=f"**{jc_amount:,}** JC\n*(Includes **{fee:,}** JC fee)*", inline=True)
         embed.add_field(name="Acquired", value=f"**{grams_bought:.4f}g** Gold", inline=True)
+        embed.add_field(name="Payment", value=pay_msg, inline=False)
         fee_percent = int(fee_rate * 100)
         embed.add_field(name="Execution Price", value=f"{live_price:,.2f} JC/g ({fee_percent}% Fee)", inline=False)
         embed.set_footer(text="Trade executed successfully at market price.")
@@ -520,7 +580,7 @@ class Economy(commands.Cog):
             await ctx.send(f"❌ VIP Membership costs **{cost:,}** JC. You only have **{bal:,}** JC.")
             return
             
-        add_balance(uid, -cost)
+        success, pay_msg = pay_jc(uid, cost)
         set_vip(uid, 30)
         log_transaction(uid, -cost, "Purchased VIP")
         
@@ -528,6 +588,7 @@ class Economy(commands.Cog):
         embed = discord.Embed(
             title="👑 VIP Membership Activated!",
             description=f"Congratulations {ctx.author.mention}! Your VIP status is now active.\n\n"
+                        f"✨ **Payment:** {pay_msg}\n\n"
                         f"✨ **Perks unlocked:**\n"
                         f"- Gold Trading Fees reduced from **5%** to **2%**!\n"
                         f"- Shiny VIP Badge in `!pf`.\n\n"
@@ -653,20 +714,24 @@ class Economy(commands.Cog):
         won = (user_choice == outcome)
         outcome_full = "Heads" if outcome == 'h' else "Tails"
 
+        # Auto-deduct payment
+        _, pay_msg = pay_jc(uid, amount)
+
         if won:
-            winnings = amount
+            winnings = amount * 2
             new_bal = add_balance(uid, winnings)
             log_transaction(uid, winnings, "Flip Win")
             color = discord.Color.green()
-            msg = f"🎉 You guessed right!\nYou won **{winnings:,}** JC!"
+            msg = f"🎉 You guessed right!\nYou won **{amount:,}** JC!"
         else:
-            new_bal = add_balance(uid, -amount)
+            new_bal = get_balance(uid)
             log_transaction(uid, -amount, "Flip Loss")
             color = discord.Color.red()
             msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JC."
 
         embed = discord.Embed(title=f"🪙 Coin Flip — {outcome_full}!", description=msg, color=color)
-        embed.add_field(name="Balance", value=f"**{new_bal:,}** JC", inline=False)
+        embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC", inline=True)
+        embed.add_field(name="Payment", value=pay_msg, inline=True)
         embed.set_footer(text=f"Bet: {amount:,} JC | Picked: {side}")
         await ctx.send(embed=embed)
 
@@ -683,6 +748,9 @@ class Economy(commands.Cog):
         reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
         reel_display = " | ".join(reels)
 
+        # Auto-deduct payment
+        _, pay_msg = pay_jc(uid, amount)
+
         if reels[0] == reels[1] == reels[2]:
             multiplier = SLOT_PAYOUTS.get(reels[0], 2)
             winnings = amount * multiplier
@@ -692,20 +760,21 @@ class Economy(commands.Cog):
             desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JC! (x{multiplier})"
             color = discord.Color.gold()
         elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
-            new_bal = get_balance(uid)
-            log_transaction(uid, 0, "Slots Draw")
+            new_bal = add_balance(uid, amount)  # Bet back
+            log_transaction(uid, amount, "Slots Draw")
             title = "🎰 Two of a Kind"
             desc = f"**[ {reel_display} ]**\n\n😌 Two match! You got your bet back."
             color = discord.Color.blue()
         else:
-            new_bal = add_balance(uid, -amount)
+            new_bal = get_balance(uid)
             log_transaction(uid, -amount, "Slots Loss")
             title = "🎰 No Match"
             desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JC."
             color = discord.Color.red()
 
         embed = discord.Embed(title=title, description=desc, color=color)
-        embed.add_field(name="Balance", value=f"**{new_bal:,}** JC", inline=False)
+        embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC", inline=True)
+        embed.add_field(name="Payment", value=pay_msg, inline=True)
         embed.set_footer(text=f"Bet: {amount:,} JC")
         await ctx.send(embed=embed)
 
@@ -793,7 +862,7 @@ class Economy(commands.Cog):
             legal_fee = int(fine * 0.02)
             restitution = fine - legal_fee
             
-            add_balance(uid, -fine)
+            success, pay_msg = pay_jc(uid, fine)
             add_balance(vid, restitution)
             track_fee(legal_fee)
             log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""))
@@ -811,7 +880,7 @@ class Economy(commands.Cog):
             else:
                 embed = discord.Embed(title="🚔 CAUGHT IN THE ACT!", color=discord.Color.red())
                 embed.description = (f"You were spotted and forced to pay a fine to {member.mention}!\n\n"
-                                    f"💸 **You lost {fine:,} JC**.")
+                                    f"💸 **You lost {fine:,} JC**. ({pay_msg})")
                 embed.add_field(name="Victim Restitution", value=f"**{restitution:,}** JC", inline=True)
                 embed.add_field(name="Legal Fees", value=f"**{legal_fee:,}** JC (Sent to Vault)", inline=True)
                 embed.set_footer(text="Better luck next time, thief!")
@@ -952,6 +1021,21 @@ class Economy(commands.Cog):
             value="Protects you from **1** robbery attempt (100% block). **Max 3 in inventory!**\nUsage: `!buy shield`",
             inline=False
         )
+        embed.add_field(
+            name="📦 **Iron Safe** — `20,000 JC`",
+            value="Increases your Bank Capacity by **+50,000 JC**.\nUsage: `!buy iron`",
+            inline=True
+        )
+        embed.add_field(
+            name="🛡️ **Steel Vault** — `100,000 JC`",
+            value="Increases your Bank Capacity by **+250,000 JC**.\nUsage: `!buy steel`",
+            inline=True
+        )
+        embed.add_field(
+            name="💎 **Titanium Bunker** — `500,000,000 JC`",
+            value="Unlocks **Unlimited Bank Storage**.\nUsage: `!buy bunker`",
+            inline=False
+        )
         embed.set_footer(text=f"Your Balance: {get_balance(str(ctx.author.id)):,} JC")
         await ctx.send(embed=embed)
 
@@ -964,6 +1048,15 @@ class Economy(commands.Cog):
 
         uid = str(ctx.author.id)
         item_type = item_type.lower()
+        
+        shop = {
+            "box": 1000,
+            "shield": 2000,
+            "role": 500000,
+            "iron": 20000,
+            "steel": 100000,
+            "bunker": 500000000
+        }
         
         if item_type == 'box':
             # Parse quantity (default 1, max 10)
@@ -981,17 +1074,15 @@ class Economy(commands.Cog):
             
             cost_per = 1000
             total_cost = cost_per * count
-            bal = get_balance(uid)
             
-            if bal < total_cost:
-                await ctx.send(f"❌ You need **{total_cost:,} JC** for {count} Mystery Box(es)! You have **{bal:,} JC**.")
+            success, msg_text = pay_jc(uid, total_cost)
+            if not success:
+                await ctx.send(msg_text)
                 return
             
-            # Deduct total cost upfront
-            add_balance(uid, -total_cost)
             log_transaction(uid, -total_cost, f"Bought {count}x Mystery Box")
             
-            msg = await ctx.send(f"🎁 {ctx.author.mention} is opening **{count}** Mystery Box(es)...")
+            msg = await ctx.send(f"🎁 {ctx.author.mention} is opening **{count}** Mystery Box(es)... ({msg_text})")
             await asyncio.sleep(1.5)
             
             # Open all boxes
@@ -1060,35 +1151,38 @@ class Economy(commands.Cog):
             
         elif item_type in ['shield', 'vault shield', 'vaultshield']:
             cost = 2000
-            if get_balance(uid) < cost:
-                await ctx.send(f"❌ You need **{cost:,} JC** for a Vault Shield!")
-                return
             
             # Limit check: Max 3 shields
-            shield_count = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Vault Shield'", (uid,), fetchone=True)
-            if shield_count and shield_count[0] >= 3:
+            shield_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Vault Shield'", (uid,), fetchone=True)
+            shield_count = shield_count_row[0] if shield_count_row else 0
+            if shield_count >= 3:
                 await ctx.send("🛡️ You already have the maximum of **3 Vault Shields**! You must use one before buying more.")
                 return
             
-            add_balance(uid, -cost)
+            success, msg_text = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(msg_text)
+                return
+                
             add_item(uid, "Vault Shield", "Protection")
             log_transaction(uid, -cost, "Bought Vault Shield")
             
-            await ctx.send(f"🛡️ {ctx.author.mention}, you purchased a **Vault Shield**! You now have **{shield_count[0]+1}/3** active shields. (1 Use each)")
+            await ctx.send(f"🛡️ {ctx.author.mention}, you purchased a **Vault Shield**! {msg_text} You now have **{shield_count+1}/3** active shields. (1 Use each)")
 
         elif item_type in ['role', 'custom role']:
             cost = 500000
             fee = 25000 # 5% to Vault
-            if get_balance(uid) < cost:
-                await ctx.send(f"❌ You need at least **{cost:,} JC** to buy a Custom Role pass!")
-                return
             
             # Check if they already own it
             if get_inventory_item(uid, "Custom Role Pass"):
-                await ctx.send("🎟️ You already own a **Custom Role Pass**! Use `!setrole <name> <#hex>` to configure it.")
+                await ctx.send("🎟️ You already own a **Custom Role Pass**! Use `!setrole <color>` to configure it.")
+                return
+            
+            success, msg_text = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(msg_text)
                 return
                 
-            add_balance(uid, -cost)
             track_fee(fee)
             add_item(uid, "Custom Role Pass", "Perk", "")
             log_transaction(uid, -cost, "Bought Custom Role Pass")
@@ -1100,8 +1194,56 @@ class Economy(commands.Cog):
                                  f"*(You also paid **{fee:,} JC** in taxes to the Global Vault!)*")
             await ctx.send(embed=embed)
 
+        elif item_type == "bunker":
+            cost = shop["bunker"]
+            if get_inventory_item(uid, "Titanium Bunker"):
+                await ctx.send("❌ You already own a Titanium Bunker!")
+                return
+                
+            success, pay_msg = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(pay_msg)
+                return
+                
+            add_item(uid, "Titanium Bunker", "Upgrades", "")
+            log_transaction(uid, -cost, "Bought Titanium Bunker")
+            await ctx.send(f"💎 **{ctx.author.name}**, you purchased the **Titanium Bunker**! Your bank now has **Unlimited Storage**. ({pay_msg})")
+            return
+            
+        elif item_type == "iron":
+            cost = shop["iron"]
+            if get_inventory_item(uid, "Iron Safe"):
+                await ctx.send("❌ You already own an Iron Safe!")
+                return
+                
+            success, pay_msg = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(pay_msg)
+                return
+                
+            add_item(uid, "Iron Safe", "Upgrades", "")
+            log_transaction(uid, -cost, "Bought Iron Safe")
+            await ctx.send(f"📦 **{ctx.author.name}**, you purchased an **Iron Safe**! Your bank capacity increased by **50,000 JC**. ({pay_msg})")
+            return
+            
+        elif item_type == "steel":
+            cost = shop["steel"]
+            if get_inventory_item(uid, "Steel Vault"):
+                await ctx.send("❌ You already own a Steel Vault!")
+                return
+                
+            success, pay_msg = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(pay_msg)
+                return
+                
+            add_item(uid, "Steel Vault", "Upgrades", "")
+            log_transaction(uid, -cost, "Bought Steel Vault")
+            await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your bank capacity increased by **250,000 JC**. ({pay_msg})")
+            return
+
         else:
-            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box`, `!buy shield`, or `!buy role`.")
+            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box`, `!buy iron`, `!buy steel`, or `!buy bunker`.")
 
     @commands.command(name='inventory', aliases=['inv'])
     async def inv_command(self, ctx: commands.Context):
@@ -1192,15 +1334,15 @@ class Economy(commands.Cog):
             if my_role:
                 # Edit existing role - Costs 450,000 JC
                 edit_cost = 450000
-                if get_balance(uid) < edit_cost:
-                    await ctx.send(f"❌ Editing your custom role costs **{edit_cost:,} JC**. You don't have enough!")
+                success, msg_text = pay_jc(uid, edit_cost)
+                if not success:
+                    await ctx.send(msg_text)
                     return
                 
-                add_balance(uid, -edit_cost)
                 log_transaction(uid, -edit_cost, "Edited Custom Role")
                 
                 await my_role.edit(name="JC", color=role_color, permissions=zero_perms, hoist=True, mentionable=False, position=target_pos, reason=f"Custom role edit by {ctx.author.name}")
-                await ctx.send(f"✨ Successfully updated color to `{color_display}` and moved it to the top! *(Cost: **{edit_cost:,} JC**)*")
+                await ctx.send(f"✨ Successfully updated color to `{color_display}` and moved it to the top! {msg_text} *(Cost: **{edit_cost:,} JC**)*")
             else:
                 # Create new role and assign it (First time free)
                 my_role = await ctx.guild.create_role(name="JC", color=role_color, permissions=zero_perms, hoist=True, mentionable=False, reason=f"Custom role creation by {ctx.author.name}")
@@ -1212,28 +1354,6 @@ class Economy(commands.Cog):
             await ctx.send("❌ I don't have permission to manage roles! Please make sure my bot role is higher than the custom roles and has the 'Manage Roles' permission.")
         except discord.HTTPException as e:
             await ctx.send(f"❌ An error occurred while managing the role. Make sure the name isn't too long or contains invalid characters. Details: {e}")
-
-    @commands.command(name='debugroles')
-    async def debugroles_command(self, ctx: commands.Context):
-        """Diagnostic tool for role hierarchy."""
-        bot_top = ctx.guild.me.top_role
-        user_roles = sorted(ctx.author.roles, key=lambda r: r.position, reverse=True)
-        
-        server_roles = sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
-        role_list = []
-        for r in server_roles[:15]:
-            label = ""
-            if r.position == bot_top.position: label += " 🤖 [BOT TOP]"
-            if r.name == "JC": label += " ✨ [JC ROLE]"
-            if r.position == user_roles[0].position: label += " 👤 [YOU]"
-            role_list.append(f"{r.position}: {r.name} {label}")
-        
-        display = "\n".join(role_list)
-        embed = discord.Embed(title="🔍 Hierarchy Check (Larger = HIGHER)", color=discord.Color.orange())
-        embed.description = (f"**Highest Permitted Move**: {bot_top.position - 1}\n\n"
-                             f"**Role Order (Top to Bottom):**\n{display}")
-        embed.set_footer(text="If the Bot is not at the top of this list, drag it up in Discord settings!")
-        await ctx.send(embed=embed)
 
     @commands.command(name='sell')
     async def sell_command(self, ctx: commands.Context, *, item_name: str = None):
@@ -1324,6 +1444,10 @@ class BlackjackView(discord.ui.View):
         self.message = None
         self.is_natural = False
         self.game_over = False
+        
+        # Take bet upfront
+        uid = str(ctx.author.id)
+        _, self.pay_msg = pay_jc(uid, bet)
 
     def create_deck(self):
         suits = ['♠️', '♥️', '♣️', '♦️']
@@ -1379,6 +1503,7 @@ class BlackjackView(discord.ui.View):
             embed.add_field(name="Dealer's Hand", value=self.get_hand_str(self.dealer_hand, hide_first=True), inline=False)
         
         embed.set_footer(text=f"Bet: {self.bet:,} JC")
+        embed.add_field(name="Payment", value=self.pay_msg, inline=False)
         return embed
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, emoji="➕")
@@ -1426,20 +1551,20 @@ class BlackjackView(discord.ui.View):
         
         uid = str(self.ctx.author.id)
         if win is True:
-            # Payout logic: 3:2 for natural, 1:1 for standard
-            multiplier = 1.5 if self.is_natural else 1.0
-            payout = int(self.bet * multiplier)
+            # Payout logic: Original bet back + winnings (3:2 for natural, 1:1 for standard)
+            profit_multiplier = 1.5 if self.is_natural else 1.0
+            payout = int(self.bet + (self.bet * profit_multiplier))
             
             new_bal = add_balance(uid, payout)
             log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
             color = discord.Color.green()
         elif win is False:
-            new_bal = add_balance(uid, -self.bet)
+            new_bal = get_balance(uid)
             log_transaction(uid, -self.bet, "Blackjack Loss")
             color = discord.Color.red()
-        else: # Tie
-            new_bal = get_balance(uid)
-            log_transaction(uid, 0, "Blackjack Push")
+        else: # Tie (Push) - Get bet back
+            new_bal = add_balance(uid, self.bet)
+            log_transaction(uid, self.bet, "Blackjack Push")
             color = discord.Color.blue()
 
         embed = self.make_embed(finished=True)
