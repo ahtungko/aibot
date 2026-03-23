@@ -250,6 +250,65 @@ def track_fee(amount: int):
     current = int(get_setting("fee_vault", "0"))
     set_setting("fee_vault", str(current + amount))
 
+def track_gold_fee(amount: float):
+    """Adds to the global gold fee vault."""
+    current = float(get_setting("gold_fee_vault", "0.0"))
+    set_setting("gold_fee_vault", str(current + amount))
+
+def get_last_gold_fee(user_id: str):
+    res = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True)
+    return int(res[0]) if res else None
+
+def set_last_gold_fee(user_id: str, ts: int):
+    existing = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True)
+    if existing:
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'last_gold_fee'", (str(ts), user_id), commit=True)
+    else:
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'last_gold_fee', 'System', ?)", (user_id, str(ts)), commit=True)
+
+def apply_gold_fees(user_id: str):
+    """
+    Checks if 7 days have passed since the last gold fee.
+    Deducts 10% (Normal) or 8% (VIP) and updates the vault.
+    Returns a warning message if fees were paid, otherwise None.
+    """
+    now = int(time.time())
+    last_fee_ts = get_last_gold_fee(user_id)
+    gold = get_gold_grams(user_id)
+    
+    if gold < 0.001:
+        # No gold, just keep the timestamp updated
+        set_last_gold_fee(user_id, now)
+        return None
+
+    if last_fee_ts is None:
+        # First time initialization
+        set_last_gold_fee(user_id, now)
+        return None
+    
+    diff = now - last_fee_ts
+    week_seconds = 7 * 24 * 3600
+    if diff < week_seconds:
+        return None
+    
+    periods = int(diff // week_seconds)
+    rate = 0.08 if is_vip(user_id) else 0.10
+    
+    # Calculate compounded fee
+    new_gold = gold * ((1 - rate) ** periods)
+    fee_amount = int((gold - new_gold) * 1000) / 1000.0
+    
+    if fee_amount > 0:
+        add_gold_grams(user_id, -fee_amount)
+        track_gold_fee(fee_amount)
+        # Advance the timestamp by full weeks to keep the schedule
+        set_last_gold_fee(user_id, last_fee_ts + (periods * week_seconds))
+        
+        log_transaction(user_id, 0, f"Paid {fee_amount}g Storage Fee ({periods} weeks)")
+        return f"⚖️ **Gold Storage Fee**: You paid **{fee_amount:.3g}g** in storage fees for the last **{periods}** week(s)."
+    
+    return None
+
 # --- Helpers ---
 
 async def validate_bet(ctx: commands.Context, amount_str):
@@ -299,6 +358,10 @@ class Economy(commands.Cog):
         """Check your (or someone else's) JC balance."""
         target = member or ctx.author
         uid = str(target.id)
+        
+        # Apply storage fees if applicable
+        fee_msg = apply_gold_fees(uid)
+        if fee_msg: await ctx.send(f"{target.mention}, {fee_msg}")
         
         wallet = get_balance(uid)
         bank = get_bank(uid)
@@ -493,10 +556,27 @@ class Economy(commands.Cog):
         target = member or ctx.author
         uid = str(target.id)
         
+        # Apply storage fees if applicable
+        fee_msg = apply_gold_fees(uid)
+        if fee_msg: await ctx.send(f"{target.mention}, {fee_msg}")
+        
         wallet = get_balance(uid)
         bank = get_bank(uid)
+        limit = get_bank_limit(uid)
+        limit_str = f"{limit:,}" if limit != float('inf') else "Unlimited"
         gold_grams = get_gold_grams(uid)
         vip_active = is_vip(uid)
+        
+        # Get Inventory Collectibles
+        inv_items = get_inventory(uid) or [] # returns list of (name, type)
+        collectibles = {}
+        for name, itype in inv_items:
+            if itype in ["Collectible", "Perk"]:
+                collectibles[name] = collectibles.get(name, 0) + 1
+        
+        coll_str = "None"
+        if collectibles:
+            coll_str = "\n".join([f"• {name} (x{count})" for name, count in collectibles.items()])
         
         embed = discord.Embed(title=f"📊 {target.display_name}'s Portfolio", color=discord.Color.dark_gold())
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -507,7 +587,8 @@ class Economy(commands.Cog):
             vip_status = f"✅ Active (Expires <t:{expiry}:R>)"
         
         embed.add_field(name="VIP Membership 👑", value=vip_status, inline=False)
-        embed.add_field(name="Balances 💵🏦", value=f"Wallet: **{wallet:,}** JC\nBank: **{bank:,}** JC", inline=False)
+        embed.add_field(name="Balances 💵🏦", value=f"Wallet: **{wallet:,}** JC\nBank: **{bank:,}** / {limit_str} JC", inline=False)
+        embed.add_field(name="Collectibles 🎒✨", value=coll_str, inline=False)
         
         base_net_worth = wallet + bank
         
@@ -536,6 +617,10 @@ class Economy(commands.Cog):
     async def buygold_command(self, ctx: commands.Context, amount: str = None):
         """Buy virtual Gold at the live market rate. (5% Fee) Usage: !buygold [JC amount | max]"""
         uid = str(ctx.author.id)
+        
+        # Apply storage fees if applicable
+        fee_msg = apply_gold_fees(uid)
+        if fee_msg: await ctx.send(f"{ctx.author.mention}, {fee_msg}")
         jc_amount, err = await validate_bet(ctx, amount)
         if err:
             await ctx.send(err)
@@ -571,7 +656,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='buyvip', aliases=['vip'])
     async def buy_vip_command(self, ctx: commands.Context):
-        """Purchase 30 days of VIP Membership for 10,000 JC. Reduces Gold fees to 2%."""
+        """Purchase 30 days of VIP Membership for 10,000 JC."""
         uid = str(ctx.author.id)
         cost = 10000
         bal = get_balance(uid)
@@ -589,9 +674,11 @@ class Economy(commands.Cog):
             title="👑 VIP Membership Activated!",
             description=f"Congratulations {ctx.author.mention}! Your VIP status is now active.\n\n"
                         f"✨ **Payment:** {pay_msg}\n\n"
-                        f"✨ **Perks unlocked:**\n"
-                        f"- Gold Trading Fees reduced from **5%** to **2%**!\n"
-                        f"- Shiny VIP Badge in `!pf`.\n\n"
+                        f"✨ **Exclusive Perks:**\n"
+                        f"- 🪙 **Market Discount:** Gold fees reduced from **5%** to **2%**.\n"
+                        f"- 🥷 **Low Bail:** Failed robbery fines reduced from **10%** to **5%**.\n"
+                        f"- 📉 **Vault Access:** Weekly Gold storage fees reduced from **10%** to **8%**.\n"
+                        f"- 🛡️ **Elusive:** You are **10% harder to rob** than normal players.\n\n"
                         f"📅 **Expiry:** <t:{expiry}:F> (<t:{expiry}:R>)",
             color=discord.Color.purple()
         )
@@ -601,6 +688,10 @@ class Economy(commands.Cog):
     async def sellgold_command(self, ctx: commands.Context, grams_to_sell: str = None):
         """Sell your Gold at the live market rate. (5% Fee) Usage: !sellgold [grams | max]"""
         uid = str(ctx.author.id)
+        
+        # Apply storage fees if applicable
+        fee_msg = apply_gold_fees(uid)
+        if fee_msg: await ctx.send(f"{ctx.author.mention}, {fee_msg}")
         current_grams = get_gold_grams(uid)
         
         if current_grams <= 0:
@@ -654,16 +745,18 @@ class Economy(commands.Cog):
 
     @commands.command(name='vault', aliases=['fees'])
     async def vault_command(self, ctx: commands.Context):
-        """View the Global JC Fee Vault."""
-        total_fees = int(get_setting("fee_vault", "0"))
+        """View the global fee vault balances."""
+        jc_vault = int(get_setting("fee_vault", "0"))
+        gold_vault = float(get_setting("gold_fee_vault", "0.0"))
+        
         embed = discord.Embed(
             title="🏦 Global Fee Vault",
-            description=f"This vault tracks all processing fees collected from Gold traders. "
-                        f"These funds will be periodically returned to the community!\n\n"
-                        f"💰 **Total Collected:** **{total_fees:,}** JC",
-            color=discord.Color.dark_blue()
+            description="All taxes and fines are collected here for community events!",
+            color=discord.Color.blue()
         )
-        embed.set_footer(text="Trade fees keep the server economy healthy!")
+        embed.add_field(name="💰 JC Vault", value=f"**{jc_vault:,}** JC", inline=True)
+        embed.add_field(name="✨ Gold Vault", value=f"**{gold_vault:.3f}g**", inline=True)
+        embed.set_footer(text="Recycling JC and Gold into community rewards!")
         await ctx.send(embed=embed)
 
 
@@ -826,12 +919,39 @@ class Economy(commands.Cog):
         # Luck & VIP Logic
         success_rate = 0.40
         if is_vip(vid): success_rate -= 0.10 # Harder to rob VIPs
-        
-        success = random.random() < success_rate and not has_shield
+
+        # Result Calculation
+        success_roll = random.random() < success_rate
         set_last_rob(uid, now)
         
-        if success:
-            # Stolen amount: 10-25%
+        # --- GOLD THEFT CHECK (50% Chance, Bypasses JC Shield) ---
+        gold_stolen = 0
+        gold_msg = ""
+        if success_roll and random.random() < 0.50:
+            v_gold = get_gold_grams(vid)
+            if v_gold > 0.001:
+                gold_percent = random.uniform(0.20, 0.30)
+                gold_stolen = int(v_gold * gold_percent * 100) / 100.0
+                add_gold_grams(vid, -gold_stolen)
+                add_gold_grams(uid, gold_stolen)
+                log_transaction(uid, 0, f"Stole {gold_stolen}g Gold from {member.display_name}")
+                log_transaction(vid, 0, f"Gold stolen by {ctx.author.display_name}: {gold_stolen}g")
+                gold_msg = f"\n🔥 **BONUS**: You also made off with **{gold_stolen}g** of Gold!"
+
+        if success_roll:
+            # JC Robbery success (could be blocked by shield)
+            if has_shield:
+                remove_item(vid, "Vault Shield")
+                embed = discord.Embed(title="🛡️ Robbery Blocked!", color=discord.Color.orange())
+                msg = f"{member.mention}'s **Vault Shield** blocked your attempt to steal their JC!"
+                if gold_stolen > 0:
+                    msg += f"\n\n...But the shield didn't protect their Gold! {gold_msg}"
+                embed.description = msg
+                embed.set_footer(text="The shield was consumed in the struggle.")
+                await ctx.send(embed=embed)
+                return
+
+            # Standard JC theft
             percent = random.uniform(0.10, 0.25)
             stolen = int(v_bal * percent)
             
@@ -846,9 +966,11 @@ class Economy(commands.Cog):
             log_transaction(vid, -stolen, f"Robbed by {ctx.author.display_name}")
             
             embed = discord.Embed(title="🥷 Successful Robbery!", color=discord.Color.green())
-            embed.description = f"You managed to snatch **{stolen:,}** JC from {member.mention}!"
+            embed.description = f"You managed to snatch **{stolen:,}** JC from {member.mention}!{gold_msg}"
             embed.add_field(name="Net Gain", value=f"**{net_gain:,}** JC", inline=True)
             embed.add_field(name="Guild Tax", value=f"**{tax:,}** JC (Sent to Vault)", inline=True)
+            if gold_stolen > 0:
+                embed.add_field(name="Gold Looted", value=f"**{gold_stolen}g**", inline=True)
             embed.set_footer(text="Crime pays... for now.")
             await ctx.send(embed=embed)
         else:
@@ -865,6 +987,32 @@ class Economy(commands.Cog):
             success, pay_msg = pay_jc(uid, fine)
             add_balance(vid, restitution)
             track_fee(legal_fee)
+            
+            # --- GOLD PENALTY (10% of Thief's Gold) ---
+            t_gold = get_gold_grams(uid)
+            gold_fine_victim = 0
+            gold_fine_vault = 0
+            gold_msg = ""
+            if t_gold > 0.001:
+                gold_fine_victim = int(t_gold * 0.05 * 1000) / 1000.0
+                gold_fine_vault = int(t_gold * 0.05 * 1000) / 1000.0
+                
+                add_gold_grams(uid, -(gold_fine_victim + gold_fine_vault))
+                add_gold_grams(vid, gold_fine_victim)
+                track_gold_fee(gold_fine_vault)
+                
+                log_transaction(uid, 0, f"Robbery Fine: {gold_fine_victim}g to victim, {gold_fine_vault}g to vault")
+                log_transaction(vid, 0, f"Restitution: Received {gold_fine_victim}g from failed thief")
+                gold_msg = f"\n⚠️ **FATAL**: You also paid **{gold_fine_victim}g** to {member.name} and **{gold_fine_vault}g** as legal fees!"
+
+            embed = discord.Embed(title="👮 Robbery Failed!", color=discord.Color.red())
+            embed.description = f"You were caught trying to rob {member.mention}!{gold_msg}"
+            embed.add_field(name="Fine Paid", value=f"**{fine:,}** JC ({pay_msg})", inline=True)
+            embed.add_field(name="Restitution", value=f"**{restitution:,}** JC (Paid to Victim)", inline=True)
+            if gold_fine_victim > 0:
+                embed.add_field(name="Gold Penalty", value=f"**{gold_fine_victim + gold_fine_vault}g**", inline=True)
+            embed.set_footer(text="Better luck next time... if you still have teeth.")
+            await ctx.send(embed=embed)
             log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""))
             log_transaction(vid, restitution, f"Compensated for Attempted Robbery")
             
@@ -1005,6 +1153,11 @@ class Economy(commands.Cog):
             title="Convenience Store 🎭",
             description="Spend your JC on unique rewards!",
             color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="👑 **VIP Membership** — `10,000 JC`",
+            value="30 days of elite perks: **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, and **+10% Robbery defense**.\nUsage: `!buyvip`",
+            inline=False
         )
         embed.add_field(
             name="✨ **Custom Role** — `500,000 JC`",
@@ -1641,7 +1794,6 @@ class RainView(discord.ui.View):
 
     async def on_timeout(self):
         await self.finish_rain()
-
 
 async def setup(bot):
     await bot.add_cog(Economy(bot))
