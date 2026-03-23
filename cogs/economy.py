@@ -1289,7 +1289,7 @@ class Economy(commands.Cog):
             
         view = RainView(pool=pool)
         embed = discord.Embed(
-            title="🌧️ IT'S RAINING JENCOINS!",
+            title="🌧️ IT'S RAINING JC!",
             description=f"A total pool of **{pool:,} JC** is falling! Quick! Click below to catch some!\n\n**Catch 'em before the pool runs dry!**",
             color=discord.Color.blue()
         )
