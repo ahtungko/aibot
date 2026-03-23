@@ -160,7 +160,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="JC & Social", value=f"`{p}daily` - Claim daily coins\n`{p}work` - Work for coins\n`{p}bal [@user]` - Check balance\n`{p}give @user [amount]` - Send coins\n`{p}dep [amount]` - Secure JC in Bank\n`{p}with [amount]` - Withdraw JC from Bank\n`{p}top` - Richest users\n`{p}history` - View transactions", inline=False)
             embed.add_field(name="Gold Market & VIP 👑", value=f"`{p}bg [JC]` - Buy Gold (Live Rate)\n`{p}sg [grams]` - Sell Gold (Live Rate)\n`{p}pf` - View Portfolio & Net Worth\n`{p}vip` - Get VIP Membership (Reduce Fees)\n`{p}vault` - View community fee pool", inline=False)
             embed.add_field(name="Gambling & Crime 🥷", value=f"`{p}flip [bet] [h/t]` - Coin flip\n`{p}slots [bet]` - Slot machine\n`{p}bj [bet]` - Play Blackjack\n`{p}rob @user` - High stakes robbery!", inline=False)
-            embed.add_field(name="Shop & Items", value=f"`{p}shop` - Browse shop items\n`{p}buy [item]` - Purchase item\n`{p}inv` - View owned collectibles\n`{p}sell [item]` - Sell rare collectibles", inline=False)
+            embed.add_field(name="Shop & Items", value=f"`{p}shop` - Browse shop items\n`{p}buy [item]` - Purchase item\n`{p}inv` - View owned collectibles\n`{p}sell [item]` - Sell rare collectibles\n`{p}setrole [color name or #hex]` - Set role color", inline=False)
             
         elif val == "social":
             embed.title = "🌟 Daily & Social"

@@ -938,8 +938,8 @@ class Economy(commands.Cog):
             color=discord.Color.blue()
         )
         embed.add_field(
-            name="✨ **Custom Role** — `50,000 JC`",
-            value="Coming Soon! A custom role with your name and color.",
+            name="✨ **Custom Role** — `500,000 JC`",
+            value="Create and equip your own custom Discord role!\nUsage: `!buy role` then `!setrole <name> <#hex>`",
             inline=False
         )
         embed.add_field(
@@ -1076,8 +1076,32 @@ class Economy(commands.Cog):
             
             await ctx.send(f"🛡️ {ctx.author.mention}, you purchased a **Vault Shield**! You now have **{shield_count[0]+1}/3** active shields. (1 Use each)")
 
+        elif item_type in ['role', 'custom role']:
+            cost = 500000
+            fee = 25000 # 5% to Vault
+            if get_balance(uid) < cost:
+                await ctx.send(f"❌ You need at least **{cost:,} JC** to buy a Custom Role pass!")
+                return
+            
+            # Check if they already own it
+            if get_inventory_item(uid, "Custom Role Pass"):
+                await ctx.send("🎟️ You already own a **Custom Role Pass**! Use `!setrole <name> <#hex>` to configure it.")
+                return
+                
+            add_balance(uid, -cost)
+            track_fee(fee)
+            add_item(uid, "Custom Role Pass", "Perk", "")
+            log_transaction(uid, -cost, "Bought Custom Role Pass")
+            
+            embed = discord.Embed(title="✨ Custom Role Pass Purchased!", color=discord.Color.magenta())
+            embed.description = (f"Congratulations {ctx.author.mention}! You can now create your own custom role.\n\n"
+                                 f"**Usage:** `{COMMAND_PREFIX}setrole #HexColor`\n"
+                                 f"**Example:** `{COMMAND_PREFIX}setrole #FFD700`\n\n"
+                                 f"*(You also paid **{fee:,} JC** in taxes to the Global Vault!)*")
+            await ctx.send(embed=embed)
+
         else:
-            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box` or `!buy shield`.")
+            await ctx.send("🛒 The shop is currently being restocked! Try `!buy box`, `!buy shield`, or `!buy role`.")
 
     @commands.command(name='inventory', aliases=['inv'])
     async def inv_command(self, ctx: commands.Context):
@@ -1097,6 +1121,91 @@ class Economy(commands.Cog):
         display = "\n".join([f"• {name} x{count}" for name, count in item_list.items()])
         embed = discord.Embed(title=f"🎒 {ctx.author.display_name}'s Inventory", description=display, color=discord.Color.blue())
         await ctx.send(embed=embed)
+
+    @commands.command(name='setrole')
+    async def setrole_command(self, ctx: commands.Context, color_input: str = None):
+        """Configure your custom role! Usage: !setrole [ColorName or #Hex]"""
+        if not color_input:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}setrole [ColorName or #HexColor]`\nExamples: `!setrole blue`, `!setrole #FFD700`")
+            return
+            
+        uid = str(ctx.author.id)
+        
+        # Verify ownership
+        if not get_inventory_item(uid, "Custom Role Pass"):
+            await ctx.send(f"❌ You don't own a Custom Role Pass! Buy one in the `!shop` for 500,000 JC first.")
+            return
+
+        # Color validation and mapping
+        color_val = color_input.strip().lower()
+        role_color = None
+        color_display = color_val
+        
+        color_map = {
+            "red": discord.Color.red(),
+            "blue": discord.Color.blue(),
+            "green": discord.Color.green(),
+            "yellow": discord.Color.gold(),
+            "gold": discord.Color.gold(),
+            "purple": discord.Color.purple(),
+            "magenta": discord.Color.magenta(),
+            "orange": discord.Color.orange(),
+            "teal": discord.Color.teal(),
+            "cyan": discord.Color(0x00FFFF),
+            "pink": discord.Color(0xFFB6C1),
+            "white": discord.Color.light_grey(),
+            "black": discord.Color(0x010101) # Near black to render correctly
+        }
+
+        if color_val in color_map:
+            role_color = color_map[color_val]
+            color_display = color_val.capitalize()
+        elif color_val.startswith("#") and len(color_val) == 7:
+            try:
+                role_color = discord.Color(int(color_val.lstrip("#"), 16))
+                color_display = color_val.upper()
+            except ValueError:
+                pass
+                
+        if role_color is None:
+            await ctx.send("❌ Invalid color! Please use a named color (e.g., `blue`, `red`, `gold`) or a 6-character Hex code (e.g., `#FF0000`).")
+            return
+
+        # Fetch existing role ID from DB if it exists
+        row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'Custom Role Pass'", (uid,), fetchone=True)
+        role_id_str = row[0] if row else ""
+        
+        my_role = None
+        if role_id_str:
+            try:
+                my_role = ctx.guild.get_role(int(role_id_str))
+            except ValueError:
+                pass
+                
+        try:
+            zero_perms = discord.Permissions.none()
+            if my_role:
+                # Edit existing role - Costs 450,000 JC
+                edit_cost = 450000
+                if get_balance(uid) < edit_cost:
+                    await ctx.send(f"❌ Editing your custom role costs **{edit_cost:,} JC**. You don't have enough!")
+                    return
+                
+                add_balance(uid, -edit_cost)
+                log_transaction(uid, -edit_cost, "Edited Custom Role")
+                
+                await my_role.edit(name="JC", color=role_color, permissions=zero_perms, hoist=True, reason=f"Custom role edit by {ctx.author.name}")
+                await ctx.send(f"✨ Successfully updated your custom role color to `{color_display}`! *(Cost: **{edit_cost:,} JC**)*")
+            else:
+                # Create new role and assign it (First time free)
+                my_role = await ctx.guild.create_role(name="JC", color=role_color, permissions=zero_perms, hoist=True, reason=f"Custom role creation by {ctx.author.name}")
+                await ctx.author.add_roles(my_role)
+                db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Custom Role Pass'", (str(my_role.id), uid), commit=True)
+                await ctx.send(f"✨ Successfully created and equipped your new custom role: **JC** with color `{color_display}`! (First time free)")
+        except discord.Forbidden:
+            await ctx.send("❌ I don't have permission to manage roles! Please make sure my bot role is higher than the custom roles and has the 'Manage Roles' permission.")
+        except discord.HTTPException as e:
+            await ctx.send(f"❌ An error occurred while managing the role. Make sure the name isn't too long or contains invalid characters. Details: {e}")
 
     @commands.command(name='sell')
     async def sell_command(self, ctx: commands.Context, *, item_name: str = None):
