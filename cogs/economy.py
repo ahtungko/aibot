@@ -1014,6 +1014,45 @@ class Economy(commands.Cog):
         embed.set_footer(text="Challenge expires in 60 seconds.")
         view.message = await ctx.send(content=member.mention, embed=embed, view=view)
 
+    @commands.command(name='crash')
+    async def crash_command(self, ctx: commands.Context, amount: str = None):
+        """Bet JC and cash out before the rocket crashes! 🚀"""
+        if amount is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}crash [amount]`")
+            return
+
+        val, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+        amount = val
+        uid = str(ctx.author.id)
+
+        # --- JC Sink Logic: 15% Entry Fee ---
+        entry_fee = int(amount * 0.15)
+        active_bet = amount - entry_fee
+        
+        # Deduct TOTAL bet upfront (Burned)
+        _, pay_msg = pay_jc(uid, amount)
+        log_transaction(uid, -amount, f"Crash Game (Fee: {entry_fee} JC)")
+
+        view = CrashView(ctx, active_bet, amount) # Pass active bet and original bet
+        embed = discord.Embed(
+            title="🚀 Preparing for Takeoff...",
+            description=(
+                f"Multiplier: **1.00x**\n"
+                f"Potential Win: **{active_bet:,}** JC\n\n"
+                f"💰 **Entry Fee**: `{entry_fee:,} JC` (Burned)\n"
+                f"🛡️ **Active Bet**: `{active_bet:,} JC`"
+            ),
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"Total Bet: {amount:,} JC | Sink Rate: 15%")
+        
+        view.message = await ctx.send(embed=embed, view=view)
+        # Start the game loop
+        asyncio.create_task(view.run_game())
+
     @commands.command(name='rob', aliases=['steal', 'stolen'])
     async def rob_command(self, ctx: commands.Context, member: discord.Member = None):
         """Try to rob another user's JC! (20 minute cooldown)"""
@@ -2449,6 +2488,153 @@ class BlackjackView(discord.ui.View):
             await self.finish_game("Game Timed Out (Bust)", win=False)
 
 # --- Rain Event Logic ---
+
+def should_game_crash(multiplier: float) -> bool:
+    """
+    Calculates if the game should crash at the current multiplier.
+    The chance increases exponentially as the multiplier gets higher.
+    """
+    # 7% Instant Crash chance at 1.00x (House Edge)
+    if multiplier <= 1.00 and random.random() < 0.07:
+        return True
+    
+    # Exponential Probability of crashing each tick (approx 1.5s)
+    # This creates a "Natural Death Curve" instead of a hard cap.
+    # At 2x: ~10% | At 5x: ~27% | At 10x: ~68% | At 13x: ~100%
+    base_chance = 0.05
+    risk_factor = 0.02 * (multiplier ** 1.5)
+    total_chance = base_chance + risk_factor
+    
+    return random.random() < total_chance
+
+class CrashView(discord.ui.View):
+    def __init__(self, ctx, active_bet, original_bet):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.active_bet = active_bet
+        self.original_bet = original_bet
+        self.multiplier = 1.00
+        self.cashed_out = False
+        self.crashed = False
+        self.message = None
+
+    def get_tax_rate(self):
+        """Returns the tax rate based on current multiplier."""
+        if self.multiplier < 2.0: return 0.50 # 50% tax (was 70%)
+        if self.multiplier < 5.0: return 0.35 # 35% tax (was 50%)
+        return 0.20 # 20% tax (was 30%)
+
+    async def run_game(self):
+        """The background loop that drives the multiplier and crash checks."""
+        # Initial 7% check before takeoff
+        if should_game_crash(self.multiplier):
+            self.crashed = True
+            await self.do_crash()
+            return
+
+        while not self.cashed_out and not self.crashed:
+            await asyncio.sleep(1.5)
+            if self.cashed_out or self.crashed:
+                break
+
+            # Increase multiplier
+            increment = random.uniform(0.10, 0.25) # Slightly faster growth
+            if self.multiplier > 5: increment *= 1.5
+            
+            self.multiplier = round(self.multiplier + increment, 2)
+
+            # Check for crash at this NEW multiplier
+            if should_game_crash(self.multiplier):
+                self.crashed = True
+                await self.do_crash()
+                break
+            else:
+                await self.update_display()
+
+    async def update_display(self):
+        """Updates the embed with the current multiplier."""
+        if not self.message: return
+        
+        tax_rate = self.get_tax_rate()
+        gross_payout = int(self.active_bet * self.multiplier)
+        profit = max(0, gross_payout - self.active_bet)
+        est_tax = int(profit * tax_rate)
+        net_payout = gross_payout - est_tax
+        
+        embed = discord.Embed(title="🚀 CRASH GAME", color=discord.Color.blue())
+        embed.description = (
+            f"Multiplier: **{self.multiplier:.2f}x**\n"
+            f"Gross Total: **{gross_payout:,}** JC\n"
+            f"Estimated Tax: **{est_tax:,}** JC ({int(tax_rate*100)}%)\n\n"
+            f"🔥 **NET PAYOUT**: **{net_payout:,}** JC\n\n"
+            f"*Click below to Cash Out!*"
+        )
+        embed.set_thumbnail(url="https://cdn.pixabay.com/animation/2022/11/16/11/48/11-48-26-444_512.gif")
+        embed.set_footer(text=f"Total Bet: {self.original_bet:,} | Active: {self.active_bet:,}")
+        
+        try:
+            await self.message.edit(embed=embed, view=self)
+        except:
+            pass
+
+    @discord.ui.button(label="CASH OUT 💸", style=discord.ButtonStyle.green)
+    async def cash_out_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your game!", ephemeral=True)
+            return
+        
+        if self.cashed_out or self.crashed:
+            return
+
+        self.cashed_out = True
+        self.stop()
+        
+        tax_rate = self.get_tax_rate()
+        gross_payout = int(self.active_bet * self.multiplier)
+        profit = max(0, gross_payout - self.active_bet)
+        tax_deducted = int(profit * tax_rate)
+        final_payout = gross_payout - tax_deducted
+        
+        new_bal = add_balance(str(self.ctx.author.id), final_payout)
+        log_transaction(str(self.ctx.author.id), final_payout, f"Crash Win ({self.multiplier}x)")
+        
+        embed = discord.Embed(title="🚀 CASHED OUT!", color=discord.Color.green())
+        net_result = final_payout - self.original_bet
+        result_str = f"+{net_result:,}" if net_result >= 0 else f"{net_result:,}"
+        
+        embed.description = (
+            f"You cashed out at **{self.multiplier:.2f}x**!\n\n"
+            f"💰 **Final Payout**: **{final_payout:,}** JC\n"
+            f"💸 **Tax Deducted**: `{tax_deducted:,} JC` ({int(tax_rate*100)}%)\n"
+            f"🧤 **Entry Fee**: `{self.original_bet - self.active_bet:,} JC` (Burned)\n"
+            f"📊 **Net Profit/Loss**: **{result_str}** JC"
+        )
+        embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC")
+        embed.set_footer(text=f"Original Bet: {self.original_bet:,} | Active: {self.active_bet:,}")
+        
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def do_crash(self):
+        """Handles the crash state."""
+        self.stop()
+        # Full original bet is already deducted/burned
+        
+        embed = discord.Embed(title="💥 CRASHED!!!", color=discord.Color.red())
+        embed.description = (
+            f"The rocket crashed at **{self.multiplier:.2f}x**!\n"
+            f"💨 You lost your total bet of **{self.original_bet:,}** JC."
+        )
+        embed.set_thumbnail(url="https://cdn.pixabay.com/animation/2022/11/16/11/48/11-48-26-444_512.gif")
+        
+        try:
+            await self.message.edit(embed=embed, view=None)
+        except:
+            pass
+
+    async def on_timeout(self):
+        if not self.cashed_out and not self.crashed:
+            self.crashed = True
+            await self.do_crash()
 
 class RainView(discord.ui.View):
     def __init__(self, pool):
