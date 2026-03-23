@@ -199,9 +199,6 @@ class HelpDropdown(discord.ui.Select):
             
         embed.set_footer(text="Made with ❤️ by Jenny")
         await interaction.response.edit_message(embed=embed)
-            
-        embed.set_footer(text="Made with ❤️ by Jenny")
-        await interaction.response.edit_message(embed=embed)
 
 
 class HelpView(discord.ui.View):
