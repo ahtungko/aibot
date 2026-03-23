@@ -44,6 +44,11 @@ def get_db():
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    # Migration: Add bank column if it doesn't exist
+    try:
+        conn.execute("ALTER TABLE wallets ADD COLUMN bank INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
@@ -79,6 +84,18 @@ def add_balance(user_id: str, amount: int) -> int:
     new_bal = max(0, get_balance(user_id) + amount)
     set_balance(user_id, new_bal)
     return new_bal
+
+def get_bank(user_id: str) -> int:
+    row = db_query("SELECT bank FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
+    return row[0] if row and row[0] is not None else 0
+
+def set_bank(user_id: str, amount: int):
+    db_query("INSERT INTO wallets (user_id, bank) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET bank = ?", (user_id, amount, amount), commit=True)
+
+def add_bank(user_id: str, amount: int) -> int:
+    new_bank = max(0, get_bank(user_id) + amount)
+    set_bank(user_id, new_bank)
+    return new_bank
 
 def get_last_daily(user_id: str) -> str:
     row = db_query("SELECT last_daily FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
@@ -236,14 +253,70 @@ class Economy(commands.Cog):
     async def balance_command(self, ctx: commands.Context, member: discord.Member = None):
         """Check your (or someone else's) JC balance."""
         target = member or ctx.author
-        bal = get_balance(str(target.id))
+        uid = str(target.id)
+        
+        wallet = get_balance(uid)
+        bank = get_bank(uid)
+        total = wallet + bank
+        
         embed = discord.Embed(
-            title=f"💰 {target.display_name}'s Wallet",
-            description=f"**{bal:,}** JC",
+            title=f"💰 {target.display_name}'s Balances",
             color=discord.Color.gold()
         )
         embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="💵 Wallet", value=f"**{wallet:,}** JC", inline=True)
+        embed.add_field(name="🏦 Bank", value=f"**{bank:,}** JC", inline=True)
+        embed.add_field(name="Total Net Worth", value=f"**{total:,}** JC", inline=False)
         await ctx.send(embed=embed)
+        
+    @commands.command(name='deposit', aliases=['dep'])
+    async def deposit_command(self, ctx: commands.Context, amount_str: str = None):
+        """Deposit JC into your secure Bank. Usage: !deposit [amount | max]"""
+        uid = str(ctx.author.id)
+        amount, err = await validate_bet(ctx, amount_str)
+        if err:
+            await ctx.send(err)
+            return
+            
+        add_balance(uid, -amount)
+        new_bank = add_bank(uid, amount)
+        log_transaction(uid, amount, "Bank Deposit")
+        
+        await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** JC.")
+
+    @commands.command(name='withdraw', aliases=['with'])
+    async def withdraw_command(self, ctx: commands.Context, amount_str: str = None):
+        """Withdraw JC from your secure Bank. Usage: !withdraw [amount | max]"""
+        uid = str(ctx.author.id)
+        bank = get_bank(uid)
+        
+        if amount_str is None:
+            await ctx.send(f"❌ Please provide an amount to withdraw! (Current Bank: **{bank:,}** JC)")
+            return
+            
+        s = str(amount_str).lower().replace(',', '')
+        if s in ['max', 'all']:
+            amount = bank
+        else:
+            try:
+                amount = int(s)
+            except ValueError:
+                await ctx.send("❌ Invalid amount! Use numbers or 'max'.")
+                return
+                
+        if amount <= 0:
+            await ctx.send("❌ Amount must be positive.")
+            return
+            
+        if bank < amount:
+            await ctx.send(f"❌ You only have **{bank:,}** JC in your bank.")
+            return
+            
+        add_bank(uid, -amount)
+        new_bal = add_balance(uid, amount)
+        log_transaction(uid, amount, "Bank Withdrawal")
+        
+        await ctx.send(f"💵 {ctx.author.mention}, you withdrew **{amount:,}** JC from your bank.\nNew Wallet Balance: **{new_bal:,}** JC.")
 
     @commands.command(name='daily')
     async def daily_command(self, ctx: commands.Context):
@@ -361,7 +434,8 @@ class Economy(commands.Cog):
         target = member or ctx.author
         uid = str(target.id)
         
-        bal = get_balance(uid)
+        wallet = get_balance(uid)
+        bank = get_bank(uid)
         gold_grams = get_gold_grams(uid)
         vip_active = is_vip(uid)
         
@@ -374,7 +448,9 @@ class Economy(commands.Cog):
             vip_status = f"✅ Active (Expires <t:{expiry}:R>)"
         
         embed.add_field(name="VIP Membership 👑", value=vip_status, inline=False)
-        embed.add_field(name="Wallet Balance", value=f"**{bal:,}** JC", inline=False)
+        embed.add_field(name="Balances 💵🏦", value=f"Wallet: **{wallet:,}** JC\nBank: **{bank:,}** JC", inline=False)
+        
+        base_net_worth = wallet + bank
         
         if gold_grams > 0:
             msg = await ctx.send("Fetching live market data...")
@@ -382,7 +458,7 @@ class Economy(commands.Cog):
             
             if live_price:
                 gold_value = int(gold_grams * live_price)
-                net_worth = bal + gold_value
+                net_worth = base_net_worth + gold_value
                 
                 embed.add_field(name="Gold Holdings 🥇", value=f"Weight: **{gold_grams:.4f}g**\nLive Value: **{gold_value:,}** JC", inline=False)
                 embed.add_field(name="Total Net Worth", value=f"**{net_worth:,}** JC", inline=False)
@@ -390,9 +466,11 @@ class Economy(commands.Cog):
                 await msg.edit(content=None, embed=embed)
             else:
                 embed.add_field(name="Gold Holdings 🥇", value=f"Weight: **{gold_grams:.4f}g**\nLive Value: `API Offline`", inline=False)
+                embed.add_field(name="Net Worth (JC Only)", value=f"**{base_net_worth:,}** JC", inline=False)
                 await msg.edit(content=None, embed=embed)
         else:
             embed.add_field(name="Gold Holdings 🥇", value="0.0000g (*No investments yet*)", inline=False)
+            embed.add_field(name="Total Net Worth", value=f"**{base_net_worth:,}** JC", inline=False)
             await ctx.send(embed=embed)
 
     @commands.command(name='buygold', aliases=['bg'])
@@ -1018,6 +1096,48 @@ class Economy(commands.Cog):
         
         display = "\n".join([f"• {name} x{count}" for name, count in item_list.items()])
         embed = discord.Embed(title=f"🎒 {ctx.author.display_name}'s Inventory", description=display, color=discord.Color.blue())
+        await ctx.send(embed=embed)
+
+    @commands.command(name='sell')
+    async def sell_command(self, ctx: commands.Context, *, item_name: str = None):
+        """Sell a collectible item for JC. Usage: !sell [item name]"""
+        if not item_name:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}sell [item name]` (e.g. `!sell golden jc`)")
+            return
+
+        uid = str(ctx.author.id)
+        search_name = item_name.lower().strip()
+        
+        # Valid sellable items mapping (search_string -> (Exact DB Name, Price))
+        sellable = {
+            "golden jc": ("🏆 Golden JC", 25000),
+            "golden": ("🏆 Golden JC", 25000),
+            "silver coin": ("🥈 Silver Coin", 5000),
+            "silver": ("🥈 Silver Coin", 5000)
+        }
+        
+        if search_name not in sellable:
+            await ctx.send("❌ You can only sell **Golden JC** or **Silver Coin**.")
+            return
+            
+        exact_name, price = sellable[search_name]
+        
+        # Check if they own it
+        if not get_inventory_item(uid, exact_name):
+            await ctx.send(f"❌ You don't have any **{exact_name}** in your inventory to sell!")
+            return
+            
+        # Execute Sale
+        remove_item(uid, exact_name)
+        new_bal = add_balance(uid, price)
+        log_transaction(uid, price, f"Sold {exact_name}")
+        
+        embed = discord.Embed(
+            title="🤝 Item Sold!",
+            description=f"You successfully sold **1x {exact_name}** for **{price:,} JC**.",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text=f"New Balance: {new_bal:,} JC")
         await ctx.send(embed=embed)
 
     # --- Admin Commands ---
