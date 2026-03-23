@@ -163,12 +163,6 @@ def set_vip(user_id: str, days: int):
     else:
         db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True)
 
-def set_vip(user_id: str, days: int):
-    now = int(time.time())
-    current_expiry = get_vip_expiry(user_id)
-    
-    start_time = max(now, current_expiry)
-    new_expiry = start_time + (days * 24 * 3600)
 def get_inventory_item(user_id, item_name):
     row = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True)
     return row is not None
@@ -872,7 +866,7 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="🎁 **Mystery Box** — `1,000 JC`",
-            value="High stakes! Win coins or rare collectibles.\nUsage: `!buy box`",
+            value="High stakes! Win coins or rare collectibles.\nUsage: `!buy box [qty]` (Max 10)",
             inline=False
         )
         embed.add_field(
@@ -884,62 +878,105 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='buy')
-    async def buy_command(self, ctx: commands.Context, item_type: str = None):
+    async def buy_command(self, ctx: commands.Context, item_type: str = None, qty: str = None):
         """Buy an item from the shop."""
         if item_type is None:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}buy [item]` (e.g. `!buy box`)")
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}buy [item] [qty]` (e.g. `!buy box 3`)")
             return
 
         uid = str(ctx.author.id)
         item_type = item_type.lower()
         
         if item_type == 'box':
-            cost = 1000
-            if get_balance(uid) < cost:
-                await ctx.send(f"❌ You need **{cost:,} JC** for a Mystery Box!")
+            # Parse quantity (default 1, max 10)
+            count = 1
+            if qty:
+                try:
+                    count = int(qty)
+                except ValueError:
+                    await ctx.send("❌ Invalid quantity! Use a number like `!buy box 3`.")
+                    return
+            
+            if count < 1 or count > 10:
+                await ctx.send("❌ You can buy between **1** and **10** boxes at a time!")
                 return
             
-            # Deduct cost
-            add_balance(uid, -cost)
-            log_transaction(uid, -cost, "Bought Mystery Box")
+            cost_per = 1000
+            total_cost = cost_per * count
+            bal = get_balance(uid)
             
-            msg = await ctx.send("🎁 **Buying Mystery Box...**")
-            await asyncio.sleep(1)
-            await msg.edit(content="📦 **Unboxing...**")
+            if bal < total_cost:
+                await ctx.send(f"❌ You need **{total_cost:,} JC** for {count} Mystery Box(es)! You have **{bal:,} JC**.")
+                return
+            
+            # Deduct total cost upfront
+            add_balance(uid, -total_cost)
+            log_transaction(uid, -total_cost, f"Bought {count}x Mystery Box")
+            
+            msg = await ctx.send(f"🎁 {ctx.author.mention} is opening **{count}** Mystery Box(es)...")
             await asyncio.sleep(1.5)
             
-            # Loot Table Logic
-            res = random.random()
-            if res < 0.02: # Legendary 2%
-                win = 50000
-                item = "🏆 Golden JC"
-                color = discord.Color.gold()
-                rarity = "LEGENDARY"
-            elif res < 0.10: # Epic 8%
-                win = 10000
-                item = "🥈 Silver Coin"
-                color = discord.Color.purple()
-                rarity = "EPIC"
-            elif res < 0.30: # Rare 20%
-                win = random.randint(1500, 3000)
-                item = None
-                color = discord.Color.blue()
-                rarity = "RARE"
-            else: # Common 70%
-                win = random.randint(200, 500)
-                item = None
-                color = discord.Color.light_grey()
-                rarity = "COMMON"
-
-            add_balance(uid, win)
-            log_transaction(uid, win, f"Box Reveal: {rarity}")
-            if item: add_item(uid, item)
-
-            embed = discord.Embed(title=f"✨ Mystery Box Reveal: {rarity}", color=color)
-            desc = f"You won **{win:,} JC**!"
-            if item: desc += f"\n\n🎁 **Bonus Item Found:** {item}"
-            embed.description = desc
-            embed.set_footer(text=f"New Balance: {get_balance(uid):,} JC")
+            # Open all boxes
+            results = []
+            total_won = 0
+            items_found = []
+            best_color = discord.Color.light_grey()
+            rarity_order = {"COMMON": 0, "RARE": 1, "EPIC": 2, "LEGENDARY": 3}
+            best_rarity_rank = -1
+            
+            for _ in range(count):
+                res = random.random()
+                if res < 0.02:
+                    win = 50000
+                    item = "🏆 Golden JC"
+                    rarity = "LEGENDARY"
+                    color = discord.Color.gold()
+                elif res < 0.10:
+                    win = 10000
+                    item = "🥈 Silver Coin"
+                    rarity = "EPIC"
+                    color = discord.Color.purple()
+                elif res < 0.30:
+                    win = random.randint(1500, 3000)
+                    item = None
+                    rarity = "RARE"
+                    color = discord.Color.blue()
+                else:
+                    win = random.randint(200, 500)
+                    item = None
+                    rarity = "COMMON"
+                    color = discord.Color.light_grey()
+                
+                total_won += win
+                add_balance(uid, win)
+                log_transaction(uid, win, f"Box Reveal: {rarity}")
+                if item:
+                    add_item(uid, item)
+                    items_found.append(item)
+                
+                # Track the best rarity for embed color
+                rank = rarity_order.get(rarity, 0)
+                if rank > best_rarity_rank:
+                    best_rarity_rank = rank
+                    best_color = color
+                
+                results.append(f"📦 **{rarity}** — **{win:,}** JC" + (f" + {item}" if item else ""))
+            
+            # Build summary embed
+            net = total_won - total_cost
+            net_str = f"+{net:,}" if net >= 0 else f"{net:,}"
+            
+            embed = discord.Embed(
+                title=f"✨ {ctx.author.display_name}'s Mystery Box Results",
+                color=best_color
+            )
+            embed.description = "\n".join(results)
+            embed.add_field(name="💰 Total Won", value=f"**{total_won:,}** JC", inline=True)
+            embed.add_field(name="💸 Total Spent", value=f"**{total_cost:,}** JC", inline=True)
+            embed.add_field(name="📊 Net P/L", value=f"**{net_str}** JC", inline=True)
+            if items_found:
+                embed.add_field(name="🎁 Items Found", value="\n".join(items_found), inline=False)
+            embed.set_footer(text=f"Balance: {get_balance(uid):,} JC")
             
             await msg.edit(content=None, embed=embed)
             
@@ -1002,6 +1039,20 @@ class Economy(commands.Cog):
         new_bal = add_balance(str(member.id), -amount)
         log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
         await ctx.send(f"✅ Removed **{amount:,}** JC from {member.mention}. New balance: **{new_bal:,}**.")
+
+    @commands.command(name='grantvip', aliases=['givevip'])
+    @commands.is_owner()
+    async def grantvip_command(self, ctx: commands.Context, member: discord.Member, days: int = 30):
+        """Owner Only: Grant VIP membership to a user."""
+        if days <= 0:
+            await ctx.send("❌ Please provide a positive number of days.")
+            return
+        
+        set_vip(str(member.id), days)
+        expiry = get_vip_expiry(str(member.id))
+        log_transaction(str(member.id), 0, f"Admin VIP Grant ({days}d by {ctx.author.display_name})")
+        
+        await ctx.send(f"👑 Granted **{days} days** of VIP to {member.mention}!\n📅 Expires: <t:{expiry}:F> (<t:{expiry}:R>)")
 
 # --- Blackjack Game Logic ---
 
