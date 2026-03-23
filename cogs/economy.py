@@ -386,25 +386,32 @@ class Economy(commands.Cog):
         current_bank = get_bank(uid)
         limit = get_bank_limit(uid)
 
+        # Check room left
+        room_left = limit - current_bank
+        if room_left <= 0 and limit != float('inf'):
+            await ctx.send(f"❌ Your bank is already at or above its current capacity (**{limit:,}** JC)! Upgrade your vault in the `!shop` to store more.")
+            return
+
         # Handle max/all properly with the limit
         amount, err = await validate_bet(ctx, amount_str)
         if err:
             await ctx.send(err)
             return
             
-        if current_bank + amount > limit:
-            if current_bank >= limit:
-                await ctx.send(f"❌ Your bank is already at or above its current capacity (**{limit:,}** JC)! Upgrade your vault in the `!shop` to store more.")
-            else:
-                allowed = int(limit - current_bank)
-                await ctx.send(f"❌ You only have room for **{allowed:,}** more JC in your bank (Current Limit: **{limit:,}**).")
-            return
+        # --- AUTO-CAP LOGIC ---
+        is_capped = False
+        if amount > room_left and limit != float('inf'):
+            amount = int(room_left)
+            is_capped = True
             
         add_balance(uid, -amount)
         new_bank = add_bank(uid, amount)
         log_transaction(uid, amount, "Bank Deposit")
         
-        await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** / {limit if limit != float('inf') else 'Unlimited':,} JC.")
+        if is_capped:
+            await ctx.send(f"🏦 **Bank Full!** {ctx.author.mention}, you deposited **{amount:,}** JC (filling the vault to its **{limit:,}** limit).\nNew Bank Balance: **{new_bank:,}** JC.")
+        else:
+            await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** / {limit if limit != float('inf') else 'Unlimited':,} JC.")
 
     @commands.command(name='withdraw', aliases=['with'])
     async def withdraw_command(self, ctx: commands.Context, amount_str: str = None):
