@@ -159,7 +159,7 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "eco":
             embed.title = "💰 Economy & Banking"
-            embed.add_field(name="Earning JC", value=f"`{p}daily` - Claim daily bonus\n`{p}work` - Earn JC (Taxed 5%/2%)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
+            embed.add_field(name="Earning JC", value=f"`{p}daily` - Claim daily bonus\n`{p}work` - Earn JC (Taxed 5%/2%)\n`{p}grind` - Quick grind (Cost 10, CD 30s)\n`{p}fish` - Cast a line (Cost 50, CD 15s)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
             embed.add_field(name="Banking & Transfers", value=f"`{p}bal [@user]` - Check balance\n`{p}dep [amount]` - Secure JC in Bank\n`{p}with [amount]` - Withdraw JC\n`{p}give @user [amt]` - Transfer JC", inline=False)
             embed.add_field(name="Trading & Stats", value=f"`{p}pf` - Portfolio & Net Worth\n`{p}history` - Transaction logs\n`{p}vault` - Global community pool", inline=False)
 

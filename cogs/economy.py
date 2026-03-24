@@ -668,6 +668,247 @@ class Economy(commands.Cog):
         if isinstance(error, commands.NotOwner):
             await ctx.send("❌ This command is restricted to the bot owner!")
 
+    @commands.command(name='grind')
+    @commands.cooldown(1, 30, commands.BucketType.user)
+    async def grind_command(self, ctx: commands.Context):
+        """Grind for a small profit. Cost: 10 JC | Cooldown: 30s"""
+        uid = str(ctx.author.id)
+        fee = 10
+        
+        # Check balance
+        bal = get_balance(uid)
+        if bal < fee:
+            await ctx.send(f"❌ You need at least **{fee} JC** to start grinding!")
+            # Reset cooldown if they can't afford it
+            ctx.command.reset_cooldown(ctx)
+            return
+            
+        # Deduct fee
+        add_balance(uid, -fee)
+        log_transaction(uid, -fee, "Daily Grind Entry Fee")
+        
+        # Roll outcome
+        # 70% -> 5-15 JC (avg 10)
+        # 25% -> 10 JC (break even)
+        # 5% -> 0 JC (loss)
+        roll = random.random() * 100
+        
+        if roll <= 70:
+            reward = random.randint(5, 15)
+            msg = f"⚒️ You spent some time grinding and earned **{reward} JC**!"
+            if reward > fee:
+                msg += " A small profit! ✨"
+            elif reward < fee:
+                msg += " Not quite enough to cover your efforts... 📉"
+            else:
+                msg += " You broke even."
+        elif roll <= 95:
+            reward = 10
+            msg = "⚒️ You ground some materials and broke even. (+10 JC)"
+        else:
+            reward = 0
+            msg = "⚒️ You ground all day but found nothing useful. A total loss! 💸"
+            
+        if reward > 0:
+            add_balance(uid, reward)
+            log_transaction(uid, reward, "Daily Grind Reward")
+            
+        # Add tiny delay for "immersion"
+        async with ctx.typing():
+            await asyncio.sleep(1.5)
+            
+        await ctx.send(f"{ctx.author.mention} {msg}")
+
+    @grind_command.error
+    async def grind_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏳ Slow down! You can grind again in **{error.retry_after:.1f}s**.")
+            
+    @commands.command(name='fish')
+    @commands.cooldown(1, 15, commands.BucketType.user)
+    async def fish_command(self, ctx: commands.Context):
+        """Cast your line! Cost: 50 JC | Returns: 85-95% (Avg)"""
+        uid = str(ctx.author.id)
+        cost = 50
+        
+        # Check balance
+        bal = get_balance(uid)
+        if bal < cost:
+            await ctx.send(f"❌ You need at least **{cost} JC** to fish!")
+            ctx.command.reset_cooldown(ctx)
+            return
+            
+        # Deduct cost
+        add_balance(uid, -cost)
+        log_transaction(uid, -cost, "Fishing Trip Fee")
+        
+        # --- RNG & Outcomes ---
+        # 50% Trash (0 JC)
+        # 42% Common (55-65 JC, Avg 60)
+        # 7% Rare (120-180 JC, Avg 150)
+        # 1% Legendary (500-1000 JC, Avg 750)
+        # Overall Avg Return: ~43.2 JC (86.4%)
+        
+        roll = random.random() * 100
+        rarity = "Trash"
+        reward = 0
+        fish_name = None
+        
+        trash_lines = [
+            "You fished up... absolutely nothing. Even the fish logged off.",
+            "A boot. Not even a matching pair.",
+            "The ocean saw you coming and hid everything.",
+            "You caught water. Congratulations.",
+            "Fish spotted you and chose violence: they left.",
+            "Not even trash wanted to be caught by you.",
+            "You scared the ecosystem.",
+            "Even the trash dodged you. That’s impressive.",
+            "You reeled in disappointment.",
+            "That spot is now officially fishless."
+        ]
+        rare_roast = "💀 Local fish union has banned you from fishing."
+        
+        common_lines = [
+            "Nice catch! Dinner secured 🍽️",
+            "Not bad, not bad. The fish slipped up.",
+            "You actually caught something. Improvement!",
+            "A solid catch. Fisher instincts kicking in.",
+            "Clean pull. Nothing fancy, but it counts.",
+            "The ocean finally acknowledged your existence.",
+            "Respectable catch. You won’t starve today.",
+            "That fish made a mistake... and paid for it."
+        ]
+        
+        rare_lines = [
+            "🔥 That’s a rare one! Big haul!",
+            "Now THAT’S what we call fishing!",
+            "You struck gold... but fish.",
+            "The ocean regrets underestimating you.",
+            "Elite catch! Chat better be watching this.",
+            "That fish had dreams. You ended them.",
+            "Certified fisherman moment 🎣",
+            "That’s going straight to the trophy wall."
+        ]
+        rare_hype = "💫 Legend says only 1 in many get this... and you did."
+        
+        legendary_lines = [
+            "👑 LEGENDARY CATCH! The ocean bows to you.",
+            "You didn’t fish... you conquered.",
+            "This will be remembered in fishing history.",
+            "The sea is filing a complaint against you.",
+            "ABSOLUTE MONSTER CATCH 🐉",
+            "You just peaked. It’s all downhill from here.",
+            "Even the whales are impressed.",
+            "You are now legally the ocean’s main character."
+        ]
+        legendary_twist = "💀 You caught a legendary fish... it was NOT happy about it."
+        
+        tease_lines = [
+            "Something HUGE got away at the last second...",
+            "Your line snapped. That one was big.",
+            "You felt a massive pull... then nothing.",
+            "A rare fish escaped. Skill issue?",
+            "That was almost legendary. Almost."
+        ]
+        
+        embed_color = discord.Color.light_grey()
+        title = "🎣 Fishing Trip"
+        
+        if roll <= 50: # Trash
+            rarity = "Trash"
+            reward = 0
+            if random.random() < 0.05: # 5% Rare Roast
+                msg = rare_roast
+            else:
+                msg = random.choice(trash_lines)
+            embed_color = discord.Color.dark_grey()
+            
+            # 10% change to show a tease line instead
+            if random.random() < 0.10:
+                msg = random.choice(tease_lines)
+                
+        elif roll <= 92: # Common
+            rarity = "Common"
+            reward = random.randint(55, 65)
+            msg = random.choice(common_lines)
+            fish_name = random.choice(["Sardine", "Cod", "Mackerel", "Sea Bass", "Salmon"])
+            embed_color = discord.Color.blue()
+            
+        elif roll <= 99: # Rare
+            rarity = "Rare"
+            reward = random.randint(120, 180)
+            if random.random() < 0.10: # 10% Rare Hype
+                msg = rare_hype
+            else:
+                msg = random.choice(rare_lines)
+            fish_name = random.choice(["Golden Trout", "Anglerfish", "Pufferfish", "Swordfish", "Tuna"])
+            embed_color = discord.Color.purple()
+            title = "✨ RARE CATCH! ✨"
+            
+        else: # Legendary
+            rarity = "Legendary"
+            reward = random.randint(500, 1000)
+            if random.random() < 0.10: # 10% Legendary Twist
+                msg = legendary_twist
+            else:
+                msg = random.choice(legendary_lines)
+            fish_name = random.choice(["Blue Marlin", "The Kraken", "Great White Shark", "Ancient Coelacanth"])
+            embed_color = discord.Color.gold()
+            title = "🐉 LEGENDARY CATCH!!! 🐉"
+
+        # Apply reward
+        if reward > 0:
+            add_balance(uid, reward)
+            log_transaction(uid, reward, f"Fishing Reward ({rarity})")
+            
+        # Add to collection if it's a fish
+        if fish_name:
+            add_item(uid, fish_name, "Fish")
+            
+        async with ctx.typing():
+            await asyncio.sleep(2) # Fishing wait...
+            
+        embed = discord.Embed(title=title, description=msg, color=embed_color)
+        if fish_name:
+            embed.add_field(name="Caught", value=f"**{fish_name}** ({rarity})", inline=True)
+            embed.add_field(name="Payout", value=f"**{reward} JC**", inline=True)
+        else:
+            embed.add_field(name="Result", value="Nothing but junk.", inline=True)
+            
+        embed.set_footer(text=f"Total Wealth: {get_balance(uid) + get_bank(uid):,} JC")
+        await ctx.send(content=ctx.author.mention, embed=embed)
+
+    @fish_command.error
+    async def fish_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏳ Don't overfish! Cast again in **{error.retry_after:.1f}s**.")
+
+    @commands.command(name='fishinv', aliases=['aquarium', 'fishlogs', 'fisher'])
+    async def fishinv_command(self, ctx: commands.Context, member: discord.Member = None):
+        """View your fishing collection!"""
+        target = member or ctx.author
+        uid = str(target.id)
+        
+        # Get fish from inventory
+        rows = db_query("SELECT item_name, count(*) as qty FROM inventory WHERE user_id = ? AND item_type = 'Fish' GROUP BY item_name ORDER BY qty DESC", (uid,), fetchall=True)
+        
+        if not rows:
+            msg = "He hasn't caught any fish yet." if member else "You haven't caught any fish yet. Go `!fish`!"
+            await ctx.send(f"📭 {msg}")
+            return
+            
+        embed = discord.Embed(title=f"🎣 {target.display_name}'s Aquarium", color=discord.Color.blue())
+        
+        total_fish = 0
+        fish_list = []
+        for name, qty in rows:
+            fish_list.append(f"• **{name}** x{qty}")
+            total_fish += qty
+            
+        embed.description = "\n".join(fish_list)
+        embed.set_footer(text=f"Total fish caught: {total_fish}")
+        await ctx.send(embed=embed)
+        
     @commands.command(name='testtaxman')
     @commands.is_owner()
     async def testtaxman_command(self, ctx: commands.Context):
