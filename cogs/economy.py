@@ -242,6 +242,25 @@ def get_luck_bonus(user_id: str) -> float:
         except: pass
     return 0.0
 
+def get_best_pickaxe(user_id: str) -> dict:
+    """
+    Returns data for the user's best mining tool.
+    Returns: {name: str, bonus: float, cooldown_reduction: int}
+    """
+    # Order matters: Mithril -> Netherite -> Diamond -> Golden
+    tools = [
+        {"name": "Mithril Drill", "bonus": 1.00, "cooldown_reduction": 900},
+        {"name": "Netherite Pickaxe", "bonus": 0.50, "cooldown_reduction": 300},
+        {"name": "Diamond Pickaxe", "bonus": 0.25, "cooldown_reduction": 0},
+        {"name": "Golden Pickaxe", "bonus": 0.10, "cooldown_reduction": 0}
+    ]
+    
+    for tool in tools:
+        if get_inventory_item(user_id, tool["name"]):
+            return tool
+            
+    return {"name": None, "bonus": 0.0, "cooldown_reduction": 0}
+
 def get_last_rob(user_id: str) -> int:
     row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
     try:
@@ -692,26 +711,26 @@ class Economy(commands.Cog):
         # 25% -> 10 JC (break even)
         # 5% -> 0 JC (loss)
         roll = random.random() * 100
+        reward = 0
         
         if roll <= 70:
             reward = random.randint(5, 15)
-            # Golden Pickaxe Bonus (+10%) moved inside for specific msg logic if needed, 
-            # but cleaner to just apply to all positive rewards below.
         elif roll <= 95:
             reward = 10
         else:
             reward = 0
             
-        # Apply Golden Pickaxe Bonus (+10%)
-        bonus = 0
-        if reward > 0 and get_inventory_item(uid, "Golden Pickaxe"):
-            bonus = int(reward * 0.10)
-            reward += bonus
+        # Apply Pickaxe Bonus
+        pick = get_best_pickaxe(uid)
+        bonus_val = 0
+        if reward > 0 and pick["name"]:
+            bonus_val = int(reward * pick["bonus"])
+            reward += bonus_val
 
         if roll <= 70:
             msg = f"⚒️ You spent some time grinding and earned **{reward} JC**!"
-            if bonus > 0:
-                msg += f" (incl. **{bonus} JC** pickaxe bonus! ✨)"
+            if bonus_val > 0:
+                msg += f" (incl. **{bonus_val} JC** {pick['name']} bonus! ✨)"
             elif reward > fee:
                 msg += " A small profit! ✨"
             elif reward < fee:
@@ -720,8 +739,8 @@ class Economy(commands.Cog):
                 msg += " You broke even."
         elif roll <= 95:
             msg = f"⚒️ You ground some materials and earned **{reward} JC**."
-            if bonus > 0:
-                msg += f" (incl. **{bonus} JC** pickaxe bonus! ✨)"
+            if bonus_val > 0:
+                msg += f" (incl. **{bonus_val} JC** {pick['name']} bonus! ✨)"
             else:
                 msg += " (+10 JC)"
         else:
@@ -1061,12 +1080,16 @@ class Economy(commands.Cog):
         now = int(time.time())
         last_str = get_last_work(uid)
         
+        # Check tool for cooldown reduction
+        pick = get_best_pickaxe(uid)
+        actual_cooldown = WORK_COOLDOWN - pick["cooldown_reduction"]
+        
         if last_str:
             try:
                 last_ts = int(float(last_str))
                 diff = now - last_ts
-                if diff < WORK_COOLDOWN:
-                    remaining = int(WORK_COOLDOWN - diff)
+                if diff < actual_cooldown:
+                    remaining = int(actual_cooldown - diff)
                     mins = remaining // 60
                     secs = remaining % 60
                     await ctx.send(f"⏳ {ctx.author.mention}, you're exhausted! Come back in **{mins}m {secs}s**.")
@@ -1076,11 +1099,11 @@ class Economy(commands.Cog):
 
         reward = random.randint(WORK_MIN, WORK_MAX)
         
-        # Golden Pickaxe Bonus (+10%)
-        bonus = 0
-        if get_inventory_item(uid, "Golden Pickaxe"):
-            bonus = int(reward * 0.10)
-            reward += bonus
+        # Apply Pickaxe Bonus
+        bonus_val = 0
+        if pick["name"]:
+            bonus_val = int(reward * pick["bonus"])
+            reward += bonus_val
 
         fee_rate = 0.02 if is_vip(uid) else 0.05
         tax = max(1, int(reward * fee_rate))
@@ -1103,8 +1126,8 @@ class Economy(commands.Cog):
             description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JC!",
             color=discord.Color.blue()
         )
-        if bonus > 0:
-            embed.description += f"\n✨ *Includes **{bonus} JC** bonus from your Golden Pickaxe!*"
+        if bonus_val > 0:
+            embed.description += f"\n✨ *Includes **{bonus_val} JC** bonus from your {pick['name']}!*"
 
         tax_percent = int(fee_rate * 100)
         embed.add_field(name="Income Tax", value=f"**{tax}** JC ({tax_percent}%)", inline=True)
@@ -1908,8 +1931,13 @@ class Economy(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name="⛏️ **Golden Pickaxe** — `50,000 JC`",
-            value="Permanent **+10% earnings** on every `!work` attempt.\nUsage: `!buy pickaxe`",
+            name="⛏️ **Mining Tool Upgrades**",
+            value=(
+                "**Golden Pickaxe** — `50,000 JC` (+10% yield)\n"
+                "**Diamond Pickaxe** — `250,000 JC` (+25% yield) • *Req: Golden*\n"
+                "**Netherite Pickaxe** — `1,000,000 JC` (+50% yield, -5m CD) • *Req: Diamond*\n"
+                "**Mithril Drill** — `5,000,000 JC` (+100% yield, -15m CD) • *Req: Netherite*"
+            ),
             inline=False
         )
         embed.add_field(
@@ -1966,10 +1994,71 @@ class Economy(commands.Cog):
             "role": 500000,
             "iron": 20000,
             "steel": 100000,
-            "bunker": 500000000
+            "bunker": 500000000,
+            "pickaxe": 50000,
+            "golden": 50000,
+            "diamond": 250000,
+            "netherite": 1000000,
+            "drill": 5000000,
+            "mithril": 5000000
         }
         
-        if item_type in ["insurance", "coin insurance"]:
+        if item_type in ["pickaxe", "golden", "diamond", "netherite", "drill", "mithril"]:
+            # Sequential Logic
+            tiers = [
+                ("Golden Pickaxe", 50000, None),
+                ("Diamond Pickaxe", 250000, "Golden Pickaxe"),
+                ("Netherite Pickaxe", 1000000, "Diamond Pickaxe"),
+                ("Mithril Drill", 5000000, "Netherite Pickaxe")
+            ]
+            
+            # Find which one they are trying to buy
+            target_name = None
+            price = 0
+            req = None
+            
+            if item_type in ["pickaxe", "golden"]:
+                target_name, price, req = tiers[0]
+            elif item_type == "diamond":
+                target_name, price, req = tiers[1]
+            elif item_type == "netherite":
+                target_name, price, req = tiers[2]
+            elif item_type in ["drill", "mithril"]:
+                target_name, price, req = tiers[3]
+                
+            # Check if they already have it or a better one
+            current_pick = get_best_pickaxe(uid)
+            pickaxe_order = ["Golden Pickaxe", "Diamond Pickaxe", "Netherite Pickaxe", "Mithril Drill"]
+            
+            try:
+                current_rank = pickaxe_order.index(current_pick["name"]) if current_pick["name"] else -1
+                target_rank = pickaxe_order.index(target_name)
+            except ValueError:
+                current_rank = -1
+                target_rank = 0
+                
+            if current_rank >= target_rank:
+                await ctx.send(f"❌ You already have a **{current_pick['name']}** or better!")
+                return
+                
+            # Check requirement
+            if req and not get_inventory_item(uid, req):
+                await ctx.send(f"❌ You need to own a **{req}** before you can upgrade to a **{target_name}**!")
+                return
+                
+            success, pay_msg = pay_jc(uid, price)
+            if not success:
+                await ctx.send(pay_msg)
+                return
+                
+            # Remove old tool and add new one
+            if req:
+                remove_item(uid, req)
+            
+            add_item(uid, target_name)
+            log_transaction(uid, -price, f"Bought {target_name}")
+            await ctx.send(f"⛏️ {ctx.author.mention}, you upgraded to a **{target_name}**! {pay_msg}")
+            return
             # Parse quantity (default 1, max 52 weeks)
             count = 1
             if qty:
