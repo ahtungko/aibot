@@ -146,7 +146,7 @@ def set_last_work(user_id: str, ts_str: str):
     db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
 
 def get_top_balances(limit=10) -> list:
-    return db_query("SELECT user_id, balance FROM wallets ORDER BY balance DESC LIMIT ?", (limit,), fetchall=True)
+    return db_query("SELECT user_id, (balance + IFNULL(bank, 0)) as total FROM wallets ORDER BY total DESC LIMIT ?", (limit,), fetchall=True)
 
 def add_item(user_id, item_name, item_type="Collectible", item_data=""):
     db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, ?, ?, ?)", (user_id, item_name, item_type, item_data), commit=True)
@@ -1041,7 +1041,7 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
 
 
-    @commands.command(name='top', aliases=['rich'])
+    @commands.command(name='top', aliases=['rich', 'jclb', 'jcleaderboard'])
     async def top_command(self, ctx: commands.Context):
         """Show the richest users."""
         rows = get_top_balances(10)
@@ -1059,7 +1059,7 @@ class Economy(commands.Cog):
                 name = user.display_name
             except Exception:
                 name = f"User {user_id}"
-            lines.append(f"{medal} **{name}** — {balance:,} JC")
+            lines.append(f"{medal} **{name}** — {balance:,} JC (Total)")
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
