@@ -5,7 +5,7 @@ import time
 import asyncio
 from datetime import datetime, timezone, timedelta
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from config import COMMAND_PREFIX, TROY_OUNCE_TO_GRAMS
 from utils.storage import load_user_data
 
@@ -386,6 +386,235 @@ async def validate_admin_amount(ctx: commands.Context, amount: int):
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.taxman_task.start()
+
+    def cog_unload(self):
+        self.taxman_task.cancel()
+
+    @tasks.loop(hours=1) # Check more frequently than 24h to handle restarts better
+    async def taxman_task(self):
+        """The Taxman visits once a day..."""
+        # Wait for bot to be ready
+        await self.bot.wait_until_ready()
+        
+        # Check last tax time
+        now = int(time.time())
+        day_seconds = 24 * 60 * 60
+        last_tax = int(get_setting("last_tax_timestamp", "0"))
+        
+        if now - last_tax < day_seconds:
+            # Not time yet
+            return
+            
+        # Update last tax time immediately to prevent race conditions or multiple triggers
+        set_setting("last_tax_timestamp", str(now))
+        
+        # Get target channel
+        channel_id = get_setting("tax_channel_id")
+        channel = None
+        if channel_id:
+            channel = self.bot.get_channel(int(channel_id))
+        
+        # If no channel set, look for first available channel
+        if not channel:
+            for guild in self.bot.guilds:
+                target = guild.system_channel
+                if not target or not target.permissions_for(guild.me).send_messages:
+                    for ch in guild.text_channels:
+                        if ch.permissions_for(guild.me).send_messages:
+                            target = ch
+                            break
+                if target:
+                    channel = target
+                    break
+        
+        if not channel:
+            print("Taxman: No announcement channel found.")
+            # We still run the tax even if no announcement channel
+        
+        # Get all users with total balance > 1000
+        # This is a bit expensive but runs only once a day
+        rows = db_query("SELECT user_id, balance, bank FROM wallets WHERE (balance + bank) >= 1000", fetchall=True)
+        if not rows:
+            return
+
+        population = []
+        weights = []
+        
+        for row in rows:
+            uid, bal, bank = row
+            total = bal + bank
+            population.append(row)
+            weights.append(total) # Richer = higher chance
+            
+        if not population:
+            return
+            
+        # Weighted random selection
+        victim_row = random.choices(population, weights=weights, k=1)[0]
+        v_uid, v_bal, v_bank = victim_row
+        v_total = v_bal + v_bank
+        
+        # Check for insurance
+        now = int(time.time())
+        row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'Coin Insurance'", (v_uid,), fetchone=True)
+        is_insured = False
+        if row:
+            try:
+                expiry = int(row[0])
+                if expiry > now:
+                    is_insured = True
+            except: pass
+            
+        if is_insured:
+            if channel:
+                member = await self.bot.fetch_user(int(v_uid))
+                embed = discord.Embed(
+                    title="🕵️ The Taxman Visit",
+                    description=f"The Taxman knocked on {member.mention}'s door, but they had **Coin Insurance**! 📜\n\nNo taxes were collected today.",
+                    color=discord.Color.blue()
+                )
+                await channel.send(embed=embed)
+            return
+
+        # Tax 10%
+        tax_amount = int(v_total * 0.10)
+        
+        # Deduct proportionally
+        wallet_tax = int(tax_amount * (v_bal / v_total)) if v_total > 0 else 0
+        bank_tax = tax_amount - wallet_tax
+        
+        add_balance(v_uid, -wallet_tax)
+        add_bank(v_uid, -bank_tax)
+        log_transaction(v_uid, -tax_amount, "The Taxman (10% Tax)")
+        
+        if channel:
+            member = await self.bot.fetch_user(int(v_uid))
+            embed = discord.Embed(
+                title="🚨 TAXED BY THE TAXMAN!",
+                description=f"The Taxman has visited {member.mention} and collected a **10%** wealth tax! 🏛️",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Amount Collected", value=f"**{tax_amount:,}** JC", inline=True)
+            embed.set_footer(text="No warning, no mercy. Get Coin Insurance to stay safe!")
+            await channel.send(content=member.mention, embed=embed)
+
+    @taxman_task.before_loop
+    async def before_taxman_task(self):
+        await self.bot.wait_until_ready()
+
+    @commands.command(name='settaxchannel')
+    @commands.is_owner()
+    async def settaxchannel_command(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel for Taxman announcements. Usage: !settaxchannel [#channel]"""
+        if not channel:
+            channel = ctx.channel
+            
+        set_setting("tax_channel_id", str(channel.id))
+        await ctx.send(f"✅ Taxman announcements will now be sent to {channel.mention}!")
+
+    @settaxchannel_command.error
+    async def settaxchannel_error(self, ctx, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("❌ Only the bot owner can set the tax channel!")
+
+    @commands.command(name='setboxchannel')
+    @commands.is_owner()
+    async def setboxchannel_command(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel for Mystery Box event announcements. Usage: !setboxchannel [#channel]"""
+        if not channel:
+            channel = ctx.channel
+            
+        set_setting("box_channel_id", str(channel.id))
+        await ctx.send(f"✅ Mystery Box event announcements will now be sent to {channel.mention}!")
+
+    @setboxchannel_command.error
+    async def setboxchannel_error(self, ctx, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("❌ Only the bot owner can set the box channel!")
+
+    @commands.command(name='setnoticechannel')
+    @commands.is_owner()
+    async def setnoticechannel_command(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel for general bot notices. Usage: !setnoticechannel [#channel]"""
+        if not channel:
+            channel = ctx.channel
+            
+        set_setting("notice_channel_id", str(channel.id))
+        await ctx.send(f"✅ General bot notices will now be sent to {channel.mention}!")
+
+    @setnoticechannel_command.error
+    async def setnoticechannel_error(self, ctx, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("❌ Only the bot owner can set the notice channel!")
+
+    @commands.command(name='setnotice')
+    @commands.is_owner()
+    async def setnotice_command(self, ctx: commands.Context, *, message: str = None):
+        """Send an announcement to the notice channel. Usage: !setnotice [message]"""
+        if not message:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}setnotice [your message]`")
+            return
+            
+        channel_id = get_setting("notice_channel_id")
+        channel = None
+        if channel_id:
+            channel = self.bot.get_channel(int(channel_id))
+            
+        if not channel:
+            # Default to first available text channel
+            for guild in self.bot.guilds:
+                target = guild.system_channel
+                if not target or not target.permissions_for(guild.me).send_messages:
+                    for ch in guild.text_channels:
+                        if ch.permissions_for(guild.me).send_messages:
+                            target = ch
+                            break
+                if target:
+                    channel = target
+                    break
+        
+        if not channel:
+            await ctx.send("❌ No announcement channel found and couldn't find a fallback!")
+            return
+            
+        embed = discord.Embed(
+            title="📢 BOT ANNOUNCEMENT",
+            description=message,
+            color=discord.Color.blue(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_footer(text=f"By {ctx.author.display_name}")
+        await channel.send(embed=embed)
+        await ctx.send(f"✅ Announcement sent to {channel.mention}!")
+
+    @commands.command(name='taxstatus')
+    @commands.is_owner()
+    async def taxstatus_command(self, ctx: commands.Context):
+        """Owner Only: Check when the next Taxman visit is due."""
+        last_tax = int(get_setting("last_tax_timestamp", "0"))
+        now = int(time.time())
+        day_seconds = 24 * 60 * 60
+        next_tax = last_tax + day_seconds
+        
+        if now >= next_tax:
+            status = "🕵️ The Taxman is due **ANY MOMENT**!"
+        else:
+            status = f"🕵️ Next Taxman visit: <t:{next_tax}:R> (<t:{next_tax}:F>)"
+            
+        embed = discord.Embed(title="📊 Taxman Status", description=status, color=discord.Color.blue())
+        if last_tax > 0:
+            embed.add_field(name="Last Visit", value=f"<t:{last_tax}:R>", inline=True)
+            
+        await ctx.send(embed=embed)
+
+    @commands.command(name='testtaxman')
+    @commands.is_owner()
+    async def testtaxman_command(self, ctx: commands.Context):
+        """Trigger the taxman task manually (Owner only)."""
+        await ctx.send("🕵️ Triggering the Taxman...")
+        await self.taxman_task()
+        await ctx.send("✅ Taxman task execution finished.")
 
     @commands.command(name='bal', aliases=['balance', 'wallet'])
     async def balance_command(self, ctx: commands.Context, member: discord.Member = None):
@@ -1377,7 +1606,12 @@ class Economy(commands.Cog):
         embed.add_field(
             name="🛡️ **Vault Shield** — `2,000 JC`",
             value="Protects you from **1** robbery attempt (100% block). **Max 3 in inventory!**\nUsage: `!buy shield`",
-            inline=False
+            inline=True
+        )
+        embed.add_field(
+            name="📜 **Coin Insurance** — `5,000 JC`",
+            value="Protects you from **The Taxman** for **7 days**!\nUsage: `!buy insurance`",
+            inline=True
         )
         embed.add_field(
             name="📦 **Iron Safe** — `20,000 JC`",
@@ -1416,6 +1650,49 @@ class Economy(commands.Cog):
             "bunker": 500000000
         }
         
+        if item_type in ["insurance", "coin insurance"]:
+            # Parse quantity (default 1, max 52 weeks)
+            count = 1
+            if qty:
+                try:
+                    count = int(qty)
+                except ValueError:
+                    await ctx.send("❌ Invalid quantity! Use a number like `!buy insurance 4`.")
+                    return
+            
+            if count < 1 or count > 52:
+                await ctx.send("❌ You can buy between **1** and **52** weeks of insurance at a time!")
+                return
+            
+            price_per = 5000
+            total_cost = price_per * count
+            
+            success, pay_msg = pay_jc(uid, total_cost)
+            if not success:
+                await ctx.send(pay_msg)
+                return
+            
+            # Duration: 7 days per week
+            duration = count * 7 * 24 * 60 * 60
+            now = int(time.time())
+            
+            # Check for existing insurance
+            row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'Coin Insurance'", (uid,), fetchone=True)
+            if row:
+                try:
+                    old_expiry = int(row[0])
+                except:
+                    old_expiry = 0
+                new_expiry = max(old_expiry, now) + duration
+                db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Coin Insurance'", (str(new_expiry), uid), commit=True)
+            else:
+                new_expiry = now + duration
+                db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'Coin Insurance', 'Protection', ?)", (uid, str(new_expiry)), commit=True)
+            
+            log_transaction(uid, -total_cost, f"Bought {count}x Coin Insurance")
+            await ctx.send(f"📜 {ctx.author.mention}, you purchased **{count}** week(s) of **Coin Insurance**! {pay_msg} You are protected until <t:{new_expiry}:F>.")
+            return
+
         if item_type == 'box':
             # Parse quantity (default 1, max 10)
             count = 1
@@ -1971,9 +2248,25 @@ class Economy(commands.Cog):
         )
         embed.set_footer(text="Open some boxes before the event ends! Use !buy box")
         
-        # Broadcast to all guilds
+        # Broadcast to specifically set channel or fall back to system channels
+        box_channel_id = get_setting("box_channel_id")
         sent_count = 0
+        
+        target_guild_id = None
+        if box_channel_id:
+            target = self.bot.get_channel(int(box_channel_id))
+            if target:
+                try:
+                    await target.send(embed=embed)
+                    sent_count += 1
+                    target_guild_id = target.guild.id
+                except Exception: pass
+        
+        # Original broadcast logic for other guilds
         for guild in self.bot.guilds:
+            if guild.id == target_guild_id:
+                continue # Already sent to this guild
+            
             target_channel = guild.system_channel
             if not target_channel or not target_channel.permissions_for(guild.me).send_messages:
                 # Fallback: find the first text channel we can send to
@@ -1983,6 +2276,7 @@ class Economy(commands.Cog):
                         break
                 else:
                     continue
+            
             try:
                 await target_channel.send(embed=embed)
                 sent_count += 1
