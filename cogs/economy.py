@@ -397,6 +397,11 @@ class Economy(commands.Cog):
         # Wait for bot to be ready
         await self.bot.wait_until_ready()
         
+        # Check if Taxman is enabled
+        enabled = get_setting("taxman_enabled", "False").lower() == "true"
+        if not enabled:
+            return
+            
         # Check last tax time
         now = int(time.time())
         day_seconds = 24 * 60 * 60
@@ -432,9 +437,12 @@ class Economy(commands.Cog):
             print("Taxman: No announcement channel found.")
             # We still run the tax even if no announcement channel
         
-        # Get all users with total balance > 1000
+        # Get tax percentage (default 10%)
+        tax_pct = int(get_setting("taxman_percent", "10"))
+        
+        # Get all users with total wealth > 100,000
         # This is a bit expensive but runs only once a day
-        rows = db_query("SELECT user_id, balance, bank FROM wallets WHERE (balance + bank) >= 1000", fetchall=True)
+        rows = db_query("SELECT user_id, balance, bank FROM wallets WHERE (balance + bank) > 100000", fetchall=True)
         if not rows:
             return
 
@@ -477,8 +485,8 @@ class Economy(commands.Cog):
                 await channel.send(embed=embed)
             return
 
-        # Tax 10%
-        tax_amount = int(v_total * 0.10)
+        # Tax configured %
+        tax_amount = int(v_total * (tax_pct / 100))
         
         # Deduct proportionally
         wallet_tax = int(tax_amount * (v_bal / v_total)) if v_total > 0 else 0
@@ -591,22 +599,74 @@ class Economy(commands.Cog):
     @commands.command(name='taxstatus')
     @commands.is_owner()
     async def taxstatus_command(self, ctx: commands.Context):
-        """Owner Only: Check when the next Taxman visit is due."""
+        """Owner Only: Check Taxman settings and next visit schedule."""
+        enabled = get_setting("taxman_enabled", "False").lower() == "true"
+        tax_pct = int(get_setting("taxman_percent", "10"))
         last_tax = int(get_setting("last_tax_timestamp", "0"))
         now = int(time.time())
         day_seconds = 24 * 60 * 60
         next_tax = last_tax + day_seconds
         
-        if now >= next_tax:
-            status = "🕵️ The Taxman is due **ANY MOMENT**!"
+        status_str = "🟢 **Active**" if enabled else "🔴 **Disabled**"
+        
+        embed = discord.Embed(title="🕵️ Taxman System Status", color=discord.Color.gold())
+        embed.add_field(name="Status", value=status_str, inline=True)
+        embed.add_field(name="Tax Rate", value=f"**{tax_pct}%**", inline=True)
+        embed.add_field(name="Threshold", value="**> 100,000 JC**", inline=True)
+        
+        if enabled:
+            if now >= next_tax:
+                embed.add_field(name="Next Visit", value="*Imminent!* (Checking...) ", inline=False)
+            else:
+                embed.add_field(name="Next Visit", value=f"<t:{next_tax}:R>", inline=False)
+            if last_tax > 0:
+                embed.add_field(name="Last Visit", value=f"<t:{last_tax}:R>", inline=True)
         else:
-            status = f"🕵️ Next Taxman visit: <t:{next_tax}:R> (<t:{next_tax}:F>)"
-            
-        embed = discord.Embed(title="📊 Taxman Status", description=status, color=discord.Color.blue())
-        if last_tax > 0:
-            embed.add_field(name="Last Visit", value=f"<t:{last_tax}:R>", inline=True)
+            embed.add_field(name="Next Visit", value="*N/A (System Disabled)*", inline=False)
             
         await ctx.send(embed=embed)
+
+    @commands.command(name='settaxmantoggle')
+    @commands.is_owner()
+    async def settaxmantoggle_command(self, ctx: commands.Context, status: str = None):
+        """Owner Only: Enable or disable the Taxman. Usage: !settaxmantoggle [on/off]"""
+        if not status:
+            current = get_setting("taxman_enabled", "False").lower() == "true"
+            await ctx.send(f"Current Taxman status is: {'**ON**' if current else '**OFF**'}. Use `!settaxmantoggle on` or `off` to change.")
+            return
+            
+        status = status.lower()
+        if status in ['on', 'yes', 'true', '1', 'enable']:
+            set_setting("taxman_enabled", "True")
+            await ctx.send("✅ **Taxman has been ENABLED.** He will visit once every 24 hours.")
+        elif status in ['off', 'no', 'false', '0', 'disable']:
+            set_setting("taxman_enabled", "False")
+            await ctx.send("🛑 **Taxman has been DISABLED.**")
+        else:
+            await ctx.send("❌ Please use `on` or `off`!")
+
+    @commands.command(name='settaxmanpercent')
+    @commands.is_owner()
+    async def settaxmanpercent_command(self, ctx: commands.Context, percent: int = None):
+        """Owner Only: Set the Taxman's tax rate percentage. Usage: !settaxmanpercent [1-100]"""
+        if percent is None:
+            current = get_setting("taxman_percent", "10")
+            await ctx.send(f"Current Taxman rate is: **{current}%**. Usage: `!settaxmanpercent [number]`")
+            return
+            
+        if not (1 <= percent <= 100):
+            await ctx.send("❌ Percentage must be between 1 and 100!")
+            return
+            
+        set_setting("taxman_percent", str(percent))
+        await ctx.send(f"✅ **Taxman tax rate set to {percent}%!**")
+
+    @settaxmantoggle_command.error
+    @settaxmanpercent_command.error
+    @taxstatus_command.error
+    async def taxmansettings_error(self, ctx, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("❌ This command is restricted to the bot owner!")
 
     @commands.command(name='testtaxman')
     @commands.is_owner()
