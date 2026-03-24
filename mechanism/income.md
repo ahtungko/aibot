@@ -7,37 +7,39 @@ This document outlines all available methods for users to acquire **JenCoins (JC
 ### 1. ⚒️ Active Work & Grinding
 | Source | Yield | Cooldown | Notes |
 | :--- | :--- | :--- | :--- |
-| **`!work`** | 20 — 500 JC (Base) | 1 Hour | Subject to Income Tax (5% Normal / 2% VIP). |
-| **`!grind`** | 5 — 15 JC (70%) | 30 Seconds | Entry Cost: 10 JC. Small profit/loss risk. |
+| **`!work`** | 20 — 150 JC (Base) | 1 Hour | Progressive Income Tax (5-12%, VIP gets -3% flat). |
+| **`!grind`** | 5 — 10 JC (55%) | 30 Seconds | Entry Cost: 10 JC. High profit/loss risk. |
 
-**Yield Multipliers (Stackable Tools)**:
-- **Golden Pickaxe**: +10% Yield
-- **Diamond Pickaxe**: +25% Yield
-- **Netherite Pickaxe**: +50% Yield & -5m Cooldown
-- **Mithril Drill**: +100% Yield & -15m Cooldown
+**Mining Tool Upgrades (Sequential)**:
+- **Stone Pickaxe**: +10 JC Flat & -5m Cooldown
+- **Iron Pickaxe**: +20 JC Flat & -10m Cooldown (5% chance to find 25 JC Shard)
+- **Golden Pickaxe**: +30 JC Flat & -15m Cooldown (-1% Work Tax)
+- **Diamond Pickaxe**: +45 JC Flat & -20m Cooldown (Unlocks `!overtime` 1x daily)
+- **Netherite Pickaxe**: +60 JC Flat & -25m Cooldown (2x Overtime + 10% dodge tax chance)
+- **Mithril Drill**: +80 JC Flat & -35m Cooldown (3x Overtime + Chat Passive 1 JC/min up to 15/hr)
 
 ---
 
 ### 2. 🎣 Resource Gathering
 | Source | Entry Cost | Common (42%) | Rare (7%) | Legendary (1%) | Trash (50%) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`!fish`** | 50 JC | 55-65 JC | 120-180 JC | 500-1000 JC | 0 JC |
+| **`!fish`** | 50 JC | 55-65 JC | 120-180 JC | 200-400 JC | 0 JC |
 
 ---
 
 ### 3. 🎁 Passive & Random Events
 | Source | Yield | Frequency | Notes |
 | :--- | :--- | :--- | :--- |
-| **`!daily`** | 100 JC | 24 Hours | Simple daily login reward. |
-| **`JC Rain`** | Random Share | Random | Triggered by chat activity or Owner manually. |
+| **`!daily`** | 40-80 JC (Crate) | 24 Hours | 5% chance for massive 100-300 JC bonus, 1% ultra-rare flavor drop. |
+| **`JC Rain`** | 10% of Vault | Random (30m CD)| Spawns between 200 - 2000 JC. Deducted directly from Global Vault. |
 
 ---
 
 ### 4. 🎰 Gambling & Betting
 | Game | Payout | Win Chance | Notes |
 | :--- | :--- | :--- | :--- |
-| **`!flip`** | 2.0x | 50% | +5% Luck with **Lucky Charm**. |
-| **`!blackjack`** | 2.0x / 2.5x | Skill based | 2.5x payout for a Natural Blackjack. |
+| **`!flip`** | 1.9x | 50% | +5% Luck with **Lucky Charm**. |
+| **`!blackjack`** | 1.9x / 2.2x | Skill based | 2.2x payout for a Natural Blackjack. |
 | **`!slots`** | Up to 25x | RNG | 2 match = Bet Back. 3 match = Jackpot. |
 | **`!crash`** | 1.0x — ∞ | Variable | Cash out before crash. 15% Entry Fee (10% VIP). |
 | **`!duel`** | 1.95x | 50% | PVP. Winner takes pot minus 5% fee. |
@@ -50,15 +52,15 @@ This document outlines all available methods for users to acquire **JenCoins (JC
 | :--- | :--- | :--- | :--- |
 | **Common** | ~95.9% | 200 — 500 JC | None |
 | **Rare** | 3.0% | 1,500 — 3,000 JC | None |
-| **Epic** | 1.0% | 10,000 JC | 🥈 Silver Coin |
-| **Legendary** | 0.1% | 50,000 JC | 🏆 Golden JC |
+| **Epic** | 1.0% | 5,000 JC | 🥈 Silver Coin |
+| **Legendary** | 0.1% | 15,000 JC | 🏆 Golden JC |
 
 ---
 
 ### 6. 🥷 Criminal Enterprise
 | Source | Success Rate | Yield | Penalty (on fail) |
 | :--- | :--- | :--- | :--- |
-| **`!rob`** | 40% (Base) | 10-25% of Wallet | 10% Fine (5% VIP). |
+| **`!rob`** | 40% (Base) | 10-25% of Wallet | 15% Fine (8% VIP). 5% Fee on Success. |
 
 **Modifiers**:
 - **Sticky Gloves**: +5% Success Rate for one attempt.

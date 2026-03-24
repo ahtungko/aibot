@@ -24,11 +24,11 @@ SLOT_PAYOUTS = {
 }
 # 2 of a kind returns your bet
 
-DAILY_BASE = 100        # base daily coins
+DAILY_BASE = 50        # base daily coins
 DAILY_STREAK_BONUS = 20 # extra per streak day (capped at 10)
 WORK_COOLDOWN = 3600  # 1 hour in seconds
 WORK_MIN = 20
-WORK_MAX = 500
+WORK_MAX = 150
 STARTING_BALANCE = 0
 
 
@@ -39,6 +39,11 @@ def get_db():
     conn.execute("CREATE TABLE IF NOT EXISTS inventory (user_id TEXT, item_name TEXT, item_type TEXT, item_data TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS investments (user_id TEXT PRIMARY KEY, gold_grams REAL DEFAULT 0.0)")
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS user_stats ("
+                 "user_id TEXT PRIMARY KEY, overtime_uses INTEGER DEFAULT 0, "
+                 "overtime_last_reset INTEGER DEFAULT 0, overtime_active INTEGER DEFAULT 0, "
+                 "last_passive_time INTEGER DEFAULT 0, passive_hourly_total INTEGER DEFAULT 0, "
+                 "passive_hour_start INTEGER DEFAULT 0)")
     # Migration: Add last_work column if it doesn't exist
     try:
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
@@ -145,6 +150,39 @@ def get_last_work(user_id: str) -> str:
 def set_last_work(user_id: str, ts_str: str):
     db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
 
+def get_user_stats(user_id: str) -> dict:
+    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, passive_hourly_total, passive_hour_start FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
+    if row:
+        return {
+            "overtime_uses": row[0],
+            "overtime_last_reset": row[1],
+            "overtime_active": row[2],
+            "last_passive_time": row[3],
+            "passive_hourly_total": row[4],
+            "passive_hour_start": row[5]
+        }
+    else:
+        db_query("INSERT INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
+        return {
+            "overtime_uses": 0,
+            "overtime_last_reset": 0,
+            "overtime_active": 0,
+            "last_passive_time": 0,
+            "passive_hourly_total": 0,
+            "passive_hour_start": 0
+        }
+
+def update_user_stats(user_id: str, **kwargs):
+    if not kwargs: return
+    fields = []
+    values = []
+    for k, v in kwargs.items():
+        fields.append(f"{k} = ?")
+        values.append(v)
+    values.append(user_id)
+    query = f"UPDATE user_stats SET {', '.join(fields)} WHERE user_id = ?"
+    db_query(query, tuple(values), commit=True)
+
 def get_top_balances(limit=10) -> list:
     return db_query("SELECT user_id, (balance + IFNULL(bank, 0)) as total FROM wallets ORDER BY total DESC LIMIT ?", (limit,), fetchall=True)
 
@@ -245,21 +283,24 @@ def get_luck_bonus(user_id: str) -> float:
 def get_best_pickaxe(user_id: str) -> dict:
     """
     Returns data for the user's best mining tool.
-    Returns: {name: str, bonus: float, cooldown_reduction: int}
+    Returns: {name: str, bonus: int, cooldown_reduction: int, overtime_max: int, tax_reduction: float, tax_dodge: float, passive_active: bool}
     """
-    # Order matters: Mithril -> Netherite -> Diamond -> Golden
+    # Order matters: Mithril -> Netherite -> Diamond -> Golden -> Iron -> Stone
     tools = [
-        {"name": "Mithril Drill", "bonus": 1.00, "cooldown_reduction": 900},
-        {"name": "Netherite Pickaxe", "bonus": 0.50, "cooldown_reduction": 300},
-        {"name": "Diamond Pickaxe", "bonus": 0.25, "cooldown_reduction": 0},
-        {"name": "Golden Pickaxe", "bonus": 0.10, "cooldown_reduction": 0}
+        {"name": "Mithril Drill", "bonus": 80, "cooldown_reduction": 2100, "overtime_max": 3, "tax_reduction": 0.0, "tax_dodge": 0.0, "passive_active": True},
+        {"name": "Netherite Pickaxe", "bonus": 60, "cooldown_reduction": 1500, "overtime_max": 2, "tax_reduction": 0.0, "tax_dodge": 0.10, "passive_active": False},
+        {"name": "Diamond Pickaxe", "bonus": 45, "cooldown_reduction": 1200, "overtime_max": 1, "tax_reduction": 0.0, "tax_dodge": 0.0, "passive_active": False},
+        {"name": "Golden Pickaxe", "bonus": 30, "cooldown_reduction": 900, "overtime_max": 0, "tax_reduction": 0.01, "tax_dodge": 0.0, "passive_active": False},
+        {"name": "Iron Pickaxe", "bonus": 20, "cooldown_reduction": 600, "overtime_max": 0, "tax_reduction": 0.0, "tax_dodge": 0.0, "passive_active": False},
+        {"name": "Stone Pickaxe", "bonus": 10, "cooldown_reduction": 300, "overtime_max": 0, "tax_reduction": 0.0, "tax_dodge": 0.0, "passive_active": False}
     ]
     
     for tool in tools:
         if get_inventory_item(user_id, tool["name"]):
             return tool
             
-    return {"name": None, "bonus": 0.0, "cooldown_reduction": 0}
+    # Default Wooden Pickaxe (or no pickaxe) state
+    return {"name": "Wooden Pickaxe", "bonus": 0, "cooldown_reduction": 0, "overtime_max": 0, "tax_reduction": 0.0, "tax_dodge": 0.0, "passive_active": False}
 
 def get_last_rob(user_id: str) -> int:
     row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
@@ -406,6 +447,7 @@ class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.taxman_task.start()
+        self.passive_cache = {} # {uid: last_awarded_time}
 
     def cog_unload(self):
         self.taxman_task.cancel()
@@ -709,16 +751,16 @@ class Economy(commands.Cog):
         log_transaction(uid, -fee, "Daily Grind Entry Fee")
         
         # Roll outcome
-        # 70% -> 5-15 JC (avg 10)
-        # 25% -> 10 JC (break even)
-        # 5% -> 0 JC (loss)
+        # 55% -> 5-10 JC (avg 7.5)
+        # 30% -> 5 JC
+        # 15% -> 0 JC (loss)
         roll = random.random() * 100
         reward = 0
         
-        if roll <= 70:
-            reward = random.randint(5, 15)
-        elif roll <= 95:
-            reward = 10
+        if roll <= 55:
+            reward = random.randint(5, 10)
+        elif roll <= 85:
+            reward = 5
         else:
             reward = 0
             
@@ -729,7 +771,7 @@ class Economy(commands.Cog):
             bonus_val = int(reward * pick["bonus"])
             reward += bonus_val
 
-        if roll <= 70:
+        if roll <= 55:
             msg = f"⚒️ You spent some time grinding and earned **{reward} JC**!"
             if bonus_val > 0:
                 msg += f" (incl. **{bonus_val} JC** {pick['name']} bonus! ✨)"
@@ -739,7 +781,7 @@ class Economy(commands.Cog):
                 msg += " Not quite enough to cover your efforts... 📉"
             else:
                 msg += " You broke even."
-        elif roll <= 95:
+        elif roll <= 85:
             msg = f"⚒️ You ground some materials and earned **{reward} JC**."
             if bonus_val > 0:
                 msg += f" (incl. **{bonus_val} JC** {pick['name']} bonus! ✨)"
@@ -786,8 +828,8 @@ class Economy(commands.Cog):
         # 50% Trash (0 JC)
         # 42% Common (55-65 JC, Avg 60)
         # 7% Rare (120-180 JC, Avg 150)
-        # 1% Legendary (500-1000 JC, Avg 750)
-        # Overall Avg Return: ~43.2 JC (86.4%)
+        # 1% Legendary (200-400 JC, Avg 300)
+        # Overall Avg Return: ~43.2 -> ~38.7 JC (77.4%)
         
         roll = random.random() * 100
         rarity = "Trash"
@@ -887,7 +929,7 @@ class Economy(commands.Cog):
             
         else: # Legendary
             rarity = "Legendary"
-            reward = random.randint(500, 1000)
+            reward = random.randint(200, 400)
             if random.random() < 0.10: # 10% Legendary Twist
                 msg = legendary_twist
             else:
@@ -1063,14 +1105,27 @@ class Economy(commands.Cog):
             await ctx.send(f"⏰ {ctx.author.mention}, you already claimed your daily! Come back tomorrow.")
             return
 
-        total = DAILY_BASE
+        base_reward = random.randint(40, 80)
+        bonus = 0
+        bonus_msg = ""
+        
+        # 5% chance for Crate Bonus
+        if random.random() < 0.05:
+            bonus = random.randint(100, 300)
+            bonus_msg = f"\n🎉 **CRATE BONUS!** You found an extra **{bonus} JC**!"
+            
+        # 1% chance for ultra-rare flavor
+        if random.random() < 0.01:
+            bonus_msg += "\n🍀 **LUCKY DAY!** The universe smiles upon you today. Go do something great!"
+            
+        total = base_reward + bonus
         new_bal = add_balance(uid, total)
         set_last_daily(uid, today)
-        log_transaction(uid, total, "Daily Reward")
+        log_transaction(uid, total, "Daily Crate")
 
         embed = discord.Embed(
-            title="🎁 Daily Claimed!",
-            description=f"💵 {ctx.author.mention} received **{total:,}** JC!",
+            title="🎁 Daily Crate Opened!",
+            description=f"💵 {ctx.author.mention} received **{base_reward:,}** JC!{bonus_msg}",
             color=discord.Color.green()
         )
         embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC", inline=False)
@@ -1078,12 +1133,12 @@ class Economy(commands.Cog):
 
     @commands.command(name='work', aliases=['job'])
     async def work_command(self, ctx: commands.Context):
-        """Work for some JC! (1 hour cooldown)"""
+        """Work for some JC! (1 hour CD, reduced by Pickaxe)"""
         uid = str(ctx.author.id)
         now = int(time.time())
         last_str = get_last_work(uid)
         
-        # Check tool for cooldown reduction
+        # Check tool stats
         pick = get_best_pickaxe(uid)
         actual_cooldown = WORK_COOLDOWN - pick["cooldown_reduction"]
         
@@ -1102,20 +1157,56 @@ class Economy(commands.Cog):
 
         reward = random.randint(WORK_MIN, WORK_MAX)
         
-        # Apply Pickaxe Bonus
-        bonus_val = 0
-        if pick["name"]:
-            bonus_val = int(reward * pick["bonus"])
-            reward += bonus_val
+        # 1. Apply Flat Pickaxe Bonus
+        bonus_val = pick["bonus"]
+        reward += bonus_val
+        
+        # 2. Check Overtime
+        stats = get_user_stats(uid)
+        is_overtime = False
+        if stats["overtime_active"] == 1:
+            reward *= 2
+            is_overtime = True
+            update_user_stats(uid, overtime_active=0)
 
-        fee_rate = 0.02 if is_vip(uid) else 0.05
-        tax = max(1, int(reward * fee_rate))
+        # 3. Apply Taxes & Perks
+        if reward < 100:
+            base_fee = 0.05
+        elif reward <= 300:
+            base_fee = 0.08
+        else:
+            base_fee = 0.12
+            
+        if is_vip(uid):
+            base_fee = max(0.02, base_fee - 0.03)
+            
+        fee_rate = max(0.0, base_fee - pick["tax_reduction"])
+        
+        tax_dodged = False
+        if pick["tax_dodge"] > 0 and random.random() < pick["tax_dodge"]:
+            tax = 0
+            tax_dodged = True
+        else:
+            tax = max(1, int(reward * fee_rate))
+            
         net_reward = reward - tax
         
+        # 4. Process Payouts
         new_bal = add_balance(uid, net_reward)
         set_last_work(uid, str(now))
         track_fee(tax)
-        log_transaction(uid, net_reward, "Work Payment")
+        
+        log_msg = "Work Payment"
+        if is_overtime: log_msg += " (Overtime)"
+        log_transaction(uid, net_reward, log_msg)
+        
+        # 5. Coin Shard (Iron Pickaxe Perk)
+        shard_msg = ""
+        if pick["name"] == "Iron Pickaxe" and random.random() < 0.05:
+            shard_reward = 25
+            new_bal = add_balance(uid, shard_reward)
+            log_transaction(uid, shard_reward, "Found Coin Shard")
+            shard_msg = f"\n💎 **Coin Shard Found!** (+{shard_reward} JC added to wallet)"
 
         jobs = [
             "cleaned the server kitchen", "coded a new feature", "moderated a spicy channel",
@@ -1126,18 +1217,69 @@ class Economy(commands.Cog):
 
         embed = discord.Embed(
             title="⚒️ Hard Work Pays Off!",
-            description=f"{ctx.author.mention}, you **{job}** and earned **{reward}** JC!",
+            description=f"{ctx.author.mention}, you **{job}** and earned **{reward:,}** JC!",
             color=discord.Color.blue()
         )
+        
+        msg_details = []
         if bonus_val > 0:
-            embed.description += f"\n✨ *Includes **{bonus_val} JC** bonus from your {pick['name']}!*"
+            msg_details.append(f"✨ Includes **+{bonus_val} JC** flat bonus from **{pick['name']}**.")
+        if is_overtime:
+            msg_details.append(f"🔥 **OVERTIME ACTIVE!** Base yield and bonus were **DOUBLED!**")
+        if shard_msg:
+            msg_details.append(shard_msg)
+            
+        if msg_details:
+            embed.description += "\n\n" + "\n".join(msg_details)
 
         tax_percent = int(fee_rate * 100)
-        embed.add_field(name="Income Tax", value=f"**{tax}** JC ({tax_percent}%)", inline=True)
+        if tax_dodged:
+            embed.add_field(name="Income Tax", value=f"~~{max(1, int(reward * fee_rate))} JC~~ (**DODGED!**)", inline=True)
+        else:
+            embed.add_field(name="Income Tax", value=f"**{tax}** JC ({tax_percent}%)", inline=True)
+            
         embed.add_field(name="Net Received", value=f"**{net_reward:,}** JC", inline=True)
         embed.add_field(name="New Wallet", value=f"**{new_bal:,}** JC", inline=False)
-        embed.set_footer(text="Tax collected is added to the global fee vault!")
+        if not tax_dodged:
+            embed.set_footer(text="Tax collected is added to the global fee vault!")
         await ctx.send(embed=embed)
+
+    @commands.command(name='overtime')
+    async def overtime_command(self, ctx: commands.Context):
+        """Prepare to work OVERTIME for double pay! (Requires Diamond Pickaxe+)"""
+        uid = str(ctx.author.id)
+        pick = get_best_pickaxe(uid)
+        max_uses = pick["overtime_max"]
+        
+        if max_uses <= 0:
+            await ctx.send(f"❌ You need at least a **Diamond Pickaxe** to work `!overtime`! Check the `!shop`.")
+            return
+            
+        stats = get_user_stats(uid)
+        now = int(time.time())
+        
+        # Check daily reset (24 hours = 86400 seconds)
+        if now - stats["overtime_last_reset"] > 86400:
+            stats["overtime_uses"] = 0
+            stats["overtime_last_reset"] = now
+            update_user_stats(uid, overtime_uses=0, overtime_last_reset=now)
+            
+        if stats["overtime_uses"] >= max_uses:
+            rem = 86400 - (now - stats["overtime_last_reset"])
+            hrs = rem // 3600
+            mins = (rem % 3600) // 60
+            await ctx.send(f"❌ You've hit your daily `!overtime` limit (**{max_uses}/{max_uses}** uses). Reset in **{hrs}h {mins}m**.")
+            return
+            
+        if stats["overtime_active"] == 1:
+            await ctx.send("🔥 You are already geared up for Overtime! Use `!work` to consume the charge.")
+            return
+            
+        # Activate it
+        uses = stats["overtime_uses"] + 1
+        update_user_stats(uid, overtime_active=1, overtime_uses=uses)
+        
+        await ctx.send(f"🔥 **OVERTIME ACTIVATED!** ({uses}/{max_uses} uses today).\n{ctx.author.mention}, your VERY NEXT `!work` will yield **DOUBLE** JC!")
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
     async def give_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
@@ -1444,7 +1586,7 @@ class Economy(commands.Cog):
         _, pay_msg = pay_jc(uid, amount)
 
         if won:
-            winnings = amount * 2
+            winnings = int(amount * 1.9)
             new_bal = add_balance(uid, winnings)
             track_fee(-amount) # Profit comes FROM the vault
             log_transaction(uid, winnings, "Flip Win")
@@ -1723,28 +1865,27 @@ class Economy(commands.Cog):
             percent = random.uniform(0.10, 0.25)
             stolen = int(v_bal * percent)
             
-            # Guild Tax (5%)
+            # Laundering Fee (5%)
             tax = int(stolen * 0.05)
             net_gain = stolen - tax
             
             add_balance(vid, -stolen)
             add_balance(uid, net_gain)
-            track_fee(tax)
             log_transaction(uid, net_gain, f"Robbed {member.display_name}")
             log_transaction(vid, -stolen, f"Robbed by {ctx.author.display_name}")
             
             embed = discord.Embed(title="🥷 Successful Robbery!", color=discord.Color.green())
             embed.description = f"You managed to snatch **{stolen:,}** JC from {member.mention}!{gold_msg}"
             embed.add_field(name="Net Gain", value=f"**{net_gain:,}** JC", inline=True)
-            embed.add_field(name="Guild Tax", value=f"**{tax:,}** JC (Sent to Vault)", inline=True)
+            embed.add_field(name="Laundering Fee", value=f"**{tax:,}** JC (Burned)", inline=True)
             if gold_stolen > 0:
                 embed.add_field(name="Gold Looted", value=f"**{gold_stolen}g**", inline=True)
             embed.set_footer(text="Crime pays... for now.")
             await ctx.send(embed=embed)
         else:
-            # Penalty: 10% of thief's wallet
-            penalty_rate = 0.10
-            if is_vip(uid): penalty_rate = 0.05 # VIPs pay half penalty
+            # Penalty: 15% of thief's wallet
+            penalty_rate = 0.15
+            if is_vip(uid): penalty_rate = 0.08 # VIPs pay reduced penalty
             
             fine = int(t_bal * penalty_rate)
             
@@ -1842,6 +1983,32 @@ class Economy(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot: return
+        
+        uid = str(message.author.id)
+        now = int(time.time())
+        
+        # --- Mithril Drill Chat Passive ---
+        last_time = self.passive_cache.get(uid, 0)
+        if now - last_time >= 60:
+            pick = get_best_pickaxe(uid)
+            if pick["passive_active"]:
+                stats = get_user_stats(uid)
+                # Check Hourly Reset
+                if now - stats["passive_hour_start"] >= 3600:
+                    stats["passive_hourly_total"] = 0
+                    stats["passive_hour_start"] = now
+                
+                # Award if under 15 cap
+                if stats["passive_hourly_total"] < 15:
+                    add_balance(uid, 1)
+                    new_total = stats["passive_hourly_total"] + 1
+                    update_user_stats(uid, 
+                        last_passive_time=now, 
+                        passive_hourly_total=new_total,
+                        passive_hour_start=stats["passive_hour_start"]
+                    )
+                    self.passive_cache[uid] = now
+                    
         # Dynamic rain rate (default 0.1% if not set)
         rate_str = get_setting('rain_rate', '0.1')
         try:
@@ -1850,7 +2017,14 @@ class Economy(commands.Cog):
             rate = 0.001
             
         if random.random() < rate:
-            await self.start_rain(message.channel)
+            # Vault and Cooldown check for random rain
+            vault_bal = int(float(get_setting("fee_vault", "0")))
+            now = int(time.time())
+            last_rain = int(float(get_setting("last_rain_time", "0")))
+            
+            if vault_bal >= 5000 and (now - last_rain) >= 1800:
+                set_setting("last_rain_time", str(now))
+                await self.start_rain(message.channel, is_random=True)
 
     @commands.command(name='rain')
     @commands.is_owner()
@@ -1898,12 +2072,18 @@ class Economy(commands.Cog):
         else:
             await ctx.send("❌ Please provide a positive amount.")
 
-    async def start_rain(self, channel):
-        # Fetch pool or use default
-        try:
-            pool = int(get_setting('rain_pool', '5000'))
-        except (ValueError, TypeError):
-            pool = 5000
+    async def start_rain(self, channel, is_random=False):
+        if is_random:
+            vault_bal = int(float(get_setting("fee_vault", "0")))
+            pool = int(vault_bal * 0.10)
+            pool = max(200, min(2000, pool))
+            set_setting("fee_vault", str(max(0, vault_bal - pool)))
+        else:
+            # Fetch pool or use default
+            try:
+                pool = int(get_setting('rain_pool', str(random.randint(300, 800))))
+            except (ValueError, TypeError):
+                pool = random.randint(300, 800)
             
         view = RainView(pool=pool)
         embed = discord.Embed(
@@ -1942,10 +2122,12 @@ class Economy(commands.Cog):
         embed.add_field(
             name="⛏️ **Mining Tool Upgrades**",
             value=(
-                "**Golden Pickaxe** — `50,000 JC` (+10% yield)\n"
-                "**Diamond Pickaxe** — `250,000 JC` (+25% yield) • *Req: Golden*\n"
-                "**Netherite Pickaxe** — `1,000,000 JC` (+50% yield, -5m CD) • *Req: Diamond*\n"
-                "**Mithril Drill** — `5,000,000 JC` (+100% yield, -15m CD) • *Req: Netherite*"
+                "**Stone Pickaxe** — `500 JC` (+10 JC)\n"
+                "**Iron Pickaxe** — `1,500 JC` (+20 JC, 5% Shard) • *Req: Stone*\n"
+                "**Golden Pickaxe** — `3,500 JC` (+30 JC, -1% Tax) • *Req: Iron*\n"
+                "**Diamond Pickaxe** — `8,000 JC` (+45 JC, 1x OT) • *Req: Golden*\n"
+                "**Netherite Pickaxe** — `20,000 JC` (+60 JC, 2x OT, 10% Dodge) • *Req: Diamond*\n"
+                "**Mithril Drill** — `50,000 JC` (+80 JC, 3x OT, Chat Passive) • *Req: Netherite*"
             ),
             inline=False
         )
@@ -2004,21 +2186,24 @@ class Economy(commands.Cog):
             "iron": 20000,
             "steel": 100000,
             "bunker": 500000000,
-            "pickaxe": 50000,
-            "golden": 50000,
-            "diamond": 250000,
-            "netherite": 1000000,
-            "drill": 5000000,
-            "mithril": 5000000
+            "stone": 500,
+            "ironpick": 1500,
+            "golden": 3500,
+            "diamond": 8000,
+            "netherite": 20000,
+            "drill": 50000,
+            "mithril": 50000
         }
         
-        if item_type in ["pickaxe", "golden", "diamond", "netherite", "drill", "mithril"]:
+        if item_type in ["pickaxe", "stone", "ironpick", "golden", "diamond", "netherite", "drill", "mithril"]:
             # Sequential Logic
             tiers = [
-                ("Golden Pickaxe", 50000, None),
-                ("Diamond Pickaxe", 250000, "Golden Pickaxe"),
-                ("Netherite Pickaxe", 1000000, "Diamond Pickaxe"),
-                ("Mithril Drill", 5000000, "Netherite Pickaxe")
+                ("Stone Pickaxe", 500, None),
+                ("Iron Pickaxe", 1500, "Stone Pickaxe"),
+                ("Golden Pickaxe", 3500, "Iron Pickaxe"),
+                ("Diamond Pickaxe", 8000, "Golden Pickaxe"),
+                ("Netherite Pickaxe", 20000, "Diamond Pickaxe"),
+                ("Mithril Drill", 50000, "Netherite Pickaxe")
             ]
             
             # Find which one they are trying to buy
@@ -2026,25 +2211,28 @@ class Economy(commands.Cog):
             price = 0
             req = None
             
-            if item_type in ["pickaxe", "golden"]:
+            if item_type in ["pickaxe", "stone"]:
                 target_name, price, req = tiers[0]
-            elif item_type == "diamond":
+            elif item_type == "ironpick":
                 target_name, price, req = tiers[1]
-            elif item_type == "netherite":
+            elif item_type == "golden":
                 target_name, price, req = tiers[2]
-            elif item_type in ["drill", "mithril"]:
+            elif item_type == "diamond":
                 target_name, price, req = tiers[3]
+            elif item_type == "netherite":
+                target_name, price, req = tiers[4]
+            elif item_type in ["drill", "mithril"]:
+                target_name, price, req = tiers[5]
                 
             # Check if they already have it or a better one
             current_pick = get_best_pickaxe(uid)
-            pickaxe_order = ["Golden Pickaxe", "Diamond Pickaxe", "Netherite Pickaxe", "Mithril Drill"]
+            pickaxe_order = ["Stone Pickaxe", "Iron Pickaxe", "Golden Pickaxe", "Diamond Pickaxe", "Netherite Pickaxe", "Mithril Drill"]
             
             try:
                 current_rank = pickaxe_order.index(current_pick["name"]) if current_pick["name"] else -1
-                target_rank = pickaxe_order.index(target_name)
             except ValueError:
                 current_rank = -1
-                target_rank = 0
+            target_rank = pickaxe_order.index(target_name)
                 
             if current_rank >= target_rank:
                 await ctx.send(f"❌ You already have a **{current_pick['name']}** or better!")
@@ -2163,12 +2351,12 @@ class Economy(commands.Cog):
                 thresh_rare = thresh_epic + rate_rare
                 
                 if res < thresh_leg:  # Legendary
-                    win = 50000
+                    win = 15000
                     item = "🏆 Golden JC"
                     rarity = "LEGENDARY"
                     color = discord.Color.gold()
                 elif res < thresh_epic:  # Epic
-                    win = 10000
+                    win = 5000
                     item = "🥈 Silver Coin"
                     rarity = "EPIC"
                     color = discord.Color.purple()
@@ -2309,21 +2497,6 @@ class Economy(commands.Cog):
             await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
 
-        elif item_type in ['pickaxe', 'golden pickaxe']:
-            cost = 50000
-            if get_inventory_item(uid, "Golden Pickaxe"):
-                await ctx.send("⛏️ You already own a **Golden Pickaxe**!")
-                return
-            
-            success, msg_text = pay_jc(uid, cost)
-            if not success:
-                await ctx.send(msg_text)
-                return
-                
-            add_item(uid, "Golden Pickaxe", "Equipment")
-            track_fee(cost) # Track pickaxe purchase
-            log_transaction(uid, -cost, "Bought Golden Pickaxe")
-            await ctx.send(f"⛏️ {ctx.author.mention}, you purchased a **Golden Pickaxe**! {msg_text} You now earn **+10% JC** from every `!work` attempt.")
 
         elif item_type in ['charm', 'lucky charm']:
             cost = 2000
@@ -3187,8 +3360,8 @@ class BlackjackView(discord.ui.View):
         
         uid = str(self.ctx.author.id)
         if win is True:
-            # Payout logic: Original bet back + winnings (3:2 for natural, 1:1 for standard)
-            profit_multiplier = 1.5 if self.is_natural else 1.0
+            # Payout logic: Original bet back + winnings (2.2x total for natural, 1.9x for standard)
+            profit_multiplier = 1.2 if self.is_natural else 0.9
             payout = int(self.bet + (self.bet * profit_multiplier))
             
             new_bal = add_balance(uid, payout)
