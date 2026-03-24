@@ -107,12 +107,49 @@ def index():
         except (ValueError, TypeError):
             pass
 
-    # 4. Get Latest Gold Price for Net Worth calculation
+    # 5. Get Latest Gold Price for Net Worth calculation
     cursor.execute("SELECT value FROM settings WHERE key = 'last_gold_price'")
     price_row = cursor.fetchone()
     last_gold_price = float(price_row['value']) if price_row else 0.0
 
-    # 5. Top 5 Richest Players (Wallet + Bank + Gold Value)
+    # 6. User Stats
+    cursor.execute("SELECT COUNT(*) as count FROM wallets")
+    user_count = cursor.fetchone()['count'] or 0
+    
+    # 8. 7-Day Transaction Volume (Daily Sinks/Faucets)
+    # Aggregated by day using epoch in string
+    cursor.execute('''
+        SELECT 
+            date(cast(timestamp as real), 'unixepoch') as day, 
+            cast(sum(case when amount > 0 then amount else 0 end) as integer) as faucets,
+            cast(sum(case when amount < 0 then abs(amount) else 0 end) as integer) as sinks
+        FROM transactions 
+        WHERE cast(timestamp as real) > strftime('%s', 'now', '-7 days')
+        GROUP BY day 
+        ORDER BY day ASC
+    ''')
+    daily_history = cursor.fetchall()
+    history_json = [dict(row) for row in daily_history]
+
+    # 9. Tax Flow Activity (Recent Taxes, Fees, Fines)
+    cursor.execute('''
+        SELECT timestamp, user_id, amount, type as reason 
+        FROM transactions 
+        WHERE (type LIKE '%Tax%' OR type LIKE '%Fee%' OR type LIKE '%Fine%')
+        ORDER BY id DESC 
+        LIMIT 20
+    ''')
+    tax_transactions = cursor.fetchall()
+
+    # 10. Total Tax Revenue (Lifetime JC from taxes/fines/fees)
+    cursor.execute('''
+        SELECT CAST(SUM(ABS(amount)) AS INTEGER) as total_collected 
+        FROM transactions 
+        WHERE (type LIKE '%Tax%' OR type LIKE '%Fee%' OR type LIKE '%Fine%')
+    ''')
+    total_tax_revenue = int(cursor.fetchone()['total_collected'] or 0)
+
+    # 11. Top 5 Richest Players (Wallet + Bank + Gold Value)
     cursor.execute('''
         SELECT w.user_id, CAST((w.balance + w.bank + (COALESCE(i.gold_grams, 0) * ?)) AS INTEGER) as net_worth 
         FROM wallets w
@@ -239,6 +276,10 @@ def index():
         total_gold=total_gold,
         vault_jc=vault_jc,
         vault_gold=vault_gold,
+        user_count=user_count,
+        history_json=json.dumps(history_json),
+        tax_transactions=[enrich_user_data(row, 'user_id') for row in tax_transactions],
+        total_tax_revenue=total_tax_revenue,
         top_players=enriched_top_players,
         transactions=enriched_transactions,
         rain_rate=rain_rate,

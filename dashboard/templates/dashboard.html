@@ -1,460 +1,424 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JenBot Owner Dashboard</title>
-    <!-- Tailwind CSS -->
+    <title>JenBot | Premium Analytics</title>
+    
+    <!-- CDNs -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Font Awesome -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
     <script>
         tailwind.config = {
+            darkMode: 'class',
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
+                        sans: ['Outfit', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
                     },
                     colors: {
                         brand: {
-                            gold: '#FFD700',
-                            dark: '#0B0F19',
-                            card: '#151A2C',
-                            border: '#2A3042',
-                            accent: '#3B82F6'
+                            primary: '#3B82F6',
+                            secondary: '#8B5CF6',
+                            accent: '#F59E0B',
+                            danger: '#EF4444',
+                            success: '#10B981',
+                            dark: '#05070A',
+                            card: '#0F172A',
+                            border: '#1E293B'
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'float': 'float 3s ease-in-out infinite',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-5px)' },
                         }
                     }
                 }
             }
         }
     </script>
+
     <style>
         body {
-            background-color: theme('colors.brand.dark');
-            color: #E2E8F0;
+            background-color: #05070A;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.05) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.05) 0px, transparent 50%);
+            color: #F8FAFC;
         }
-        .glass-card {
-            background: rgba(21, 26, 44, 0.7);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+
+        .glass {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
         }
-        .stat-card {
-            transition: transform 0.2s ease-in-out;
-        }
-        .stat-card:hover {
+
+        .glass-hover:hover {
+            background: rgba(30, 41, 59, 0.8);
+            border-color: rgba(59, 130, 246, 0.3);
             transform: translateY(-2px);
-            border-color: theme('colors.brand.accent');
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        .table-row-hover:hover {
-            background-color: rgba(255, 255, 255, 0.02);
+
+        .text-gradient {
+            background: linear-gradient(to right, #60A5FA, #A78BFA);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
-        ::-webkit-scrollbar {
-            width: 8px;
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #1E293B; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3B82F6; }
+
+        .sidebar-item-active {
+            background: linear-gradient(to right, rgba(59, 130, 246, 0.1), transparent);
+            border-left: 3px solid #3B82F6;
+            color: #3B82F6;
         }
-        ::-webkit-scrollbar-track {
-            background: theme('colors.brand.dark');
+
+        .content-section {
+            display: none;
+            animation: fadeIn 0.4s ease-out;
         }
-        ::-webkit-scrollbar-thumb {
-            background: theme('colors.brand.border');
-            border-radius: 4px;
+
+        .content-section.active {
+            display: block;
         }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #4A5568;
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
-<body class="min-h-screen font-sans selection:bg-brand-accent selection:text-white">
+<body class="min-h-screen font-sans overflow-x-hidden">
 
-    <!-- Top Navigation -->
-    <nav class="glass-card sticky top-0 z-50 px-6 py-4 flex justify-between items-center mb-8 border-b border-brand-border">
-        <div class="flex items-center space-x-3">
-            <div class="w-10 h-10 rounded-full bg-brand-accent flex items-center justify-center shadow-lg shadow-brand-accent/20">
-                <i class="fa-solid fa-robot text-white text-xl"></i>
+    <!-- Sidebar -->
+    <aside class="fixed left-0 top-0 h-full w-64 glass border-r border-brand-border hidden lg:flex flex-col z-50">
+        <div class="p-6 flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center shadow-lg animate-float">
+                <i class="fas fa-robot text-white text-xl"></i>
             </div>
             <div>
-                <h1 class="text-xl font-bold text-white tracking-tight">JenBot</h1>
-                <p class="text-xs text-gray-400 font-medium">Owner Dashboard v1.0</p>
+                <h1 class="text-xl font-bold tracking-tight">Jen<span class="text-brand-primary">Bot</span></h1>
+                <p class="text-[10px] text-gray-400 font-mono tracking-widest uppercase">Admin Cluster v2.0</p>
             </div>
         </div>
-        <div class="flex items-center space-x-4">
-            <div class="px-3 py-1 rounded-full bg-green-500/10 border border-green-500/20 flex items-center">
-                <div class="w-2 h-2 rounded-full bg-green-500 mr-2 animate-pulse"></div>
-                <span class="text-xs font-semibold text-green-400 uppercase tracking-wider">System Online</span>
-            </div>
-        </div>
-    </nav>
 
-    <div class="container mx-auto px-4 max-w-7xl pb-12">
+        <nav class="flex-1 mt-6 px-4 space-y-2">
+            <button onclick="switchModule('overview', this)" class="nav-item sidebar-item-active w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all text-left">
+                <i class="fas fa-home w-5"></i>
+                <span class="font-medium">Overview</span>
+            </button>
+            <button onclick="switchModule('economy', this)" class="nav-item w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all text-left">
+                <i class="fas fa-chart-pie w-5"></i>
+                <span class="font-medium">Economy Flow</span>
+            </button>
+            <button onclick="switchModule('tax', this)" class="nav-item w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all text-left">
+                <i class="fas fa-file-invoice-dollar w-5"></i>
+                <span class="font-medium">Tax Ledger</span>
+            </button>
+            <button onclick="switchModule('rain', this)" class="nav-item w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all text-left">
+                <i class="fas fa-cloud-showers-heavy w-5"></i>
+                <span class="font-medium">Rain Logic</span>
+            </button>
+            <button onclick="switchModule('loot', this)" class="nav-item w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all text-left">
+                <i class="fas fa-box-open w-5"></i>
+                <span class="font-medium">Loot Rates</span>
+            </button>
+        </nav>
+
+        <div class="p-6 border-t border-brand-border">
+            <div class="glass p-4 rounded-xl flex items-center space-x-3">
+                <div class="relative">
+                    <div class="w-2 h-2 rounded-full bg-brand-success absolute -top-1 -right-1 border border-brand-dark animate-pulse"></div>
+                    <i class="fas fa-server text-gray-500"></i>
+                </div>
+                <div>
+                    <p class="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Node Status</p>
+                    <p class="text-xs font-semibold text-brand-success">Stable & Online</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="lg:ml-64 p-4 lg:p-8 space-y-8">
         
-        <!-- Metrics Grid -->
-        <h2 class="text-lg font-semibold text-white mb-4 flex items-center"><i class="fa-solid fa-chart-line mr-2 text-brand-accent"></i> Global Economy Metrics</h2>
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
-            <!-- Total JC -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-coins text-6xl text-brand-gold"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Total Circulation</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,}".format(total_jc) }} <span class="text-lg text-brand-gold font-semibold">JC</span></h3>
-                <p class="text-xs text-brand-accent font-medium">Combined Wallet & Bank balances</p>
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+                <h2 class="text-3xl font-bold">Financial <span id="module-title" class="text-gradient">Intelligence</span></h2>
+                <p id="module-desc" class="text-gray-400 mt-1">Analyzing global currency flow and taxation throughput.</p>
             </div>
+            <div class="flex items-center space-x-4">
+                <div class="flex -space-x-2">
+                    <div class="w-8 h-8 rounded-full bg-brand-border border-2 border-brand-dark flex items-center justify-center text-[10px] font-bold text-gray-400">+{{ user_count }}</div>
+                </div>
+                <button onclick="window.location.reload()" class="glass px-4 py-2 rounded-xl text-sm font-semibold hover:bg-brand-primary/10 transition-colors">
+                    <i class="fas fa-sync-alt mr-2 text-brand-primary"></i> Refresh
+                </button>
+            </div>
+        </header>
 
-            <!-- Total Gold -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-cubes-stacked text-6xl text-brand-gold"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Global Gold Reserves</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,.4f}".format(total_gold) }} <span class="text-lg text-brand-gold font-semibold">g</span></h3>
-                <p class="text-xs text-brand-accent font-medium">Total user investments</p>
-            </div>
-
-            <!-- Vault JC -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-vault text-6xl text-green-500"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Vault Fees (JC)</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,}".format(vault_jc) }} <span class="text-lg text-green-400 font-semibold">JC</span></h3>
-                <p class="text-xs text-green-500/80 font-medium">Collected from taxes & games</p>
-            </div>
-
-            <!-- Vault Gold -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-scale-balanced text-6xl text-green-500"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Vault Fees (Gold)</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,.4f}".format(vault_gold) }} <span class="text-lg text-green-400 font-semibold">g</span></h3>
-                <p class="text-xs text-green-500/80 font-medium">Collected from trading/storage fees</p>
-            </div>
-        </div>
-        
-        <!-- Rain Settings Grid -->
-        <h2 class="text-lg font-semibold text-white mb-4 mt-8 flex items-center"><i class="fa-solid fa-cloud-showers-heavy mr-2 text-brand-accent"></i> Rain System Settings</h2>
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
-            <!-- Rain Rate -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-percentage text-6xl text-brand-accent"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Rain Chance</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ rain_rate }}<span class="text-lg text-brand-accent font-semibold">%</span></h3>
-                <p class="text-xs text-brand-accent font-medium">Probability of random rain per message</p>
-            </div>
-
-            <!-- Rain Range -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-hand-holding-dollar text-6xl text-brand-accent"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Catch Range</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,}".format(rain_min|int) }} - {{ "{:,}".format(rain_max|int) }} <span class="text-lg text-brand-gold font-semibold">JC</span></h3>
-                <p class="text-xs text-brand-accent font-medium">Min/Max amount per lucky catch</p>
-            </div>
-
-            <!-- Rain Pool -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-droplet text-6xl text-brand-accent"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Jackpot Pool</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ "{:,}".format(rain_pool|int) }} <span class="text-lg text-brand-gold font-semibold">JC</span></h3>
-                <p class="text-xs text-brand-accent font-medium">Total coins distributed per rain event</p>
-            </div>
-        </div>
-
-        <!-- Taxman System Settings Grid -->
-        <h2 class="text-lg font-semibold text-white mb-4 mt-8 flex items-center"><i class="fa-solid fa-building-columns mr-2 text-brand-accent"></i> Taxman System Settings</h2>
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
-            <!-- Status -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group border-brand-border/40">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-shield-halved text-6xl text-brand-accent"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">System Status</p>
-                <div class="flex items-center space-x-2">
-                    {% if taxman_enabled %}
-                    <span class="w-3 h-3 rounded-full bg-green-500 animate-pulse"></span>
-                    <h3 class="text-3xl font-bold text-white tracking-tight uppercase">Active</h3>
-                    {% else %}
-                    <span class="w-3 h-3 rounded-full bg-red-500"></span>
-                    <h3 class="text-3xl font-bold text-gray-500 tracking-tight uppercase">Disabled</h3>
-                    {% endif %}
-                </div>
-                <p class="text-xs text-gray-500 mt-2 font-medium">Wealth Threshold: **> 100,000 JC**</p>
-            </div>
-
-            <!-- Tax Rate -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group border-brand-border/40">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-receipt text-6xl text-brand-accent"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Daily Tax Rate</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ taxman_percent }}<span class="text-lg text-brand-accent font-semibold">%</span></h3>
-                <p class="text-xs text-brand-accent font-medium">Collected from a random rich player daily</p>
-            </div>
-
-            <!-- Next Visit -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group border-brand-border/40">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-hourglass-half text-6xl text-brand-accent"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Next Possible Visit</p>
-                {% if taxman_enabled %}
-                    {% if taxman_imminent %}
-                    <h3 class="text-3xl font-bold text-brand-gold mb-2 tracking-tight animate-pulse">Imminent!</h3>
-                    <p class="text-xs text-brand-accent font-medium">Checking every hour...</p>
-                    {% else %}
-                    <h3 id="tax-timer" class="text-3xl font-bold text-white mb-2 tracking-tight" data-expiry="{{ next_tax_ts }}">{{ taxman_remaining }}</h3>
-                    <p class="text-xs text-brand-accent font-medium">Counted from last visit</p>
-                    {% endif %}
-                {% else %}
-                <h3 class="text-3xl font-bold text-gray-500 mb-2 tracking-tight">N/A</h3>
-                <p class="text-xs text-gray-500 font-medium italic">System is currently sleeping</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <!-- Box Loot Rates Grid -->
-        <div class="flex items-center justify-between mb-4 mt-8">
-            <h2 class="text-lg font-semibold text-white flex items-center"><i class="fa-solid fa-gift mr-2 text-brand-accent"></i> Mystery Box Loot Rates</h2>
-            {% if is_event_active %}
-            <div class="flex items-center space-x-3">
-                <div class="px-3 py-1 rounded-full bg-brand-gold/10 border border-brand-gold/30 flex items-center shadow-lg shadow-brand-gold/5">
-                    <i class="fa-solid fa-bolt text-brand-gold mr-2 animate-pulse"></i>
-                    <span class="text-xs font-bold text-brand-gold uppercase tracking-wider">Event Active</span>
-                </div>
-                <div class="px-3 py-1 rounded-full bg-brand-accent/10 border border-brand-accent/30 flex items-center">
-                    <i class="fa-solid fa-clock text-brand-accent mr-2"></i>
-                    <span id="event-timer" class="text-xs font-bold text-brand-accent uppercase tracking-wider" data-expiry="{{ event_expiry_ts }}">{{ event_remaining }} left</span>
-                </div>
-            </div>
-            {% endif %}
-        </div>
-        
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
-            <!-- Legendary -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group {% if is_event_active %}border-brand-gold/30 shadow-lg shadow-brand-gold/5{% endif %}">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-trophy text-6xl text-brand-gold"></i>
-                </div>
-                <div class="flex items-center justify-between mb-1">
-                    <p class="text-sm font-medium text-gray-400">Legendary</p>
-                    {% if is_event_active %}<span class="text-[10px] font-bold text-brand-gold bg-brand-gold/10 px-1.5 py-0.5 rounded border border-brand-gold/20 uppercase">Boosted</span>{% endif %}
-                </div>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
-                    {% if is_event_active %}
-                        {{ (box_leg_event|float * 100)|round(3) }}
-                    {% else %}
-                        {{ (box_legendary_rate|float * 100)|round(3) }}
-                    {% endif %}
-                    <span class="text-lg text-brand-gold font-semibold">%</span>
-                </h3>
-                <p class="text-xs text-brand-gold font-medium">Jackpots & Mythical items</p>
-            </div>
-
-            <!-- Epic -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group {% if is_event_active %}border-purple-500/30 shadow-lg shadow-purple-500/5{% endif %}">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-star text-6xl text-purple-500"></i>
-                </div>
-                <div class="flex items-center justify-between mb-1">
-                    <p class="text-sm font-medium text-gray-400">Epic</p>
-                    {% if is_event_active %}<span class="text-[10px] font-bold text-purple-400 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20 uppercase">Boosted</span>{% endif %}
-                </div>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
-                    {% if is_event_active %}
-                        {{ (box_epic_event|float * 100)|round(2) }}
-                    {% else %}
-                        {{ (box_epic_rate|float * 100)|round(2) }}
-                    {% endif %}
-                    <span class="text-lg text-purple-400 font-semibold">%</span>
-                </h3>
-                <p class="text-xs text-purple-500 font-medium">Rare coins & special perks</p>
-            </div>
-
-            <!-- Rare -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group {% if is_event_active %}border-blue-500/30 shadow-lg shadow-blue-500/5{% endif %}">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-gem text-6xl text-blue-500"></i>
-                </div>
-                <div class="flex items-center justify-between mb-1">
-                    <p class="text-sm font-medium text-gray-400">Rare</p>
-                    {% if is_event_active %}<span class="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20 uppercase">Boosted</span>{% endif %}
-                </div>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
-                    {% if is_event_active %}
-                        {{ (box_rare_event|float * 100)|round(2) }}
-                    {% else %}
-                        {{ (box_rare_rate|float * 100)|round(2) }}
-                    {% endif %}
-                    <span class="text-lg text-blue-400 font-semibold">%</span>
-                </h3>
-                <p class="text-xs text-blue-500 font-medium">High JC rewards</p>
-            </div>
-
-            <!-- Common -->
-            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group">
-                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                    <i class="fa-solid fa-box-open text-6xl text-gray-500"></i>
-                </div>
-                <p class="text-sm font-medium text-gray-400 mb-1">Common</p>
-                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">
-                    {% if is_event_active %}
-                        {{ (100 - (box_leg_event|float * 100) - (box_epic_event|float * 100) - (box_rare_event|float * 100))|round(2) }}
-                    {% else %}
-                        {{ (100 - (box_legendary_rate|float * 100) - (box_epic_rate|float * 100) - (box_rare_rate|float * 100))|round(2) }}
-                    {% endif %}
-                    <span class="text-lg text-gray-400 font-semibold">%</span>
-                </h3>
-                <p class="text-xs text-gray-500 font-medium">Standard JC amounts</p>
-            </div>
-        </div>
-
-        <!-- Main Content Split -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
-            <!-- Left Column: Leaderboard -->
-            <div class="lg:col-span-1">
-                <div class="glass-card rounded-2xl border border-brand-border h-full flex flex-col">
-                    <div class="px-6 py-5 border-b border-brand-border/50 flex items-center justify-between">
-                        <h2 class="text-lg font-semibold text-white"><i class="fa-solid fa-trophy mr-2 text-brand-gold"></i> Richest Entities</h2>
+        <!-- MODULE: OVERVIEW -->
+        <div id="module-overview" class="content-section active space-y-8">
+            <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <!-- Total Circulation -->
+                <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="p-2 rounded-lg bg-brand-primary/10 text-brand-primary"><i class="fas fa-coins text-xl"></i></div>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Circulation</span>
                     </div>
-                    <div class="p-6 flex-1">
-                        <ul class="space-y-4">
-                            {% for row in top_players %}
-                            <li class="flex items-center justify-between p-4 rounded-xl bg-brand-border/20 border border-transparent hover:border-brand-border/50 transition-colors">
-                                <div class="flex items-center space-x-3">
-                                    <div class="w-8 h-8 rounded-full bg-brand-dark flex flex-shrink-0 items-center justify-center font-bold text-sm text-gray-400 border border-brand-border overflow-hidden">
-                                        <img src="{{ row.avatar_url }}" alt="avatar" class="w-full h-full object-cover">
-                                    </div>
-                                    <div class="font-medium text-gray-200">{{ row.discord_name }} <br><span class="text-xs text-gray-500 font-mono">ID: {{ row.user_id }}</span></div>
-                                </div>
-                                <div class="font-bold text-white">{{ "{:,}".format(row.net_worth) }} <span class="text-xs text-brand-gold font-normal">JC</span></div>
-                            </li>
-                            {% else %}
-                            <li class="text-gray-500 text-sm italic text-center py-4">No data available</li>
-                            {% endfor %}
-                        </ul>
+                    <h3 class="text-2xl font-bold font-mono">{{ "{:,}".format(total_jc|int) }}</h3>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Total pool in market</p>
+                </div>
+                <!-- Tax Revenue -->
+                <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="p-2 rounded-lg bg-brand-accent/10 text-brand-accent"><i class="fas fa-receipt text-xl"></i></div>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Tax Yield</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono text-brand-accent">{{ "{:,}".format(total_tax_revenue|int) }}</h3>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Lifetime collection</p>
+                </div>
+                <!-- Global Sink -->
+                <div class="glass rounded-2xl p-6 border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4 text-brand-success">
+                        <div class="p-2 rounded-lg bg-brand-success/10"><i class="fas fa-vault text-xl"></i></div>
+                        <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">Vault</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono">{{ "{:,}".format(vault_jc|int) }}</h3>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Total reserves</p>
+                </div>
+                <!-- Stability Ratio -->
+                <div class="glass rounded-2xl p-6 border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4 text-brand-secondary">
+                        <div class="p-2 rounded-lg bg-brand-secondary/10"><i class="fas fa-scale-balanced text-xl"></i></div>
+                        <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">Stability</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono">{% set ratio = (vault_jc / total_jc * 100) if total_jc > 0 else 0 %}{{ "{:.2f}".format(ratio) }}%</h3>
+                    <div class="w-full bg-brand-border h-1.5 mt-2 rounded-full overflow-hidden">
+                        <div class="bg-brand-secondary h-full" style="width: {{ ratio }}%"></div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <!-- Right Column: Transactions -->
-            <div class="lg:col-span-2">
-                <div class="glass-card rounded-2xl border border-brand-border h-full flex flex-col overflow-hidden">
-                    <div class="px-6 py-5 border-b border-brand-border/50 flex items-center justify-between bg-brand-card/50">
-                        <h2 class="text-lg font-semibold text-white"><i class="fa-solid fa-list-ul mr-2 text-gray-400"></i> Live Server Txns</h2>
-                        <span class="text-xs font-medium px-2.5 py-1 rounded bg-brand-border text-gray-300">Last 50</span>
+            <section class="grid grid-cols-1 xl:grid-cols-3 gap-8">
+                <!-- Richest Players -->
+                <div class="xl:col-span-1 glass rounded-3xl overflow-hidden border border-brand-border/30">
+                    <div class="p-6 border-b border-brand-border bg-white/5 flex items-center justify-between">
+                        <h5 class="font-bold text-lg"><i class="fas fa-crown mr-3 text-brand-accent"></i> Best Entities</h5>
                     </div>
-                    
-                    <div class="flex-1 overflow-auto max-h-[500px]">
-                        <table class="w-full text-left border-collapse">
-                            <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-sm z-10">
-                                <tr>
-                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">Time</th>
-                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">User ID</th>
-                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">Amount</th>
-                                    <th class="px-6 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wider border-b border-brand-border/50">Action</th>
-                                </tr>
-                            </thead>
+                    <div class="p-4 space-y-2">
+                        {% for row in top_players %}
+                        <div class="p-4 rounded-2xl glass-hover flex items-center justify-between group">
+                            <div class="flex items-center space-x-4">
+                                <img src="{{ row.avatar_url }}" class="w-10 h-10 rounded-full border border-brand-border bg-brand-dark">
+                                <div><p class="text-sm font-bold group-hover:text-brand-primary">{{ row.discord_name }}</p><p class="text-[9px] text-gray-500 font-mono italic">UID: {{ row.user_id }}</p></div>
+                            </div>
+                            <div class="text-right"><p class="font-bold text-sm">{{ "{:,}".format(row.net_worth|int) }}</p><p class="text-[9px] text-brand-accent font-bold">JC</p></div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Live Feed -->
+                <div class="xl:col-span-2 glass rounded-3xl overflow-hidden border border-brand-border/30 flex flex-col">
+                    <div class="p-6 border-b border-brand-border bg-white/5 flex items-center justify-between">
+                        <h5 class="font-bold text-lg"><i class="fas fa-stream mr-3 text-brand-primary"></i> Global Stream</h5>
+                        <div class="flex items-center space-x-2"><span class="animate-pulse w-2 h-2 rounded-full bg-brand-success"></span><span class="text-[10px] font-bold text-gray-500 uppercase">Live</span></div>
+                    </div>
+                    <div class="flex-1 overflow-auto max-h-[460px]">
+                        <table class="w-full text-left">
+                            <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-md z-20"><tr class="text-[10px] text-gray-500 uppercase font-bold border-b border-brand-border"><th class="px-6 py-4">Time</th><th class="px-6 py-4">Identity</th><th class="px-6 py-4">Delta</th><th class="px-6 py-4">Task</th></tr></thead>
                             <tbody class="divide-y divide-brand-border/30">
                                 {% for tx in transactions %}
-                                <tr class="table-row-hover transition-colors">
-                                    <td class="px-6 py-3.5 whitespace-nowrap text-sm text-gray-400 font-mono">{{ tx.timestamp_formatted }}</td>
-                                    <td class="px-6 py-3.5 whitespace-nowrap text-sm text-gray-300">
-                                        <div class="flex items-center space-x-2">
-                                            <img src="{{ tx.avatar_url }}" alt="avatar" class="w-6 h-6 rounded-full border border-brand-border bg-brand-dark">
-                                            <span>{{ tx.discord_name }}</span>
-                                        </div>
+                                <tr class="hover:bg-white/5 transition-colors group">
+                                    <td class="px-6 py-4 whitespace-nowrap text-[10px] text-gray-500 font-mono italic">{{ tx.timestamp_formatted }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="flex items-center space-x-3"><img src="{{ tx.avatar_url }}" class="w-6 h-6 rounded-full bg-brand-dark"><span class="text-xs font-semibold text-gray-300 group-hover:text-white">{{ tx.discord_name }}</span></div>
                                     </td>
-                                    <td class="px-6 py-3.5 whitespace-nowrap text-sm font-semibold 
-                                        {% if tx.amount > 0 %}text-green-400{% elif tx.amount < 0 %}text-red-400{% else %}text-gray-400{% endif %}">
-                                        {% if tx.amount > 0 %}+{% endif %}{{ "{:,}".format(tx.amount) }} JC
-                                    </td>
-                                    <td class="px-6 py-3.5 text-sm text-gray-300">{{ tx.reason }}</td>
-                                </tr>
-                                {% else %}
-                                <tr>
-                                    <td colspan="4" class="px-6 py-8 text-center text-gray-500 text-sm italic">No recent transactions found.</td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-xs font-bold font-mono">{% if tx.amount > 0 %}<span class="text-brand-success">+{{ "{:,}".format(tx.amount|int) }}</span>{% else %}<span class="text-brand-danger">{{ "{:,}".format(tx.amount|int) }}</span>{% endif %}</td>
+                                    <td class="px-6 py-4"><span class="text-[9px] text-gray-500 bg-brand-border/30 px-2 py-1 rounded-md border border-brand-border uppercase font-bold tracking-tighter">{{ tx.reason }}</span></td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
                         </table>
                     </div>
                 </div>
-            </div>
-
+            </section>
         </div>
-    </div>
 
+        <!-- MODULE: ECONOMY -->
+        <div id="module-economy" class="content-section space-y-8">
+            <section class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div class="glass rounded-3xl p-8 border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-8">
+                        <div><h4 class="text-xl font-bold">Volume <span class="text-brand-primary">Flow</span></h4><p class="text-xs text-gray-500 uppercase mt-1">Weekly Faucets vs Sinks</p></div>
+                        <div class="flex items-center space-x-2"><div class="flex items-center space-x-1"><div class="w-2 h-2 rounded bg-brand-primary"></div><span class="text-[10px] text-gray-500 uppercase">FAUCETS</span></div><div class="flex items-center space-x-1"><div class="w-2 h-2 rounded bg-brand-secondary"></div><span class="text-[10px] text-gray-500 uppercase">SINKS</span></div></div>
+                    </div>
+                    <div class="h-64"><canvas id="flowChart"></canvas></div>
+                </div>
+                <div class="glass rounded-3xl p-8 border border-brand-border/30">
+                    <h4 class="text-xl font-bold mb-8">Wealth <span class="text-brand-secondary">Distribution</span></h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 h-full">
+                        <div class="h-48 relative"><canvas id="distributionChart"></canvas></div>
+                        <div class="space-y-4">
+                            <div class="p-4 rounded-2xl bg-white/5 border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold">In Circulation</p><p class="text-lg font-bold">{{ "{:,.0f}".format(total_jc - vault_jc) }} JC</p></div>
+                            <div class="p-4 rounded-2xl bg-brand-success/5 border border-brand-success/10"><p class="text-[10px] text-brand-success uppercase font-bold text-gray-400">Locked in Vault</p><p class="text-lg font-bold text-brand-success">{{ "{:,.0f}".format(vault_jc) }} JC</p></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- MODULE: TAX -->
+        <div id="module-tax" class="content-section space-y-8">
+            <div class="glass rounded-3xl overflow-hidden border border-brand-border/30 flex flex-col">
+                <div class="p-6 border-b border-brand-border bg-white/5 flex items-center justify-between">
+                    <div><h5 class="font-bold text-xl text-brand-accent">Tax Assessment Ledger</h5><p class="text-xs text-gray-500 mt-1 uppercase">Automated wealth adjustment records</p></div>
+                    <div class="text-right p-3 rounded-2xl bg-brand-accent/10 border border-brand-accent/20"><p class="text-[10px] font-bold text-brand-accent uppercase">Revenue Yield</p><p class="text-xl font-mono font-bold">{{ "{:,}".format(total_tax_revenue|int) }} JC</p></div>
+                </div>
+                <div class="overflow-auto max-h-[600px]">
+                    <table class="w-full text-left">
+                        <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-md z-20"><tr class="text-[10px] text-gray-500 uppercase font-bold border-b border-brand-border"><th class="px-6 py-4">Time</th><th class="px-6 py-4">Target Entity</th><th class="px-6 py-4">Revenue</th><th class="px-6 py-4">Category</th></tr></thead>
+                        <tbody class="divide-y divide-brand-border/30">
+                            {% for tx in tax_transactions %}
+                            <tr class="hover:bg-brand-accent/5 transition-colors group">
+                                <td class="px-6 py-4 whitespace-nowrap text-[11px] text-gray-500 font-mono">{{ tx.timestamp_formatted }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap"><div class="flex items-center space-x-3"><img src="{{ tx.avatar_url }}" class="w-6 h-6 rounded-full bg-brand-dark"><span class="text-xs font-semibold text-gray-300 group-hover:text-white">{{ tx.discord_name }}</span></div></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-[11px] font-bold font-mono text-brand-accent">+{{ "{:,}".format(tx.amount|abs|int) }} JC</td>
+                                <td class="px-6 py-4"><span class="text-[10px] text-brand-accent bg-brand-accent/10 px-2 py-1 rounded-md border border-brand-accent/20 uppercase font-bold">{{ tx.reason }}</span></td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODULE: RAIN -->
+        <div id="module-rain" class="content-section space-y-8">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div class="glass rounded-3xl p-8 border border-brand-border/30">
+                    <div class="flex items-center space-x-3 mb-6"><div class="w-12 h-12 rounded-2xl bg-brand-primary/10 flex items-center justify-center text-brand-primary"><i class="fas fa-droplet text-2xl"></i></div><h4 class="text-xl font-bold">Rain <span class="text-brand-primary">Logic</span></h4></div>
+                    <div class="space-y-6">
+                        <div class="flex justify-between items-end"><div><p class="text-[10px] text-gray-500 uppercase font-bold">Probability</p><p class="text-3xl font-bold">{{ rain_rate }}%</p></div><span class="bg-brand-primary/20 text-brand-primary px-3 py-1 rounded-full text-[10px] font-bold">SYSTEM ACTIVE</span></div>
+                        <div class="pt-6 border-t border-brand-border/30 grid grid-cols-2 gap-4 text-center">
+                            <div class="p-4 bg-brand-dark/40 rounded-2xl border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold mb-1">Min Yield</p><p class="text-lg font-bold font-mono">{{ rain_min }} <span class="text-xs">JC</span></p></div>
+                            <div class="p-4 bg-brand-dark/40 rounded-2xl border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold mb-1">Max Yield</p><p class="text-lg font-bold font-mono">{{ rain_max }} <span class="text-xs">JC</span></p></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="glass rounded-3xl p-8 border border-brand-border/30">
+                    <h4 class="text-xl font-bold mb-6 text-gray-300">Reserves</h4><div class="p-8 bg-brand-primary/5 border border-brand-primary/10 rounded-3xl text-center"><p class="text-[10px] text-brand-primary font-bold uppercase tracking-widest mb-2">Current Active Pool</p><p class="text-5xl font-mono font-bold">{{ rain_pool }} <span class="text-xl">JC</span></p></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODULE: LOOT -->
+        <div id="module-loot" class="content-section space-y-8">
+            <div class="glass rounded-3xl p-8 border border-brand-border/30">
+                <div class="flex items-center space-x-3 mb-8 text-brand-accent">
+                    <div class="w-12 h-12 rounded-2xl bg-brand-accent/10 flex items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.2)]"><i class="fas fa-gem text-2xl"></i></div>
+                    <h4 class="text-xl font-bold text-white uppercase tracking-tighter">Mystery Drop Calibration</h4>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                    <!-- legendary -->
+                    <div class="p-6 rounded-3xl bg-brand-accent/5 border border-brand-accent/10 text-center"><p class="text-[10px] font-bold text-brand-accent uppercase mb-3">Legendary Yield</p><p class="text-3xl font-mono font-bold text-white mb-2">{{ (box_leg_event|float * 100)|round(3) if is_event_active else (box_legendary_rate|float * 100)|round(3) }}%</p><div class="w-full bg-brand-border h-2 rounded-full"><div class="bg-brand-accent h-full shadow-[0_0_10px_#F59E0B]" style="width:{{ (box_leg_event|float * 200) if is_event_active else (box_legendary_rate|float * 200) }}%"></div></div></div>
+                    <!-- epic -->
+                    <div class="p-6 rounded-3xl bg-brand-secondary/5 border border-brand-secondary/10 text-center"><p class="text-[10px] font-bold text-brand-secondary uppercase mb-3">Epic Yield</p><p class="text-3xl font-mono font-bold text-white mb-2">{{ (box_epic_event|float * 100)|round(2) if is_event_active else (box_epic_rate|float * 100)|round(2) }}%</p><div class="w-full bg-brand-border h-2 rounded-full"><div class="bg-brand-secondary h-full" style="width:{{ (box_epic_event|float * 100) if is_event_active else (box_epic_rate|float * 100) }}%"></div></div></div>
+                    <!-- rare -->
+                    <div class="p-6 rounded-3xl bg-brand-primary/5 border border-brand-primary/10 text-center"><p class="text-[10px] font-bold text-brand-primary uppercase mb-3">Rare Yield</p><p class="text-3xl font-mono font-bold text-white mb-2">{{ (box_rare_event|float * 100)|round(2) if is_event_active else (box_rare_rate|float * 100)|round(2) }}%</p><div class="w-full bg-brand-border h-2 rounded-full"><div class="bg-brand-primary h-full" style="width:{{ (box_rare_event|float * 100) if is_event_active else (box_rare_rate|float * 100) }}%"></div></div></div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Chart Scripts -->
     <script>
-        function updateTimer() {
-            const timerEl = document.getElementById('event-timer');
-            if (!timerEl) return;
-            
-            const expiry = parseInt(timerEl.getAttribute('data-expiry'));
-            const now = Math.floor(Date.now() / 1000);
-            const rem = expiry - now;
-            
-            if (rem <= 0) {
-                location.reload(); // Refresh to show standard rates
-                return;
+        const historyData = {{ history_json|safe }};
+        const labels = historyData.map(d => d.day);
+        Chart.defaults.color = '#64748B'; Chart.defaults.font.family = 'Outfit';
+
+        // Module Switcher Logic
+        const titles = {
+            'overview': 'Financial <span class="text-gradient">Intelligence</span>',
+            'economy': 'Economy <span class="text-gradient">Flow</span>',
+            'tax': 'Tax <span class="text-gradient">Intelligence</span>',
+            'rain': 'Rain <span class="text-gradient">Module</span>',
+            'loot': 'Loot <span class="text-gradient">Calibration</span>'
+        };
+        const descs = {
+            'overview': 'Analyzing global currency flow and taxation throughput.',
+            'economy': 'Visualizing faucets vs sinks over the last 7 days.',
+            'tax': 'Automated wealth adjustment records and revenue yield.',
+            'rain': 'Probability and pool allocation for random rain events.',
+            'loot': 'Mystery box drop rates and item scarcity calibration.'
+        };
+
+        function switchModule(id, el) {
+            // Hide all modules
+            document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+            // Show targeted module
+            document.getElementById('module-' + id).classList.add('active');
+            // Update sidebar nav items
+            document.querySelectorAll('.nav-item').forEach(i => {
+                i.classList.remove('sidebar-item-active', 'text-brand-primary');
+                i.classList.add('text-gray-400');
+            });
+            if (el) {
+                el.classList.add('sidebar-item-active', 'text-brand-primary');
+                el.classList.remove('text-gray-400');
             }
+            // Update Header
+            document.getElementById('module-title').innerHTML = titles[id];
+            document.getElementById('module-desc').textContent = descs[id];
             
-            let h = Math.floor(rem / 3600);
-            let m = Math.floor((rem % 3600) / 60);
-            let s = rem % 60;
-            
-            let timeStr = "";
-            if (h > 0) {
-                timeStr = `${h}h ${m}m ${s}s`;
-            } else if (m > 0) {
-                timeStr = `${m}m ${s}s`;
-            } else {
-                timeStr = `${s}s`;
+            // Re-render charts if economy is selected (fixing potential canvas sizing issues)
+            if (id === 'economy') {
+                // Charts already initialized but visibility might affect sizing
+                window.dispatchEvent(new Event('resize'));
             }
-            
-            timerEl.textContent = `${timeStr} left`;
-        }
-        
-        // Start ticking if timer exists
-        if (document.getElementById('event-timer')) {
-            setInterval(updateTimer, 1000);
+            // Scroll to top
+            window.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
-        // Taxman timer
-        function updateTaxTimer() {
-            const timerEl = document.getElementById('tax-timer');
-            if (!timerEl) return;
-            
-            const expiry = parseInt(timerEl.getAttribute('data-expiry'));
-            const now = Math.floor(Date.now() / 1000);
-            const rem = expiry - now;
-            
-            if (rem <= 0) {
-                timerEl.textContent = "Imminent!";
-                timerEl.classList.add('animate-pulse', 'text-brand-gold');
-                return;
-            }
-            
-            let h = Math.floor(rem / 3600);
-            let m = Math.floor((rem % 3600) / 60);
-            let s = rem % 60;
-            
-            timerEl.textContent = `${h}h ${m}m ${s}s`;
-        }
-        
-        if (document.getElementById('tax-timer')) {
-            setInterval(updateTaxTimer, 1000);
-            updateTaxTimer();
-        }
+        // Charts
+        const flowCtx = document.getElementById('flowChart').getContext('2d');
+        const g1 = flowCtx.createLinearGradient(0, 0, 0, 400); g1.addColorStop(0, 'rgba(59, 130, 246, 0.4)'); g1.addColorStop(1, 'rgba(59, 130, 246, 0)');
+        const g2 = flowCtx.createLinearGradient(0, 0, 0, 400); g2.addColorStop(0, 'rgba(139, 92, 246, 0.4)'); g2.addColorStop(1, 'rgba(139, 92, 246, 0)');
+
+        new Chart(flowCtx, {
+            type: 'line',
+            data: { labels: labels, datasets: [{
+                label: 'Faucets', data: historyData.map(d => d.faucets), borderColor: '#3B82F6', backgroundColor: g1, fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3
+            }, {
+                label: 'Sinks', data: historyData.map(d => d.sinks), borderColor: '#8B5CF6', backgroundColor: g2, fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3
+            }]},
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false } }, y: { grid: { color: 'rgba(255,255,255,0.03)' } } } }
+        });
+
+        const distCtx = document.getElementById('distributionChart').getContext('2d');
+        new Chart(distCtx, {
+            type: 'doughnut',
+            data: { labels: ['Market', 'Vault'], datasets: [{ data: [{{ total_jc - vault_jc }}, {{ vault_jc }}], backgroundColor: ['#1E293B', '#10B981'], borderColor: 'transparent', cutout: '85%', borderRadius: 5 }]},
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
     </script>
 </body>
 </html>
