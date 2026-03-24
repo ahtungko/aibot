@@ -4,11 +4,10 @@ This document outlines all available methods for users to acquire **JenCoins (JC
 
 ---
 
-### 1. ⚒️ Active Work & Grinding
+### 1. ⚒️ Active Work
 | Source | Yield | Cooldown | Notes |
 | :--- | :--- | :--- | :--- |
 | **`!work`** | 20 — 150 JC (Base) | 1 Hour | Progressive Income Tax (5-12%, VIP gets -3% flat). |
-| **`!grind`** | 5 — 10 JC (55%) | 30 Seconds | Entry Cost: 10 JC. High profit/loss risk. |
 
 **Mining Tool Upgrades (Sequential)**:
 - **Stone Pickaxe**: +10 JC Flat & -5m Cooldown
@@ -40,7 +39,7 @@ This document outlines all available methods for users to acquire **JenCoins (JC
 | :--- | :--- | :--- | :--- |
 | **`!flip`** | 1.9x | 50% | +5% Luck with **Lucky Charm**. |
 | **`!blackjack`** | 1.9x / 2.2x | Skill based | 2.2x payout for a Natural Blackjack. |
-| **`!slots`** | Up to 25x | RNG | 2 match = Bet Back. 3 match = Jackpot. |
+| **`!slots`** | Up to 25x | RNG | 5% nudge chance with **Lucky Charm**. |
 | **`!crash`** | 1.0x — ∞ | Variable | Cash out before crash. 15% Entry Fee (10% VIP). |
 | **`!duel`** | 1.95x | 50% | PVP. Winner takes pot minus 5% fee. |
 

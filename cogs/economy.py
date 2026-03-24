@@ -24,8 +24,7 @@ SLOT_PAYOUTS = {
 }
 # 2 of a kind returns your bet
 
-DAILY_BASE = 50        # base daily coins
-DAILY_STREAK_BONUS = 20 # extra per streak day (capped at 10)
+
 WORK_COOLDOWN = 3600  # 1 hour in seconds
 WORK_MIN = 20
 WORK_MAX = 150
@@ -730,80 +729,7 @@ class Economy(commands.Cog):
         if isinstance(error, commands.NotOwner):
             await ctx.send("❌ This command is restricted to the bot owner!")
 
-    @commands.command(name='grind')
-    @commands.cooldown(1, 30, commands.BucketType.user)
-    async def grind_command(self, ctx: commands.Context):
-        """Grind for a small profit. Cost: 10 JC | Cooldown: 30s"""
-        uid = str(ctx.author.id)
-        fee = 10
-        
-        # Check balance
-        bal = get_balance(uid)
-        if bal < fee:
-            await ctx.send(f"❌ You need at least **{fee} JC** to start grinding!")
-            # Reset cooldown if they can't afford it
-            ctx.command.reset_cooldown(ctx)
-            return
-            
-        # Deduct fee
-        add_balance(uid, -fee)
-        track_fee(fee) # Track entry fee
-        log_transaction(uid, -fee, "Daily Grind Entry Fee")
-        
-        # Roll outcome
-        # 55% -> 5-10 JC (avg 7.5)
-        # 30% -> 5 JC
-        # 15% -> 0 JC (loss)
-        roll = random.random() * 100
-        reward = 0
-        
-        if roll <= 55:
-            reward = random.randint(5, 10)
-        elif roll <= 85:
-            reward = 5
-        else:
-            reward = 0
-            
-        # Apply Pickaxe Bonus
-        pick = get_best_pickaxe(uid)
-        bonus_val = 0
-        if reward > 0 and pick["name"]:
-            bonus_val = int(reward * pick["bonus"])
-            reward += bonus_val
 
-        if roll <= 55:
-            msg = f"⚒️ You spent some time grinding and earned **{reward} JC**!"
-            if bonus_val > 0:
-                msg += f" (incl. **{bonus_val} JC** {pick['name']} bonus! ✨)"
-            elif reward > fee:
-                msg += " A small profit! ✨"
-            elif reward < fee:
-                msg += " Not quite enough to cover your efforts... 📉"
-            else:
-                msg += " You broke even."
-        elif roll <= 85:
-            msg = f"⚒️ You ground some materials and earned **{reward} JC**."
-            if bonus_val > 0:
-                msg += f" (incl. **{bonus_val} JC** {pick['name']} bonus! ✨)"
-            else:
-                msg += " (+10 JC)"
-        else:
-            msg = "⚒️ You ground all day but found nothing useful. A total loss! 💸"
-            
-        if reward > 0:
-            add_balance(uid, reward)
-            log_transaction(uid, reward, "Daily Grind Reward")
-            
-        # Add tiny delay for "immersion"
-        async with ctx.typing():
-            await asyncio.sleep(1.5)
-            
-        await ctx.send(f"{ctx.author.mention} {msg}")
-
-    @grind_command.error
-    async def grind_error(self, ctx, error):
-        if isinstance(error, commands.CommandOnCooldown):
-            await ctx.send(f"⏳ Slow down! You can grind again in **{error.retry_after:.1f}s**.")
             
     @commands.command(name='fish')
     @commands.cooldown(1, 15, commands.BucketType.user)
@@ -821,7 +747,6 @@ class Economy(commands.Cog):
             
         # Deduct cost
         add_balance(uid, -cost)
-        track_fee(cost) # Track fishing fee
         log_transaction(uid, -cost, "Fishing Trip Fee")
         
         # --- RNG & Outcomes ---
@@ -943,9 +868,7 @@ class Economy(commands.Cog):
             add_balance(uid, reward)
             log_transaction(uid, reward, f"Fishing Reward ({rarity})")
             
-        # Add to collection if it's a fish
-        if fish_name:
-            add_item(uid, fish_name, "Fish")
+
             
         async with ctx.typing():
             await asyncio.sleep(2) # Fishing wait...
@@ -965,31 +888,7 @@ class Economy(commands.Cog):
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Don't overfish! Cast again in **{error.retry_after:.1f}s**.")
 
-    @commands.command(name='fishinv', aliases=['aquarium', 'fishlogs', 'fisher'])
-    async def fishinv_command(self, ctx: commands.Context, member: discord.Member = None):
-        """View your fishing collection!"""
-        target = member or ctx.author
-        uid = str(target.id)
-        
-        # Get fish from inventory
-        rows = db_query("SELECT item_name, count(*) as qty FROM inventory WHERE user_id = ? AND item_type = 'Fish' GROUP BY item_name ORDER BY qty DESC", (uid,), fetchall=True)
-        
-        if not rows:
-            msg = "He hasn't caught any fish yet." if member else "You haven't caught any fish yet. Go `!fish`!"
-            await ctx.send(f"📭 {msg}")
-            return
-            
-        embed = discord.Embed(title=f"🎣 {target.display_name}'s Aquarium", color=discord.Color.blue())
-        
-        total_fish = 0
-        fish_list = []
-        for name, qty in rows:
-            fish_list.append(f"• **{name}** x{qty}")
-            total_fish += qty
-            
-        embed.description = "\n".join(fish_list)
-        embed.set_footer(text=f"Total fish caught: {total_fish}")
-        await ctx.send(embed=embed)
+
         
     @commands.command(name='testtaxman')
     @commands.is_owner()
@@ -1434,7 +1333,6 @@ class Economy(commands.Cog):
             
         success, pay_msg = pay_jc(uid, cost)
         set_vip(uid, 30)
-        track_fee(cost) # Track VIP purchase
         log_transaction(uid, -cost, "Purchased VIP")
         
         expiry = get_vip_expiry(uid)
@@ -1588,13 +1486,11 @@ class Economy(commands.Cog):
         if won:
             winnings = int(amount * 1.9)
             new_bal = add_balance(uid, winnings)
-            track_fee(-amount) # Profit comes FROM the vault
             log_transaction(uid, winnings, "Flip Win")
             color = discord.Color.green()
             msg = f"🎉 You guessed right!\nYou won **{amount:,}** JC!"
         else:
             new_bal = get_balance(uid)
-            track_fee(amount) # Track lost bet
             log_transaction(uid, -amount, "Flip Loss")
             color = discord.Color.red()
             msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JC."
@@ -1619,9 +1515,11 @@ class Economy(commands.Cog):
         luck_bonus = get_luck_bonus(uid)
         
         # Reels simulation
-        # If luck is active, slightly bias towards matches
-        if luck_bonus > 0 and random.random() < 0.15: # 15% chance to 'nudge' a reel
-            reels = [random.choice(SLOT_EMOJIS)] * 3
+        # If luck is active, slightly bias towards a 2-match (not 3!)
+        if luck_bonus > 0 and random.random() < 0.05: # 5% chance to nudge ONE reel
+            base = random.choice(SLOT_EMOJIS)
+            reels = [base, base, random.choice(SLOT_EMOJIS)]  # 2-match nudge only
+            random.shuffle(reels)
         else:
             reels = [random.choice(SLOT_EMOJIS) for _ in range(3)]
             
@@ -1634,7 +1532,6 @@ class Economy(commands.Cog):
             multiplier = SLOT_PAYOUTS.get(reels[0], 2)
             winnings = amount * multiplier
             new_bal = add_balance(uid, winnings)
-            track_fee(-(winnings - amount)) # Profit comes FROM the vault
             log_transaction(uid, winnings, f"Slots Win ({reels[0]})")
             title = "🎰 JACKPOT!!! 🎰" if reels[0] == "7️⃣" else "🎰 THREE OF A KIND!"
             desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JC! (x{multiplier})"
@@ -1647,7 +1544,6 @@ class Economy(commands.Cog):
             color = discord.Color.blue()
         else:
             new_bal = get_balance(uid)
-            track_fee(amount) # Track lost bet
             log_transaction(uid, -amount, "Slots Loss")
             title = "🎰 No Match"
             desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JC."
@@ -1754,7 +1650,6 @@ class Economy(commands.Cog):
         
         # Deduct TOTAL bet upfront
         _, pay_msg = pay_jc(uid, amount)
-        track_fee(entry_fee) # Track entry fee immediately
         log_transaction(uid, -amount, f"Crash Game (Fee: {entry_fee} JC)")
 
         view = CrashView(ctx, active_bet, amount, is_user_vip) # Pass VIP status
@@ -2106,7 +2001,7 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="👑 **VIP Membership** — `10,000 JC`",
-            value="30 days of elite perks: **2% Work Tax**, **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, **+10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
+            value="30 days of elite perks: **-3% Work Tax** (progressive), **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, **+10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
             inline=False
         )
         embed.add_field(
@@ -2147,11 +2042,6 @@ class Economy(commands.Cog):
             inline=True
         )
         embed.add_field(
-            name="📜 **Coin Insurance** — `5,000 JC`",
-            value="Protects you from **The Taxman** for **7 days**!\nUsage: `!buy insurance`",
-            inline=True
-        )
-        embed.add_field(
             name="📦 **Iron Safe** — `20,000 JC`",
             value="Increases your Bank Capacity by **+50,000 JC**.\nUsage: `!buy iron`",
             inline=True
@@ -2160,11 +2050,6 @@ class Economy(commands.Cog):
             name="🛡️ **Steel Vault** — `100,000 JC`",
             value="Increases your Bank Capacity by **+250,000 JC**.\nUsage: `!buy steel`",
             inline=True
-        )
-        embed.add_field(
-            name="💎 **Titanium Bunker** — `500,000,000 JC`",
-            value="Unlocks **Unlimited Bank Storage**.\nUsage: `!buy bunker`",
-            inline=False
         )
         embed.set_footer(text=f"Your Balance: {get_balance(str(ctx.author.id)):,} JC")
         await ctx.send(embed=embed)
@@ -2185,7 +2070,6 @@ class Economy(commands.Cog):
             "role": 500000,
             "iron": 20000,
             "steel": 100000,
-            "bunker": 500000000,
             "stone": 500,
             "ironpick": 1500,
             "golden": 3500,
@@ -2253,51 +2137,8 @@ class Economy(commands.Cog):
                 remove_item(uid, req)
             
             add_item(uid, target_name)
-            track_fee(price) # Track upgrade purchase
             log_transaction(uid, -price, f"Bought {target_name}")
             await ctx.send(f"⛏️ {ctx.author.mention}, you upgraded to a **{target_name}**! {pay_msg}")
-            return
-            # Parse quantity (default 1, max 52 weeks)
-            count = 1
-            if qty:
-                try:
-                    count = int(qty)
-                except ValueError:
-                    await ctx.send("❌ Invalid quantity! Use a number like `!buy insurance 4`.")
-                    return
-            
-            if count < 1 or count > 52:
-                await ctx.send("❌ You can buy between **1** and **52** weeks of insurance at a time!")
-                return
-            
-            price_per = 5000
-            total_cost = price_per * count
-            
-            success, pay_msg = pay_jc(uid, total_cost)
-            if not success:
-                await ctx.send(pay_msg)
-                return
-            
-            # Duration: 7 days per week
-            duration = count * 7 * 24 * 60 * 60
-            now = int(time.time())
-            
-            # Check for existing insurance
-            row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'Coin Insurance'", (uid,), fetchone=True)
-            if row:
-                try:
-                    old_expiry = int(row[0])
-                except:
-                    old_expiry = 0
-                new_expiry = max(old_expiry, now) + duration
-                db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Coin Insurance'", (str(new_expiry), uid), commit=True)
-            else:
-                new_expiry = now + duration
-                db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'Coin Insurance', 'Protection', ?)", (uid, str(new_expiry)), commit=True)
-            
-            track_fee(total_cost) # Track insurance purchase
-            log_transaction(uid, -total_cost, f"Bought {count}x Coin Insurance")
-            await ctx.send(f"📜 {ctx.author.mention}, you purchased **{count}** week(s) of **Coin Insurance**! {pay_msg} You are protected until <t:{new_expiry}:F>.")
             return
 
         if item_type == 'box':
@@ -2322,7 +2163,6 @@ class Economy(commands.Cog):
                 await ctx.send(msg_text)
                 return
             
-            track_fee(total_cost) # Track box purchase
             log_transaction(uid, -total_cost, f"Bought {count}x Mystery Box")
             
             msg = await ctx.send(f"🎁 {ctx.author.mention} is opening **{count}** Mystery Box(es)... ({msg_text})")
@@ -2373,7 +2213,6 @@ class Economy(commands.Cog):
                 
                 total_won += win
                 add_balance(uid, win)
-                track_fee(-win) # Payout comes FROM the vault
                 log_transaction(uid, win, f"Box Reveal: {rarity}")
                 if item:
                     add_item(uid, item)
@@ -2421,7 +2260,6 @@ class Economy(commands.Cog):
                 return
                 
             add_item(uid, "Vault Shield", "Protection")
-            track_fee(cost) # Track shield purchase
             log_transaction(uid, -cost, "Bought Vault Shield")
             
             await ctx.send(f"🛡️ {ctx.author.mention}, you purchased a **Vault Shield**! {msg_text} You now have **{shield_count+1}/3** active shields. (1 Use each)")
@@ -2442,7 +2280,6 @@ class Economy(commands.Cog):
                 
             track_fee(fee)
             add_item(uid, "Custom Role Pass", "Perk", "")
-            track_fee(cost - fee) # Track the REST of the cost (fee is already tracked above)
             log_transaction(uid, -cost, "Bought Custom Role Pass")
             
             embed = discord.Embed(title="✨ Custom Role Pass Purchased!", color=discord.Color.magenta())
@@ -2452,23 +2289,6 @@ class Economy(commands.Cog):
                                  f"*(You also paid **{fee:,} JC** in taxes to the Global Vault!)*")
             await ctx.send(embed=embed)
 
-        elif item_type == "bunker":
-            cost = shop["bunker"]
-            if get_inventory_item(uid, "Titanium Bunker"):
-                await ctx.send("❌ You already own a Titanium Bunker!")
-                return
-                
-            success, pay_msg = pay_jc(uid, cost)
-            if not success:
-                await ctx.send(pay_msg)
-                return
-                
-            add_item(uid, "Titanium Bunker", "Upgrades", "")
-            track_fee(cost) # Track bunker purchase
-            log_transaction(uid, -cost, "Bought Titanium Bunker")
-            await ctx.send(f"💎 **{ctx.author.name}**, you purchased the **Titanium Bunker**! Your bank now has **Unlimited Storage**. ({pay_msg})")
-            return
-            
         elif item_type == "iron":
             cost = shop["iron"]
             success, pay_msg = pay_jc(uid, cost)
@@ -2477,7 +2297,6 @@ class Economy(commands.Cog):
                 return
                 
             add_item(uid, "Iron Safe", "Upgrades", "")
-            track_fee(cost) # Track safe purchase
             log_transaction(uid, -cost, "Bought Iron Safe")
             new_limit = get_bank_limit(uid)
             await ctx.send(f"📦 **{ctx.author.name}**, you purchased an **Iron Safe**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
@@ -2491,7 +2310,6 @@ class Economy(commands.Cog):
                 return
                 
             add_item(uid, "Steel Vault", "Upgrades", "")
-            track_fee(cost) # Track vault purchase
             log_transaction(uid, -cost, "Bought Steel Vault")
             new_limit = get_bank_limit(uid)
             await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
@@ -2519,7 +2337,6 @@ class Economy(commands.Cog):
                 except: pass
             
             add_item(uid, "Lucky Charm", "Charm", str(expiry))
-            track_fee(cost) # Track charm purchase
             log_transaction(uid, -cost, "Bought Lucky Charm")
             await ctx.send(f"🍀 {ctx.author.mention}, you purchased a **Lucky Charm**! {msg_text} Your gambling luck is boosted until <t:{expiry}:t>.")
 
@@ -2531,7 +2348,6 @@ class Economy(commands.Cog):
                 return
                 
             add_item(uid, "Sticky Gloves", "Tool")
-            track_fee(cost) # Track gloves purchase
             log_transaction(uid, -cost, "Bought Sticky Gloves")
             await ctx.send(f"🧤 {ctx.author.mention}, you purchased **Sticky Gloves**! {msg_text} Your next robbery attempt will have a **+5% success rate**.")
 
@@ -3203,7 +3019,6 @@ class BlackjackDuelView(discord.ui.View):
         if winner:
             fee = int(total_pot * 0.05)
             winnings = total_pot - fee
-            track_fee(fee)
             new_bal = add_balance(str(winner.id), winnings)
             log_transaction(str(winner.id), winnings, "BJ Duel Win")
             log_transaction(uid1 if str(winner.id) != uid1 else uid2, -self.bet, "BJ Duel Loss")
@@ -3365,12 +3180,10 @@ class BlackjackView(discord.ui.View):
             payout = int(self.bet + (self.bet * profit_multiplier))
             
             new_bal = add_balance(uid, payout)
-            track_fee(-(payout - self.bet)) # Profit comes FROM the vault
             log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
             color = discord.Color.green()
         elif win is False:
             new_bal = get_balance(uid)
-            track_fee(self.bet) # Track lost bet
             log_transaction(uid, -self.bet, "Blackjack Loss")
             color = discord.Color.red()
         else: # Tie (Push) - Get bet back
@@ -3383,9 +3196,8 @@ class BlackjackView(discord.ui.View):
         embed.color = color
         
         if win is True:
-            profit_multiplier = 1.5 if self.is_natural else 1.0
-            payout = int(self.bet + (self.bet * profit_multiplier))
-            embed.add_field(name="💰 Payout", value=f"**{payout:,}** JC returned to Wallet", inline=False)
+            payout_display = int(self.bet + (self.bet * (1.2 if self.is_natural else 0.9)))
+            embed.add_field(name="💰 Payout", value=f"**{payout_display:,}** JC returned to Wallet", inline=False)
         elif win is None:
             embed.add_field(name="🤝 Refund", value=f"**{self.bet:,}** JC returned to Wallet", inline=False)
             
@@ -3511,11 +3323,6 @@ class CrashView(discord.ui.View):
         final_payout = gross_payout - tax_deducted
         
         new_bal = add_balance(str(self.ctx.author.id), final_payout)
-        track_fee(tax_deducted) # Track tax revenue
-        
-        # Track net profit/loss from vault perspective
-        net_profit = final_payout - self.original_bet
-        track_fee(-net_profit) 
         
         log_transaction(str(self.ctx.author.id), final_payout, f"Crash Win ({self.multiplier}x)")
         
@@ -3538,9 +3345,6 @@ class CrashView(discord.ui.View):
     async def do_crash(self):
         """Handles the crash state."""
         self.stop()
-        # Full original bet was already deducted.
-        # Track the remaining active bet amount as a sink to the vault.
-        track_fee(self.active_bet) 
         
         embed = discord.Embed(title="💥 CRASHED!!!", color=discord.Color.red())
         embed.description = (

@@ -159,13 +159,13 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "eco":
             embed.title = "💰 Economy & Banking"
-            embed.add_field(name="Earning JC", value=f"`{p}daily` - Claim daily bonus\n`{p}work` - Earn JC (Taxed 5%/2%)\n`{p}grind` - Quick grind (Cost 10, CD 30s)\n`{p}fish` - Cast a line (Cost 50, CD 15s)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
+            embed.add_field(name="Earning JC", value=f"`{p}daily` - Open daily crate\n`{p}work` - Earn JC (Progressive Tax 5-12%)\n`{p}fish` - Cast a line (Cost 50, CD 15s)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
             embed.add_field(name="Banking & Transfers", value=f"`{p}bal [@user]` - Check balance\n`{p}dep [amount]` - Secure JC in Bank\n`{p}with [amount]` - Withdraw JC\n`{p}give @user [amt]` - Transfer JC", inline=False)
             embed.add_field(name="Trading & Stats", value=f"`{p}pf` - Portfolio & Net Worth\n`{p}history` - Transaction logs\n`{p}vault` - Global community pool", inline=False)
 
         elif val == "gam":
             embed.title = "🎲 Gambling & Duels"
-            embed.add_field(name="PVP Duels ⚔️", value=f"`{p}duel @user [bet]` - Coin Flip Duel\n`{p}bjduel @user [bet]` - Blackjack Duel!", inline=False)
+            embed.add_field(name="PVP Duels ⚔️", value=f"`{p}duel @user [bet]` - Coin Flip Duel", inline=False)
             embed.add_field(name="Gambling 🎲", value=f"`{p}flip [bet] [h/t]` - Coin Flip\n`{p}slots [bet]` - Slot Machine\n`{p}bj [bet]` - Blackjack\n`{p}crash [bet]` - Crash Game 🚀", inline=False)
             embed.add_field(name="Crimes 🥷", value=f"`{p}rob @user` - Steal JC & Gold!", inline=False)
             
