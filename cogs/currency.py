@@ -65,7 +65,8 @@ class Currency(commands.Cog):
             return
         base_currency, amount, target_currency = None, 1.0, None
         first_arg = full_command_parts[0]
-        currency_amount_match = re.match(r'^([A-Z]{2,4})(\d*\.?\d*)?$', first_arg, re.IGNORECASE)
+        # Restrict to strictly 3-letter currency codes (ISO standard) to prevent hijacking commands like !fish, !test, etc.
+        currency_amount_match = re.match(r'^([A-Z]{3})(\d*\.?\d*)?$', first_arg, re.IGNORECASE)
         if currency_amount_match:
             base_currency = currency_amount_match.group(1).upper()
             attached_amount_str = currency_amount_match.group(2)
