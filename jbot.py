@@ -159,7 +159,7 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "eco":
             embed.title = "💰 Economy & Banking"
-            embed.add_field(name="Earning JC", value=f"`{p}daily` - Claim daily bonus\n`{p}work` - Earn JC (Taxed 5%/2%)\n`{p}top` - Leaderboard", inline=False)
+            embed.add_field(name="Earning JC", value=f"`{p}daily` - Claim daily bonus\n`{p}work` - Earn JC (Taxed 5%/2%)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
             embed.add_field(name="Banking & Transfers", value=f"`{p}bal [@user]` - Check balance\n`{p}dep [amount]` - Secure JC in Bank\n`{p}with [amount]` - Withdraw JC\n`{p}give @user [amt]` - Transfer JC", inline=False)
             embed.add_field(name="Trading & Stats", value=f"`{p}pf` - Portfolio & Net Worth\n`{p}history` - Transaction logs\n`{p}vault` - Global community pool", inline=False)
 
@@ -194,8 +194,9 @@ class HelpDropdown(discord.ui.Select):
             embed.title = "👑 Admin Setup"
             embed.description = "Owner/Administrator Commands"
             embed.add_field(name="Economy Controls", value=f"`{p}addcoins @user [amt]` - Give coins\n`{p}takecoins @user [amt]` - Take coins\n`{p}grantvip @user [days]` - Give VIP", inline=False)
-            embed.add_field(name="Rain Controls", value=f"`{p}rainrate [0-100]` - Set random rain %\n`{p}rainamount [min] [max]` - Set prize range\n`{p}raintotal [amt]` - Set jackpot pool\n`{p}rain` - Force start rain", inline=False)
-            embed.add_field(name="Mystery Box", value=f"`{p}setbox [leg%] [epic%] [rare%] [min]` - Start loot event\n`{p}boxrates` - View current box rates", inline=False)
+            embed.add_field(name="Taxman System 🕵️", value=f"`{p}settaxmantoggle [on/off]` - Enable daily tax\n`{p}settaxmanpercent [%]` - Set tax rate\n`{p}taxstatus` - System status & timer\n`{p}settaxchannel [#ch]` - Set announcement channel", inline=False)
+            embed.add_field(name="Rain & Notices", value=f"`{p}rainrate [%]` - Set rain chance\n`{p}setnoticechannel [#ch]` - Set notice channel\n`{p}setnotice [msg]` - Post announcement", inline=False)
+            embed.add_field(name="Mystery Box", value=f"`{p}setbox [rates...]` - Start loot event\n`{p}setboxchannel [#ch]` - Set box channel", inline=False)
             embed.add_field(name="System", value=f"`{p}olist` - List active users\n`{p}test` - Test horoscope delivery", inline=False)
             
         embed.set_footer(text="Made with ❤️ by Jenny")

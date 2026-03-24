@@ -169,6 +169,58 @@
             </div>
         </div>
 
+        <!-- Taxman System Settings Grid -->
+        <h2 class="text-lg font-semibold text-white mb-4 mt-8 flex items-center"><i class="fa-solid fa-building-columns mr-2 text-brand-accent"></i> Taxman System Settings</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-10">
+            <!-- Status -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group border-brand-border/40">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-shield-halved text-6xl text-brand-accent"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">System Status</p>
+                <div class="flex items-center space-x-2">
+                    {% if taxman_enabled %}
+                    <span class="w-3 h-3 rounded-full bg-green-500 animate-pulse"></span>
+                    <h3 class="text-3xl font-bold text-white tracking-tight uppercase">Active</h3>
+                    {% else %}
+                    <span class="w-3 h-3 rounded-full bg-red-500"></span>
+                    <h3 class="text-3xl font-bold text-gray-500 tracking-tight uppercase">Disabled</h3>
+                    {% endif %}
+                </div>
+                <p class="text-xs text-gray-500 mt-2 font-medium">Wealth Threshold: **> 100,000 JC**</p>
+            </div>
+
+            <!-- Tax Rate -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group border-brand-border/40">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-receipt text-6xl text-brand-accent"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">Daily Tax Rate</p>
+                <h3 class="text-3xl font-bold text-white mb-2 tracking-tight">{{ taxman_percent }}<span class="text-lg text-brand-accent font-semibold">%</span></h3>
+                <p class="text-xs text-brand-accent font-medium">Collected from a random rich player daily</p>
+            </div>
+
+            <!-- Next Visit -->
+            <div class="glass-card stat-card rounded-2xl p-6 relative overflow-hidden group border-brand-border/40">
+                <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <i class="fa-solid fa-hourglass-half text-6xl text-brand-accent"></i>
+                </div>
+                <p class="text-sm font-medium text-gray-400 mb-1">Next Possible Visit</p>
+                {% if taxman_enabled %}
+                    {% if taxman_imminent %}
+                    <h3 class="text-3xl font-bold text-brand-gold mb-2 tracking-tight animate-pulse">Imminent!</h3>
+                    <p class="text-xs text-brand-accent font-medium">Checking every hour...</p>
+                    {% else %}
+                    <h3 id="tax-timer" class="text-3xl font-bold text-white mb-2 tracking-tight" data-expiry="{{ next_tax_ts }}">{{ taxman_remaining }}</h3>
+                    <p class="text-xs text-brand-accent font-medium">Counted from last visit</p>
+                    {% endif %}
+                {% else %}
+                <h3 class="text-3xl font-bold text-gray-500 mb-2 tracking-tight">N/A</h3>
+                <p class="text-xs text-gray-500 font-medium italic">System is currently sleeping</p>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Box Loot Rates Grid -->
         <div class="flex items-center justify-between mb-4 mt-8">
             <h2 class="text-lg font-semibold text-white flex items-center"><i class="fa-solid fa-gift mr-2 text-brand-accent"></i> Mystery Box Loot Rates</h2>
@@ -375,6 +427,33 @@
         // Start ticking if timer exists
         if (document.getElementById('event-timer')) {
             setInterval(updateTimer, 1000);
+        }
+
+        // Taxman timer
+        function updateTaxTimer() {
+            const timerEl = document.getElementById('tax-timer');
+            if (!timerEl) return;
+            
+            const expiry = parseInt(timerEl.getAttribute('data-expiry'));
+            const now = Math.floor(Date.now() / 1000);
+            const rem = expiry - now;
+            
+            if (rem <= 0) {
+                timerEl.textContent = "Imminent!";
+                timerEl.classList.add('animate-pulse', 'text-brand-gold');
+                return;
+            }
+            
+            let h = Math.floor(rem / 3600);
+            let m = Math.floor((rem % 3600) / 60);
+            let s = rem % 60;
+            
+            timerEl.textContent = `${h}h ${m}m ${s}s`;
+        }
+        
+        if (document.getElementById('tax-timer')) {
+            setInterval(updateTaxTimer, 1000);
+            updateTaxTimer();
         }
     </script>
 </body>

@@ -191,6 +191,28 @@ def index():
         else:
             event_remaining = f"{mins}m {secs}s"
 
+    # 9. Taxman Settings
+    cursor.execute("SELECT value FROM settings WHERE key = 'taxman_enabled'")
+    taxman_enabled = cursor.fetchone()
+    taxman_enabled = (taxman_enabled['value'].lower() == 'true') if taxman_enabled else False
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'taxman_percent'")
+    taxman_percent = cursor.fetchone()
+    taxman_percent = taxman_percent['value'] if taxman_percent else '10'
+
+    cursor.execute("SELECT value FROM settings WHERE key = 'last_tax_timestamp'")
+    last_tax = cursor.fetchone()
+    last_tax = int(last_tax['value']) if last_tax else 0
+
+    next_tax = last_tax + (24 * 60 * 60)
+    taxman_imminent = (now >= next_tax) if taxman_enabled else False
+    
+    taxman_remaining = ""
+    if taxman_enabled and not taxman_imminent:
+        rem = next_tax - now
+        h, m = divmod(rem // 60, 60)
+        taxman_remaining = f"{h}h {m}m"
+
     conn.close()
     
     # Enrich with discord data and format timestamps
@@ -231,7 +253,13 @@ def index():
         box_epic_event=box_epic_event,
         box_rare_event=box_rare_event,
         event_remaining=event_remaining,
-        event_expiry_ts=box_event_expiry
+        event_expiry_ts=box_event_expiry,
+        taxman_enabled=taxman_enabled,
+        taxman_percent=taxman_percent,
+        taxman_imminent=taxman_imminent,
+        taxman_remaining=taxman_remaining,
+        next_tax_ts=next_tax,
+        last_tax_ts=last_tax
     )
 
 if __name__ == '__main__':
