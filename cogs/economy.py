@@ -695,18 +695,36 @@ class Economy(commands.Cog):
         
         if roll <= 70:
             reward = random.randint(5, 15)
+            # Golden Pickaxe Bonus (+10%) moved inside for specific msg logic if needed, 
+            # but cleaner to just apply to all positive rewards below.
+        elif roll <= 95:
+            reward = 10
+        else:
+            reward = 0
+            
+        # Apply Golden Pickaxe Bonus (+10%)
+        bonus = 0
+        if reward > 0 and get_inventory_item(uid, "Golden Pickaxe"):
+            bonus = int(reward * 0.10)
+            reward += bonus
+
+        if roll <= 70:
             msg = f"⚒️ You spent some time grinding and earned **{reward} JC**!"
-            if reward > fee:
+            if bonus > 0:
+                msg += f" (incl. **{bonus} JC** pickaxe bonus! ✨)"
+            elif reward > fee:
                 msg += " A small profit! ✨"
             elif reward < fee:
                 msg += " Not quite enough to cover your efforts... 📉"
             else:
                 msg += " You broke even."
         elif roll <= 95:
-            reward = 10
-            msg = "⚒️ You ground some materials and broke even. (+10 JC)"
+            msg = f"⚒️ You ground some materials and earned **{reward} JC**."
+            if bonus > 0:
+                msg += f" (incl. **{bonus} JC** pickaxe bonus! ✨)"
+            else:
+                msg += " (+10 JC)"
         else:
-            reward = 0
             msg = "⚒️ You ground all day but found nothing useful. A total loss! 💸"
             
         if reward > 0:
