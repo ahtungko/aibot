@@ -138,6 +138,10 @@
                 <i class="fas fa-box-open w-5"></i>
                 <span class="font-medium">Loot Rates</span>
             </button>
+            <button onclick="switchModule('config', this)" class="nav-item w-full flex items-center space-x-3 px-4 py-3 rounded-lg text-gray-400 hover:text-white hover:bg-white/5 transition-all text-left">
+                <i class="fas fa-cogs w-5"></i>
+                <span class="font-medium">System Config</span>
+            </button>
         </nav>
 
         <div class="p-6 border-t border-brand-border">
@@ -175,15 +179,25 @@
 
         <!-- MODULE: OVERVIEW -->
         <div id="module-overview" class="content-section active space-y-8">
-            <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <section class="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-6">
                 <!-- Total Circulation -->
                 <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
                     <div class="flex items-center justify-between mb-4">
                         <div class="p-2 rounded-lg bg-brand-primary/10 text-brand-primary"><i class="fas fa-coins text-xl"></i></div>
-                        <span class="text-[10px] font-bold text-gray-500 uppercase">Circulation</span>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Net Worth</span>
                     </div>
-                    <h3 class="text-2xl font-bold font-mono">{{ "{:,}".format(total_jc|int) }}</h3>
-                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Total pool in market</p>
+                    {% set net_worth = total_jc + (total_gold * last_gold_price) %}
+                    <h3 class="text-2xl font-bold font-mono">{{ "{:,}".format(net_worth|int) }}</h3>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Total Value (JC + Gold)</p>
+                </div>
+                <!-- Gold Price -->
+                <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="p-2 rounded-lg bg-[#FFD700]/10 text-[#FFD700]"><i class="fas fa-chart-line text-xl"></i></div>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Gold Price</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono">{{ "{:,.2f}".format(last_gold_price) }}</h3>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">JC per Gram</p>
                 </div>
                 <!-- Tax Revenue -->
                 <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
@@ -194,14 +208,23 @@
                     <h3 class="text-2xl font-bold font-mono text-brand-accent">{{ "{:,}".format(total_tax_revenue|int) }}</h3>
                     <p class="text-[10px] text-gray-500 mt-1 uppercase">Lifetime collection</p>
                 </div>
-                <!-- Global Sink -->
+                <!-- JC Vault -->
                 <div class="glass rounded-2xl p-6 border border-brand-border/30">
                     <div class="flex items-center justify-between mb-4 text-brand-success">
                         <div class="p-2 rounded-lg bg-brand-success/10"><i class="fas fa-vault text-xl"></i></div>
-                        <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">Vault</span>
+                        <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">JC Vault</span>
                     </div>
                     <h3 class="text-2xl font-bold font-mono">{{ "{:,}".format(vault_jc|int) }}</h3>
-                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Total reserves</p>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Rain Reserves</p>
+                </div>
+                <!-- Gold Vault -->
+                <div class="glass rounded-2xl p-6 border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4 text-[#FFD700]">
+                        <div class="p-2 rounded-lg bg-[#FFD700]/10"><i class="fas fa-cubes text-xl"></i></div>
+                        <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">Gold Vault</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono">{{ "{:,.2f}g".format(vault_gold) }}</h3>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Taxed Gold</p>
                 </div>
                 <!-- Stability Ratio -->
                 <div class="glass rounded-2xl p-6 border border-brand-border/30">
@@ -287,6 +310,46 @@
 
         <!-- MODULE: TAX -->
         <div id="module-tax" class="content-section space-y-8">
+            <!-- Taxman AI Status -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Status -->
+                <div class="glass rounded-3xl p-6 border border-brand-border/30 flex items-center space-x-4">
+                    <div class="w-12 h-12 rounded-2xl {% if taxman_enabled %}bg-brand-success/10 text-brand-success shadow-[0_0_15px_rgba(16,185,129,0.2)]{% else %}bg-brand-danger/10 text-brand-danger{% endif %} flex items-center justify-center">
+                        <i class="fas fa-power-off text-2xl"></i>
+                    </div>
+                    <div>
+                        <p class="text-[10px] text-gray-500 uppercase font-bold">Taxman Protocol</p>
+                        <p class="text-xl font-bold text-white">{% if taxman_enabled %}Active{% else %}Offline{% endif %}</p>
+                    </div>
+                </div>
+                <!-- Rate -->
+                <div class="glass rounded-3xl p-6 border border-brand-border/30 flex items-center space-x-4">
+                    <div class="w-12 h-12 rounded-2xl bg-brand-accent/10 text-brand-accent flex items-center justify-center">
+                        <i class="fas fa-percent text-2xl"></i>
+                    </div>
+                    <div>
+                        <p class="text-[10px] text-gray-500 uppercase font-bold">Confiscation Rate</p>
+                        <p class="text-xl font-bold font-mono text-white">{{ taxman_percent }}%</p>
+                    </div>
+                </div>
+                <!-- Next Sweep -->
+                <div class="glass rounded-3xl p-6 border border-brand-border/30 flex items-center space-x-4">
+                    <div class="w-12 h-12 rounded-2xl bg-brand-primary/10 text-brand-primary flex items-center justify-center">
+                        <i class="fas fa-clock text-2xl"></i>
+                    </div>
+                    <div>
+                        <p class="text-[10px] text-gray-500 uppercase font-bold">Next Automated Sweep</p>
+                        {% if not taxman_enabled %}
+                            <p class="text-xl font-bold text-gray-600">Paused</p>
+                        {% elif taxman_imminent %}
+                            <p class="text-xl font-bold text-brand-danger animate-pulse">IMMINENT</p>
+                        {% else %}
+                            <p class="text-xl font-bold font-mono text-white">{{ taxman_remaining }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
             <div class="glass rounded-3xl overflow-hidden border border-brand-border/30 flex flex-col">
                 <div class="p-6 border-b border-brand-border bg-white/5 flex items-center justify-between">
                     <div><h5 class="font-bold text-xl text-brand-accent">Tax Assessment Ledger</h5><p class="text-xs text-gray-500 mt-1 uppercase">Automated wealth adjustment records</p></div>
@@ -357,6 +420,28 @@
             </div>
         </div>
 
+        <!-- MODULE: CONFIG -->
+        <div id="module-config" class="content-section space-y-8">
+            <div class="glass rounded-3xl overflow-hidden border border-brand-border/30 flex flex-col">
+                <div class="p-6 border-b border-brand-border bg-white/5 flex items-center justify-between">
+                    <div><h5 class="font-bold text-xl"><i class="fas fa-cogs mr-3 text-gray-400"></i> Global Settings Database</h5><p class="text-xs text-gray-500 mt-1 uppercase">Raw key-value configuration state</p></div>
+                </div>
+                <div class="overflow-auto max-h-[600px]">
+                    <table class="w-full text-left">
+                        <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-md z-20"><tr class="text-[10px] text-gray-500 uppercase font-bold border-b border-brand-border"><th class="px-6 py-4">Configuration Key</th><th class="px-6 py-4">Current Value</th></tr></thead>
+                        <tbody class="divide-y divide-brand-border/30">
+                            {% for setting in all_settings %}
+                            <tr class="hover:bg-white/5 transition-colors group">
+                                <td class="px-6 py-4 whitespace-nowrap text-xs font-mono font-bold text-brand-primary">{{ setting.key }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-300">{{ setting.value }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
     </main>
 
     <!-- Chart Scripts -->
@@ -371,14 +456,16 @@
             'economy': 'Economy <span class="text-gradient">Flow</span>',
             'tax': 'Tax <span class="text-gradient">Intelligence</span>',
             'rain': 'Rain <span class="text-gradient">Module</span>',
-            'loot': 'Loot <span class="text-gradient">Calibration</span>'
+            'loot': 'Loot <span class="text-gradient">Calibration</span>',
+            'config': 'System <span class="text-gradient">Configuration</span>'
         };
         const descs = {
             'overview': 'Analyzing global currency flow and taxation throughput.',
             'economy': 'Visualizing faucets vs sinks over the last 7 days.',
             'tax': 'Automated wealth adjustment records and revenue yield.',
             'rain': 'Probability and pool allocation for random rain events.',
-            'loot': 'Mystery box drop rates and item scarcity calibration.'
+            'loot': 'Mystery box drop rates and item scarcity calibration.',
+            'config': 'Raw database view of all active economy limits and multipliers.'
         };
 
         function switchModule(id, el) {

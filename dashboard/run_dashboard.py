@@ -250,6 +250,10 @@ def index():
         h, m = divmod(rem // 60, 60)
         taxman_remaining = f"{h}h {m}m"
 
+    # 10. All raw settings for System Config view
+    cursor.execute("SELECT key, value FROM settings ORDER BY key ASC")
+    all_settings = [dict(row) for row in cursor.fetchall()]
+
     conn.close()
     
     # Enrich with discord data and format timestamps
@@ -276,6 +280,7 @@ def index():
         total_gold=total_gold,
         vault_jc=vault_jc,
         vault_gold=vault_gold,
+        last_gold_price=last_gold_price,
         user_count=user_count,
         history_json=json.dumps(history_json),
         tax_transactions=[enrich_user_data(row, 'user_id') for row in tax_transactions],
@@ -300,7 +305,8 @@ def index():
         taxman_imminent=taxman_imminent,
         taxman_remaining=taxman_remaining,
         next_tax_ts=next_tax,
-        last_tax_ts=last_tax
+        last_tax_ts=last_tax,
+        all_settings=all_settings
     )
 
 if __name__ == '__main__':

@@ -183,7 +183,14 @@ def update_user_stats(user_id: str, **kwargs):
     db_query(query, tuple(values), commit=True)
 
 def get_top_balances(limit=10) -> list:
-    return db_query("SELECT user_id, (balance + IFNULL(bank, 0)) as total FROM wallets ORDER BY total DESC LIMIT ?", (limit,), fetchall=True)
+    """Returns Top users with their JC and Gold stats for Net Worth calculation."""
+    return db_query(
+        "SELECT w.user_id, w.balance, IFNULL(w.bank, 0), IFNULL(i.gold_grams, 0) "
+        "FROM wallets w "
+        "LEFT JOIN investments i ON w.user_id = i.user_id "
+        "ORDER BY (w.balance + IFNULL(w.bank, 0)) DESC LIMIT 50", # Fetch more to sort by net worth in Python
+        fetchall=True
+    )
 
 def add_item(user_id, item_name, item_type="Collectible", item_data=""):
     db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, ?, ?, ?)", (user_id, item_name, item_type, item_data), commit=True)
@@ -1200,18 +1207,23 @@ class Economy(commands.Cog):
             await ctx.send(f"❌ You only have **{sender_bal:,}** JC.")
             return
 
+        tax = int(amount * 0.05)
+        net_amount = amount - tax
+        
         add_balance(str(ctx.author.id), -amount)
-        new_receiver = add_balance(str(member.id), amount)
+        new_receiver = add_balance(str(member.id), net_amount)
 
         log_transaction(str(ctx.author.id), -amount, f"Transfer to {member.display_name}")
-        log_transaction(str(member.id), amount, f"Transfer from {ctx.author.display_name}")
+        log_transaction(str(member.id), net_amount, f"Transfer from {ctx.author.display_name}")
 
         embed = discord.Embed(
             title="💸 Transfer Complete",
-            description=f"{ctx.author.mention} → {member.mention}\n**{amount:,}** JC",
+            description=f"{ctx.author.mention} → {member.mention}\n**{amount:,}** JC sent.",
             color=discord.Color.blue()
         )
-        embed.add_field(name=f"{member.display_name}'s Balance", value=f"**{new_receiver:,}**", inline=True)
+        embed.add_field(name="Laundering Fee", value=f"**{tax:,}** JC (Burned 🔥)", inline=True)
+        embed.add_field(name="Net Received", value=f"**{net_amount:,}** JC", inline=True)
+        embed.add_field(name=f"{member.display_name}'s Balance", value=f"**{new_receiver:,}**", inline=False)
         await ctx.send(embed=embed)
 
     # --- Live Gold Trading ---
@@ -1299,13 +1311,18 @@ class Economy(commands.Cog):
             await msg.edit(content="❌ The Gold Market is currently closed. Please try again later.")
             return
             
+        # RE-CHECK balance after the await to prevent double-spend race conditions
+        success, pay_msg = pay_jc(uid, jc_amount)
+        if not success:
+            await msg.edit(content=f"❌ Transaction failed. {pay_msg}")
+            return
+            
         fee_rate = 0.02 if is_vip(uid) else 0.05
         fee = max(1, int(jc_amount * fee_rate)) 
         purchase_power = jc_amount - fee
         
         grams_bought = purchase_power / live_price
         
-        success, pay_msg = pay_jc(uid, jc_amount)
         add_gold_grams(uid, grams_bought)
         track_fee(fee)
         log_transaction(uid, -jc_amount, "Bought Gold")
@@ -1391,12 +1408,21 @@ class Economy(commands.Cog):
             await msg.edit(content="❌ The Gold Market is currently closed. Please try again later.")
             return
             
+        # RE-CHECK gold balance to prevent double-sell race conditions
+        current_grams_now = get_gold_grams(uid)
+        if current_grams_now < sell_amount:
+            await msg.edit(content=f"❌ Transaction failed. You no longer have **{sell_amount:.4f}g** to sell (Current: {current_grams_now:.4f}g).")
+            return
+            
         gross_value = int(sell_amount * live_price)
         fee_rate = 0.02 if is_vip(uid) else 0.05
         fee = max(1, int(gross_value * fee_rate)) 
         net_payout = gross_value - fee
         
-        add_gold_grams(uid, -sell_amount)
+        # Deduct REAL amount safely
+        new_gold_bal = current_grams_now - sell_amount
+        db_query("UPDATE investments SET gold_grams = ? WHERE user_id = ?", (new_gold_bal, uid), commit=True)
+        
         add_balance(uid, net_payout)
         track_fee(fee)
         log_transaction(uid, net_payout, "Sold Gold")
@@ -1429,25 +1455,59 @@ class Economy(commands.Cog):
 
     @commands.command(name='top', aliases=['rich', 'jclb', 'jcleaderboard'])
     async def top_command(self, ctx: commands.Context):
-        """Show the richest users."""
-        rows = get_top_balances(10)
+        """Show the Top 10 users by Total Net Worth (JC + Gold Value)."""
+        msg = await ctx.send("<a:loading:111> Calculating global wealth rankings...")
+        
+        live_price = await fetch_live_gold_price(self.bot)
+        rows = get_top_balances(50) # Helper now returns (uid, bal, bank, gold)
+        
         if not rows:
-            await ctx.send("📭 No one has any JC yet! Use `!daily` to get started.")
+            await msg.edit(content="📭 No one has any JC yet! Use `!daily` to get started.")
             return
 
-        embed = discord.Embed(title="🏦 JC Leaderboard", color=discord.Color.gold())
+        # Calculate Net Worth in Python
+        leaderboard_data = []
+        for uid, bal, bank, gold in rows:
+            jc_total = bal + bank
+            gold_val = int(gold * live_price) if live_price else 0
+            net_worth = jc_total + gold_val
+            leaderboard_data.append({
+                "uid": uid,
+                "net_worth": net_worth,
+                "jc": jc_total,
+                "gold": gold
+            })
+            
+        # Sort by Net Worth
+        leaderboard_data.sort(key=lambda x: x['net_worth'], reverse=True)
+        top_10 = leaderboard_data[:10]
+
+        embed = discord.Embed(
+            title="🏦 Global Wealth Leaderboard", 
+            description="Ranked by **Total Net Worth** (Wallet + Bank + Gold Value)",
+            color=discord.Color.gold()
+        )
+        
         medals = ["🥇", "🥈", "🥉"]
         lines = []
-        for i, (user_id, balance) in enumerate(rows):
+        for i, data in enumerate(top_10):
             medal = medals[i] if i < 3 else f"`{i+1}.`"
             try:
-                user = await self.bot.fetch_user(int(user_id))
+                user = await self.bot.fetch_user(int(data["uid"]))
                 name = user.display_name
             except Exception:
-                name = f"User {user_id}"
-            lines.append(f"{medal} **{name}** — {balance:,} JC (Total)")
-        embed.description = "\n".join(lines)
-        await ctx.send(embed=embed)
+                name = f"User {data['uid']}"
+            
+            gold_str = f" + {data['gold']:.2f}g Gold" if data['gold'] > 0 else ""
+            lines.append(f"{medal} **{name}** — **{data['net_worth']:,}** JC\n   *( {data['jc']:,} {gold_str} )*")
+            
+        embed.description += "\n\n" + "\n".join(lines)
+        if live_price:
+            embed.set_footer(text=f"Live Gold Rate: {live_price:,.2f} JC/g | Net worth updated instantly.")
+        else:
+            embed.set_footer(text="Market stats offline. Sorting by JC only.")
+            
+        await msg.edit(content=None, embed=embed)
 
     # --- Gambling ---
 
@@ -2596,6 +2656,34 @@ class Economy(commands.Cog):
         log_transaction(str(member.id), 0, f"Admin VIP Grant ({days}d by {ctx.author.display_name})")
         
         await ctx.send(f"👑 Granted **{days} days** of VIP to {member.mention}!\n📅 Expires: <t:{expiry}:F> (<t:{expiry}:R>)")
+
+    @commands.command(name='nuke', aliases=['nukeuser', 'resetuser'])
+    @commands.is_owner()
+    async def nukeuser_command(self, ctx: commands.Context, member: discord.Member = None):
+        """Owner Only: Completely reset a user's wallet, bank, gold, and stats."""
+        if member is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}nuke @user`")
+            return
+        
+        uid = str(member.id)
+        
+        # 1. Wipe Wallet & Bank
+        set_balance(uid, 0)
+        set_bank(uid, 0)
+        
+        # 2. Wipe Gold
+        db_query("DELETE FROM investments WHERE user_id = ?", (uid,), commit=True)
+        
+        # 3. Wipe Inventory
+        db_query("DELETE FROM inventory WHERE user_id = ?", (uid,), commit=True)
+        
+        # 4. Wipe Stats
+        db_query("DELETE FROM user_stats WHERE user_id = ?", (uid,), commit=True)
+        
+        # 5. Log it
+        log_transaction(uid, 0, f"ADMIN NUKE (by {ctx.author.display_name})")
+        
+        await ctx.send(f"☢️ **TOTAL NUKE COMPLETE.** {member.mention} has been reset to level zero. All JC, Gold, and Items have been incinerated.")
 
     @commands.command(name='setbox')
     @commands.is_owner()
