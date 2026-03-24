@@ -99,24 +99,16 @@ def add_bank(user_id: str, amount: int) -> int:
 
 def pay_jc(user_id: str, amount: int) -> tuple[bool, str]:
     """
-    Attempts to deduct 'amount' from user's Wallet first, then Bank.
+    Attempts to deduct 'amount' from user's Wallet only.
     Returns (Success, Description)
     """
     wallet = get_balance(user_id)
-    bank = get_bank(user_id)
     
-    if wallet + bank < amount:
-        return False, f"❌ You need **{amount:,} JC**, but you only have **{wallet + bank:,} JC** (Wallet + Bank)!"
+    if wallet < amount:
+        return False, f"❌ You need **{amount:,} JC** in your Wallet, but you only have **{wallet:,} JC**! Withdraw some from your Bank first."
     
-    if wallet >= amount:
-        add_balance(user_id, -amount)
-        return True, f"💸 Paid **{amount:,} JC** from your Wallet."
-    else:
-        remainder = amount - wallet
-        if wallet > 0:
-            set_balance(user_id, 0)
-        add_bank(user_id, -remainder)
-        return True, f"💸 Paid **{wallet:,} JC** from Wallet and **{remainder:,} JC** from Bank."
+    add_balance(user_id, -amount)
+    return True, f"💸 Paid **{amount:,} JC** from your Wallet."
 
 def get_bank_limit(user_id: str) -> float:
     """
@@ -358,20 +350,18 @@ def apply_gold_fees(user_id: str):
 async def validate_bet(ctx: commands.Context, amount_str):
     """
     Validates a bet amount, handling commas and 'max'/'all'.
-    Checks total (Wallet + Bank) balance.
+    Checks Wallet balance only.
     Returns (amount_int, error_message)
     """
     uid = str(ctx.author.id)
     wallet = get_balance(uid)
-    bank = get_bank(uid)
-    total_bal = wallet + bank
 
     if amount_str is None:
         return None, "❌ Please provide a positive bet amount!"
 
     s = str(amount_str).lower().replace(',', '')
     if s in ['max', 'all']:
-        amount = total_bal
+        amount = wallet
     else:
         try:
             amount = int(s)
@@ -381,8 +371,8 @@ async def validate_bet(ctx: commands.Context, amount_str):
     if amount <= 0:
         return None, "❌ Please provide a positive bet amount!"
     
-    if total_bal < amount:
-        return None, f"❌ You only have **{total_bal:,}** JC (Wallet + Bank)."
+    if wallet < amount:
+        return None, f"❌ You only have **{wallet:,}** JC in your Wallet. Withdraw from your Bank if needed."
     
     return amount, None
 
