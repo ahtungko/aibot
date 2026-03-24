@@ -226,9 +226,17 @@ def get_inventory_item(user_id, item_name):
     row = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True)
     return row is not None
 
+def get_item_count(user_id, item_name):
+    row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True)
+    return row[0] if row else 0
+
 def remove_item(user_id, item_name):
     # Remove only ONE instance of the item
     db_query("DELETE FROM inventory WHERE ROWID = (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT 1)", (user_id, item_name), commit=True)
+
+def remove_items(user_id, item_name, count=1):
+    # Remove multiple instances of the item
+    db_query("DELETE FROM inventory WHERE ROWID IN (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT ?)", (user_id, item_name, count), commit=True)
 
 def get_luck_bonus(user_id: str) -> float:
     """Returns 0.05 if a Lucky Charm is active, else 0."""
@@ -1804,14 +1812,24 @@ class Economy(commands.Cog):
                 await ctx.send(f"❌ An error occurred while managing the role. Make sure the name isn't too long or contains invalid characters. Details: {e}")
 
     @commands.command(name='sell')
-    async def sell_command(self, ctx: commands.Context, *, item_name: str = None):
-        """Sell a collectible item for JC. Usage: !sell [item name]"""
-        if not item_name:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}sell [item name]` (e.g. `!sell golden jc`)")
+    async def sell_command(self, ctx: commands.Context, *, input_str: str = None):
+        """Sell a collectible item for JC. Usage: !sell [item name] [quantity]"""
+        if not input_str:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}sell [item name] [quantity]` (e.g. `!sell golden jc 2`)")
             return
 
         uid = str(ctx.author.id)
-        search_name = item_name.lower().strip()
+        parts = input_str.split()
+        
+        quantity = 1
+        item_name_parts = parts
+        
+        # Check if the last part is a number (quantity)
+        if len(parts) > 1 and parts[-1].isdigit():
+            quantity = int(parts[-1])
+            item_name_parts = parts[:-1]
+            
+        search_name = " ".join(item_name_parts).lower().strip()
         
         # Valid sellable items mapping (search_string -> (Exact DB Name, Price))
         sellable = {
@@ -1827,19 +1845,25 @@ class Economy(commands.Cog):
             
         exact_name, price = sellable[search_name]
         
-        # Check if they own it
-        if not get_inventory_item(uid, exact_name):
-            await ctx.send(f"❌ You don't have any **{exact_name}** in your inventory to sell!")
+        # Check if they own enough
+        owned_count = get_item_count(uid, exact_name)
+        if owned_count < quantity:
+            await ctx.send(f"❌ You don't have enough **{exact_name}**! (Owned: **{owned_count}**, Requested: **{quantity}**)")
+            return
+        
+        if quantity <= 0:
+            await ctx.send("❌ Quantity must be at least 1!")
             return
             
         # Execute Sale
-        remove_item(uid, exact_name)
-        new_bal = add_balance(uid, price)
-        log_transaction(uid, price, f"Sold {exact_name}")
+        total_price = price * quantity
+        remove_items(uid, exact_name, quantity)
+        new_bal = add_balance(uid, total_price)
+        log_transaction(uid, total_price, f"Sold {quantity}x {exact_name}")
         
         embed = discord.Embed(
-            title="🤝 Item Sold!",
-            description=f"You successfully sold **1x {exact_name}** for **{price:,} JC**.",
+            title="🤝 Items Sold!",
+            description=f"You successfully sold **{quantity}x {exact_name}** for **{total_price:,} JC**.",
             color=discord.Color.green()
         )
         embed.set_footer(text=f"New Balance: {new_bal:,} JC")
