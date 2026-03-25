@@ -203,10 +203,28 @@
                 <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
                     <div class="flex items-center justify-between mb-4">
                         <div class="p-2 rounded-lg bg-brand-accent/10 text-brand-accent"><i class="fas fa-receipt text-xl"></i></div>
-                        <span class="text-[10px] font-bold text-gray-500 uppercase">Tax Yield</span>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Gross Tax Yield</span>
                     </div>
                     <h3 class="text-2xl font-bold font-mono text-brand-accent">{{ "{:,}".format(total_tax_revenue|int) }}</h3>
-                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Lifetime collection</p>
+                    <p class="text-[10px] text-gray-400 mt-1 uppercase">Total Collected</p>
+                </div>
+                <!-- Community Returns -->
+                <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="p-2 rounded-lg bg-brand-primary/10 text-brand-primary"><i class="fas fa-hand-holding-heart text-xl"></i></div>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Rain Given</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono text-brand-primary">{{ "{:,}".format(total_rain_distributed|int) }}</h3>
+                    <p class="text-[10px] text-gray-400 mt-1 uppercase">Returned to users</p>
+                </div>
+                <!-- Net Yield -->
+                <div class="glass rounded-2xl p-6 relative overflow-hidden group border border-brand-border/30">
+                    <div class="flex items-center justify-between mb-4 text-brand-success">
+                        <div class="p-2 rounded-lg bg-brand-success/10"><i class="fas fa-scale-unbalanced-flip text-xl"></i></div>
+                        <span class="text-[10px] font-bold text-gray-500 uppercase">Net Yield</span>
+                    </div>
+                    <h3 class="text-2xl font-bold font-mono text-brand-success">{{ "{:,}".format(net_tax_yield|int) }}</h3>
+                    <p class="text-[10px] text-gray-400 mt-1 uppercase">Revenue - Returns</p>
                 </div>
                 <!-- JC Vault -->
                 <div class="glass rounded-2xl p-6 border border-brand-border/30">
@@ -215,7 +233,7 @@
                         <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">JC Vault</span>
                     </div>
                     <h3 class="text-2xl font-bold font-mono">{{ "{:,}".format(vault_jc|int) }}</h3>
-                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Rain Reserves</p>
+                    <p class="text-[10px] text-gray-500 mt-1 uppercase">Community Pool</p>
                 </div>
                 <!-- Gold Vault -->
                 <div class="glass rounded-2xl p-6 border border-brand-border/30">
@@ -379,7 +397,7 @@
                 <div class="glass rounded-3xl p-8 border border-brand-border/30">
                     <div class="flex items-center space-x-3 mb-6"><div class="w-12 h-12 rounded-2xl bg-brand-primary/10 flex items-center justify-center text-brand-primary"><i class="fas fa-droplet text-2xl"></i></div><h4 class="text-xl font-bold">Rain <span class="text-brand-primary">Logic</span></h4></div>
                     <div class="space-y-6">
-                        <div class="flex justify-between items-end"><div><p class="text-[10px] text-gray-500 uppercase font-bold">Probability</p><p class="text-3xl font-bold">{{ rain_rate }}%</p><p class="text-xs text-gray-400 mt-1">30m cooldown enforced</p></div><span class="bg-brand-primary/20 text-brand-primary px-3 py-1 rounded-full text-[10px] font-bold">VAULT LINKED</span></div>
+                        <div class="flex justify-between items-end"><div><p class="text-[10px] text-gray-500 uppercase font-bold">Probability</p><p class="text-3xl font-bold">{{ rain_rate }}%</p><p class="text-xs text-gray-400 mt-1">15m cooldown enforced</p></div><span class="bg-brand-primary/20 text-brand-primary px-3 py-1 rounded-full text-[10px] font-bold">VAULT LINKED</span></div>
                         <div class="pt-4 border-t border-brand-border/30 grid grid-cols-2 gap-4 text-center">
                             <div class="p-4 bg-brand-dark/40 rounded-2xl border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold mb-1">Min Drop</p><p class="text-lg font-bold font-mono">200 <span class="text-xs">JC</span></p></div>
                             <div class="p-4 bg-brand-dark/40 rounded-2xl border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold mb-1">Max Drop</p><p class="text-lg font-bold font-mono">2,000 <span class="text-xs">JC</span></p></div>
@@ -388,14 +406,14 @@
                 </div>
                 <div class="glass rounded-3xl p-8 border border-brand-border/30">
                     <h4 class="text-xl font-bold mb-6 text-gray-300">Reserves (10% of Vault)</h4>
-                    <div class="p-8 {% if vault_jc < 5000 %}bg-brand-danger/5 border-brand-danger/10{% else %}bg-brand-success/5 border-brand-success/10{% endif %} border rounded-3xl text-center">
-                        <p class="text-[10px] {% if vault_jc < 5000 %}text-brand-danger{% else %}text-brand-success{% endif %} font-bold uppercase tracking-widest mb-2">Estimated Next Drop</p>
+                    <div class="p-8 {% if vault_jc < 1000 %}bg-brand-danger/5 border-brand-danger/10{% else %}bg-brand-success/5 border-brand-success/10{% endif %} border rounded-3xl text-center">
+                        <p class="text-[10px] {% if vault_jc < 1000 %}text-brand-danger{% else %}text-brand-success{% endif %} font-bold uppercase tracking-widest mb-2">Estimated Next Drop</p>
                         {% set dynamic_pool = (vault_jc * 0.1) | round | int %}
                         {% if dynamic_pool < 200 %}{% set dynamic_pool = 200 %}{% endif %}
                         {% if dynamic_pool > 2000 %}{% set dynamic_pool = 2000 %}{% endif %}
                         <p class="text-5xl font-mono font-bold">{{ "{:,}".format(dynamic_pool) }} <span class="text-xl">JC</span></p>
-                        {% if vault_jc < 5000 %}
-                        <p class="text-xs text-brand-danger font-bold mt-4"><i class="fas fa-triangle-exclamation mr-1"></i> Requires 5,000 JC in Vault</p>
+                        {% if vault_jc < 1000 %}
+                        <p class="text-xs text-brand-danger font-bold mt-4"><i class="fas fa-triangle-exclamation mr-1"></i> Requires 1,000 JC in Vault</p>
                         {% endif %}
                     </div>
                 </div>

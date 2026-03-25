@@ -149,6 +149,16 @@ def index():
     ''')
     total_tax_revenue = int(cursor.fetchone()['total_collected'] or 0)
 
+    # 11. Total Rain Distributed (Lifetime JC returned to community)
+    cursor.execute('''
+        SELECT CAST(SUM(ABS(amount)) AS INTEGER) as total_returned 
+        FROM transactions 
+        WHERE type = 'Caught Rain'
+    ''')
+    total_rain_distributed = int(cursor.fetchone()['total_returned'] or 0)
+    
+    net_tax_yield = total_tax_revenue - total_rain_distributed
+
     # 11. Top 5 Richest Players (Wallet + Bank + Gold Value)
     cursor.execute('''
         SELECT w.user_id, CAST((w.balance + w.bank + (COALESCE(i.gold_grams, 0) * ?)) AS INTEGER) as net_worth 
@@ -285,6 +295,8 @@ def index():
         history_json=json.dumps(history_json),
         tax_transactions=[enrich_user_data(row, 'user_id') for row in tax_transactions],
         total_tax_revenue=total_tax_revenue,
+        total_rain_distributed=total_rain_distributed,
+        net_tax_yield=net_tax_yield,
         top_players=enriched_top_players,
         transactions=enriched_transactions,
         rain_rate=rain_rate,

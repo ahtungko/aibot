@@ -2059,7 +2059,7 @@ class Economy(commands.Cog):
             now = int(time.time())
             last_rain = int(float(get_setting("last_rain_time", "0")))
             
-            if vault_bal >= 5000 and (now - last_rain) >= 1800:
+            if vault_bal >= 1000 and (now - last_rain) >= 900:
                 set_setting("last_rain_time", str(now))
                 await self.start_rain(message.channel, is_random=True)
 
@@ -3584,7 +3584,13 @@ class RainView(discord.ui.View):
             desc = "⛈️ The rain has dried up... No one caught anything."
         else:
             w_list = "\n".join([f"✨ **{w['name']}**: `{w['amount']} JC`" for w in self.winners])
-            desc = f"🌈 The rain has stopped! Here are our lucky catchers:\n\n{w_list}"
+            
+            # Guard against Discord's 4096 character embed description limit
+            prefix = "🌈 The rain has stopped! Here are our lucky catchers:\n\n"
+            if len(prefix) + len(w_list) > 4000:
+                w_list = w_list[:3900] + "\n... (Long list truncated)"
+                
+            desc = prefix + w_list
 
         embed = discord.Embed(title="☀️ Rain Over", description=desc, color=discord.Color.gold())
         await self.message.edit(embed=embed, view=None)
