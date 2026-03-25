@@ -33,7 +33,7 @@ class Precious(commands.Cog):
 
     @tasks.loop(seconds=120)
     async def update_gold_price_status(self):
-        currency_code = "MYR"
+        currency_code = "USD"
         cookies, headers = self._get_headers_cookies()
         price_api_url = f"https://data-asg.goldprice.org/dbXRates/{currency_code}"
 
@@ -44,7 +44,7 @@ class Precious(commands.Cog):
 
             price_data = price_json.get("items")[0]
             xau_price_gram = price_data.get('xauPrice', 0) / TROY_OUNCE_TO_GRAMS
-            status_text = f"Gold: {xau_price_gram:,.2f} MYR/g"
+            status_text = f"Gold: {xau_price_gram:,.2f} USD/g"
 
             activity = discord.Activity(type=discord.ActivityType.watching, name=status_text)
             await self.bot.change_presence(activity=activity)
