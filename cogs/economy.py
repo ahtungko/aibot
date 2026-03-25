@@ -1182,17 +1182,22 @@ class Economy(commands.Cog):
             await ctx.send(f"⏳ {ctx.author.mention}, you just scavenged! Try again in **{mins}m {secs}s**.")
             return
             
-        # 2. Daily Limit Check (24 hours = 86400 seconds)
-        if now - stats["scavenge_last_reset"] > 86400:
+        # 2. Daily Limit Check (Midnight GMT+8 Reset)
+        now_gmt8 = datetime.now(timezone(timedelta(hours=8)))
+        today_start = int(now_gmt8.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        
+        if stats["scavenge_last_reset"] < today_start:
             stats["scavenge_daily_total"] = 0
             stats["scavenge_last_reset"] = now
             update_user_stats(uid, scavenge_daily_total=0, scavenge_last_reset=now)
             
         daily_limit = 50
         if stats["scavenge_daily_total"] >= daily_limit:
-            rem = 86400 - (now - stats["scavenge_last_reset"])
-            hrs = rem // 3600
-            mins = (rem % 3600) // 60
+            # Calculate time until next midnight GMT+8
+            next_midnight = today_start + 86400
+            rem = next_midnight - now
+            hrs = max(0, rem // 3600)
+            mins = max(0, (rem % 3600) // 60)
             await ctx.send(f"🛑 {ctx.author.mention}, you've hit your daily scavenging limit (**{daily_limit} JC**)! Reset in **{hrs}h {mins}m**.")
             return
             
@@ -1244,17 +1249,21 @@ class Economy(commands.Cog):
         stats = get_user_stats(uid)
         now = int(time.time())
         
-        # Check daily reset (24 hours = 86400 seconds)
-        if now - stats["overtime_last_reset"] > 86400:
+        # Check daily reset (Midnight GMT+8)
+        now_gmt8 = datetime.now(timezone(timedelta(hours=8)))
+        today_start = int(now_gmt8.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        
+        if stats["overtime_last_reset"] < today_start:
             stats["overtime_uses"] = 0
             stats["overtime_last_reset"] = now
             update_user_stats(uid, overtime_uses=0, overtime_last_reset=now)
             
         if stats["overtime_uses"] >= max_uses:
-            rem = 86400 - (now - stats["overtime_last_reset"])
-            hrs = rem // 3600
-            mins = (rem % 3600) // 60
-            await ctx.send(f"❌ You've hit your daily `!overtime` limit (**{max_uses}/{max_uses}** uses). Reset in **{hrs}h {mins}m**.")
+            next_midnight = today_start + 86400
+            rem = next_midnight - now
+            hrs = max(0, rem // 3600)
+            mins = max(0, (rem % 3600) // 60)
+            await ctx.send(f"⏳ {ctx.author.mention}, you've used all your overtime for today (**{max_uses}** shifts)! Next reset in **{hrs}h {mins}m**.")
             return
             
         if stats["overtime_active"] == 1:
