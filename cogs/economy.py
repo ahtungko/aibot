@@ -42,7 +42,9 @@ def get_db():
                  "user_id TEXT PRIMARY KEY, overtime_uses INTEGER DEFAULT 0, "
                  "overtime_last_reset INTEGER DEFAULT 0, overtime_active INTEGER DEFAULT 0, "
                  "last_passive_time INTEGER DEFAULT 0, passive_hourly_total INTEGER DEFAULT 0, "
-                 "passive_hour_start INTEGER DEFAULT 0)")
+                 "passive_hour_start INTEGER DEFAULT 0, "
+                 "scavenge_daily_total INTEGER DEFAULT 0, "
+                 "scavenge_last_reset INTEGER DEFAULT 0)")
     # Migration: Add last_work column if it doesn't exist
     try:
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
@@ -53,6 +55,12 @@ def get_db():
         conn.execute("ALTER TABLE wallets ADD COLUMN bank INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    # Migration: Add scavenge columns if they don't exist
+    for col in [("scavenge_daily_total", "INTEGER DEFAULT 0"), ("scavenge_last_reset", "INTEGER DEFAULT 0"), ("last_scavenge", "INTEGER DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE user_stats ADD COLUMN {col[0]} {col[1]}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     return conn
 
@@ -150,7 +158,7 @@ def set_last_work(user_id: str, ts_str: str):
     db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
 
 def get_user_stats(user_id: str) -> dict:
-    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, passive_hourly_total, passive_hour_start FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
+    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, last_scavenge FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
     if row:
         return {
             "overtime_uses": row[0],
@@ -158,7 +166,10 @@ def get_user_stats(user_id: str) -> dict:
             "overtime_active": row[2],
             "last_passive_time": row[3],
             "passive_hourly_total": row[4],
-            "passive_hour_start": row[5]
+            "passive_hour_start": row[5],
+            "scavenge_daily_total": row[6] or 0,
+            "scavenge_last_reset": row[7] or 0,
+            "last_scavenge": row[8] or 0
         }
     else:
         db_query("INSERT INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
@@ -168,7 +179,10 @@ def get_user_stats(user_id: str) -> dict:
             "overtime_active": 0,
             "last_passive_time": 0,
             "passive_hourly_total": 0,
-            "passive_hour_start": 0
+            "passive_hour_start": 0,
+            "scavenge_daily_total": 0,
+            "scavenge_last_reset": 0,
+            "last_scavenge": 0
         }
 
 def update_user_stats(user_id: str, **kwargs):
@@ -1148,6 +1162,71 @@ class Economy(commands.Cog):
         embed.add_field(name="New Wallet", value=f"**{new_bal:,}** JC", inline=False)
         if not tax_dodged:
             embed.set_footer(text="Tax collected is added to the global fee vault!")
+        await ctx.send(embed=embed)
+        
+    @commands.command(name='scavenge', aliases=['search'])
+    async def scavenge_command(self, ctx: commands.Context):
+        """Scavenge for a few JC! (8 min CD, 50 JC daily limit)"""
+        uid = str(ctx.author.id)
+        now = int(time.time())
+        stats = get_user_stats(uid)
+        
+        # 1. Cooldown Check (8 minutes = 480 seconds)
+        last_scavenge = stats["last_scavenge"]
+        cooldown = 480
+        if now - last_scavenge < cooldown:
+            remaining = cooldown - (now - last_scavenge)
+            mins = remaining // 60
+            secs = remaining % 60
+            await ctx.send(f"⏳ {ctx.author.mention}, you just scavenged! Try again in **{mins}m {secs}s**.")
+            return
+            
+        # 2. Daily Limit Check (24 hours = 86400 seconds)
+        if now - stats["scavenge_last_reset"] > 86400:
+            stats["scavenge_daily_total"] = 0
+            stats["scavenge_last_reset"] = now
+            update_user_stats(uid, scavenge_daily_total=0, scavenge_last_reset=now)
+            
+        daily_limit = 50
+        if stats["scavenge_daily_total"] >= daily_limit:
+            rem = 86400 - (now - stats["scavenge_last_reset"])
+            hrs = rem // 3600
+            mins = (rem % 3600) // 60
+            await ctx.send(f"🛑 {ctx.author.mention}, you've hit your daily scavenging limit (**{daily_limit} JC**)! Reset in **{hrs}h {mins}m**.")
+            return
+            
+        # 3. Yield Logic (1-4 JC)
+        reward = random.randint(1, 4)
+        
+        # Adjust reward if it would exceed the limit
+        if stats["scavenge_daily_total"] + reward > daily_limit:
+            reward = daily_limit - stats["scavenge_daily_total"]
+            
+        if reward <= 0: # Should not happen with above checks but stay safe
+            await ctx.send(f"🛑 {ctx.author.mention}, you've hit your daily scavenging limit!")
+            return
+
+        # 4. Process Payout
+        new_bal = add_balance(uid, reward)
+        new_daily_total = stats["scavenge_daily_total"] + reward
+        update_user_stats(uid, last_scavenge=now, scavenge_daily_total=new_daily_total)
+        
+        log_transaction(uid, reward, "Scavenge Reward")
+        
+        scavenge_locs = [
+            "the back of an old sofa", "under a vending machine", "in a dusty corner of the server",
+            "between the keys of a mechanical keyboard", "in an old digital wallet", "inside a discarded lootbox"
+        ]
+        loc = random.choice(scavenge_locs)
+        
+        embed = discord.Embed(
+            title="🔍 Scavenging Success!",
+            description=f"{ctx.author.mention}, you searched **{loc}** and found **{reward}** JC!",
+            color=discord.Color.light_grey()
+        )
+        embed.add_field(name="Daily Progress", value=f"**{new_daily_total} / {daily_limit}** JC", inline=True)
+        embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC", inline=True)
+        embed.set_footer(text="Keep searching to find more spare change!")
         await ctx.send(embed=embed)
 
     @commands.command(name='overtime')
@@ -2912,7 +2991,7 @@ class DuelView(discord.ui.View):
 
 class BlackjackDuelChallengeView(discord.ui.View):
     def __init__(self, ctx, target, bet, pay_msg):
-        super().__init__(timeout=60)
+        super().__init__(timeout=90)
         self.ctx = ctx
         self.target = target
         self.bet = bet
@@ -2966,7 +3045,7 @@ class BlackjackDuelChallengeView(discord.ui.View):
 
 class BlackjackDuelView(discord.ui.View):
     def __init__(self, ctx, target, bet):
-        super().__init__(timeout=90)
+        super().__init__(timeout=180)
         self.ctx = ctx
         self.target = target
         self.bet = bet
@@ -3146,7 +3225,7 @@ class BlackjackDuelView(discord.ui.View):
 
 class BlackjackView(discord.ui.View):
     def __init__(self, ctx, bet):
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.ctx = ctx
         self.bet = bet
         self.deck = self.create_deck()
@@ -3298,7 +3377,7 @@ class BlackjackView(discord.ui.View):
 
     async def on_timeout(self):
         if not self.game_over:
-            await self.finish_game("Game Timed Out (Bust)", win=False)
+            await self.finish_game("Game Timed Out (Refunded)", win=None)
 
 # --- Rain Event Logic ---
 
