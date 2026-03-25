@@ -212,8 +212,8 @@ def add_gold_grams(user_id: str, amount: float):
     db_query("INSERT INTO investments (user_id, gold_grams) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET gold_grams = ?", (user_id, new_amount, new_amount), commit=True)
 
 async def fetch_live_gold_price(bot) -> float:
-    """Fetches the live gold price in MYR/g"""
-    currency_code = "MYR"
+    """Fetches the live gold price in USD/g"""
+    currency_code = "USD"
     cookies = {'wcid': 'D95hVgSMso1SAAAC', 'react_component_complete': 'true'}
     headers = {
         'accept': '*/*', 'accept-language': 'en-US,en-GB;q=0.9,en;q=0.8',
