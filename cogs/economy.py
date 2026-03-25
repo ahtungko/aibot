@@ -2511,6 +2511,10 @@ class Economy(commands.Cog):
         item_details = {} # name: list of data strings
         
         for name, type, data in items:
+            # Filter out internal/system items
+            if type in ['System', 'Cooldown']:
+                continue
+                
             item_list[name] = item_list.get(name, 0) + 1
             if data and data.strip():
                 if name not in item_details: item_details[name] = []
