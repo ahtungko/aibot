@@ -1116,9 +1116,10 @@ class Economy(commands.Cog):
         set_last_work(uid, str(now))
         track_fee(tax)
         
-        log_msg = "Work Payment"
+        log_msg = "Work Reward"
         if is_overtime: log_msg += " (Overtime)"
         log_transaction(uid, net_reward, log_msg)
+        log_transaction(uid, -tax, "Work Tax")
         
         # 5. Coin Shard (Iron Pickaxe Perk)
         shard_msg = ""
@@ -1404,7 +1405,8 @@ class Economy(commands.Cog):
         
         add_gold_grams(uid, grams_bought)
         track_fee(fee)
-        log_transaction(uid, -jc_amount, "Bought Gold")
+        log_transaction(uid, -(jc_amount - fee), "Bought Gold")
+        log_transaction(uid, -fee, "Gold Purchase Fee")
         
         embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
         embed.add_field(name="Spent", value=f"**{jc_amount:,}** JC\n*(Includes **{fee:,}** JC fee)*", inline=True)
@@ -1505,6 +1507,7 @@ class Economy(commands.Cog):
         add_balance(uid, net_payout)
         track_fee(fee)
         log_transaction(uid, net_payout, "Sold Gold")
+        log_transaction(uid, -fee, "Gold Sale Fee")
         
         embed = discord.Embed(title="🏦 Gold Sale Receipt", color=discord.Color.green())
         embed.add_field(name="Sold", value=f"**{sell_amount:.4f}g** Gold", inline=True)
