@@ -2068,7 +2068,7 @@ class Economy(commands.Cog):
             now = int(time.time())
             last_rain = int(float(get_setting("last_rain_time", "0")))
             
-            if vault_bal >= 1000 and (now - last_rain) >= 900:
+            if vault_bal >= 500 and (now - last_rain) >= 600:
                 set_setting("last_rain_time", str(now))
                 await self.start_rain(message.channel, is_random=True)
 
