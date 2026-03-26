@@ -1666,7 +1666,6 @@ class Economy(commands.Cog):
         luck_bonus = get_luck_bonus(uid)
         
         # Reels simulation
-        # If luck is active, slightly bias towards a 2-match (not 3!)
         if luck_bonus > 0 and random.random() < 0.05: # 5% chance to nudge ONE reel
             base = random.choice(SLOT_EMOJIS)
             reels = [base, base, random.choice(SLOT_EMOJIS)]  # 2-match nudge only
@@ -1743,42 +1742,6 @@ class Economy(commands.Cog):
         embed.set_footer(text="Challenge expires in 60 seconds.")
         view.message = await ctx.send(content=member.mention, embed=embed, view=view)
 
-    @commands.command(name='bjduel', aliases=['blackjackduel'])
-    async def bjduel_command(self, ctx: commands.Context, member: discord.Member = None, amount: str = None):
-        """Challenge another user to a PVP Blackjack Duel!"""
-        if not member or amount is None:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}bjduel @user [amount]`")
-            return
-        if member.id == ctx.author.id:
-            await ctx.send("You can't duel yourself!")
-            return
-        if member.bot:
-            await ctx.send("Bots won't duel you!")
-            return
-
-        val, err = await validate_bet(ctx, amount)
-        if err:
-            await ctx.send(err)
-            return
-        amount = val
-
-        # Check if receiver can afford it
-        if get_balance(str(member.id)) < amount:
-            await ctx.send(f"❌ {member.display_name} doesn't have enough JC to accept a **{amount:,} JC** duel!")
-            return
-
-        # Take P1's bet upfront
-        uid = str(ctx.author.id)
-        _, pay_msg = pay_jc(uid, amount)
-
-        view = BlackjackDuelChallengeView(ctx, member, amount, pay_msg)
-        embed = discord.Embed(
-            title="🃏 Blackjack Duel Challenge!",
-            description=f"{ctx.author.mention} has challenged {member.mention} to a **{amount:,} JC** Blackjack Duel!\n\n**Winner takes the pot (minus 5% fee)!**",
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text="Challenge expires in 60 seconds.")
-        view.message = await ctx.send(content=member.mention, embed=embed, view=view)
 
     @commands.command(name='crash')
     async def crash_command(self, ctx: commands.Context, amount: str = None):
@@ -1801,6 +1764,7 @@ class Economy(commands.Cog):
         
         # Deduct TOTAL bet upfront
         _, pay_msg = pay_jc(uid, amount)
+        track_fee(entry_fee)
         log_transaction(uid, -amount, f"Crash Game (Fee: {entry_fee} JC)")
 
         view = CrashView(ctx, active_bet, amount, is_user_vip) # Pass VIP status
@@ -1914,6 +1878,7 @@ class Economy(commands.Cog):
             # Laundering Fee (5%)
             tax = int(stolen * 0.05)
             net_gain = stolen - tax
+            track_fee(tax)
             
             add_balance(vid, -stolen)
             add_balance(uid, net_gain)
@@ -3005,239 +2970,6 @@ class DuelView(discord.ui.View):
                     await self.message.edit(content="⏰ Duel challenge timed out. (Refunded)", embed=None, view=None)
                 except: pass
 
-class BlackjackDuelChallengeView(discord.ui.View):
-    def __init__(self, ctx, target, bet, pay_msg):
-        super().__init__(timeout=90)
-        self.ctx = ctx
-        self.target = target
-        self.bet = bet
-        self.pay_msg = pay_msg
-        self.message = None
-        self.resolved = False
-
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, emoji="🃏")
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.target.id:
-            await interaction.response.send_message("This challenge isn't for you!", ephemeral=True)
-            return
-
-        uid2 = str(self.target.id)
-        if get_balance(uid2) < self.bet:
-            await interaction.response.send_message("You don't have enough JC to accept this duel anymore!", ephemeral=True)
-            return
-
-        self.resolved = True
-        self.stop()
-        
-        # Deduct from P2
-        pay_jc(uid2, self.bet)
-
-        # Start the Actual Blackjack Duel
-        game_view = BlackjackDuelView(self.ctx, self.target, self.bet)
-        embed = game_view.make_embed()
-        await interaction.response.edit_message(embed=embed, view=game_view)
-        game_view.message = self.message
-
-    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in [self.ctx.author.id, self.target.id]:
-            await interaction.response.send_message("You can't do that!", ephemeral=True)
-            return
-
-        self.resolved = True
-        self.stop()
-        # Refund P1
-        add_balance(str(self.ctx.author.id), self.bet)
-        log_transaction(str(self.ctx.author.id), self.bet, "BJ Duel Cancelled (Refund)")
-        await interaction.response.edit_message(content="❌ Blackjack Duel declined/cancelled. (Refunded)", embed=None, view=None)
-
-    async def on_timeout(self):
-        if not self.resolved:
-            add_balance(str(self.ctx.author.id), self.bet)
-            log_transaction(str(self.ctx.author.id), self.bet, "BJ Duel Timed Out (Refund)")
-            if self.message:
-                try: await self.message.edit(content="⏰ challenge timed out. (Refunded)", embed=None, view=None)
-                except: pass
-
-class BlackjackDuelView(discord.ui.View):
-    def __init__(self, ctx, target, bet):
-        super().__init__(timeout=180)
-        self.ctx = ctx
-        self.target = target
-        self.bet = bet
-        
-        # Game State
-        self.deck = self.create_deck()
-        self.p1_hand = [self.draw_card(), self.draw_card()]
-        self.p2_hand = [self.draw_card(), self.draw_card()]
-        
-        self.current_player = ctx.author # P1 starts
-        self.p1_done = False
-        self.p2_done = False
-        self.game_over = False
-        self.message = None
-
-    def create_deck(self):
-        suits = ['♠️', '♥️', '♣️', '♦️']
-        ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-        deck = [f"{r} {s}" for r in ranks for s in suits]
-        random.shuffle(deck)
-        return deck
-
-    def draw_card(self):
-        return self.deck.pop()
-
-    def calculate_value(self, hand):
-        value = 0
-        aces = 0
-        for card in hand:
-            rank = card.split()[0]
-            if rank in ['J', 'Q', 'K']: value += 10
-            elif rank == 'A':
-                value += 11
-                aces += 1
-            else: value += int(rank)
-        while value > 21 and aces:
-            value -= 10
-            aces -= 1
-        return value
-
-    def get_hand_str(self, hand, hide_last=False):
-        if hide_last:
-            return f"{hand[0]} | ❓"
-        return " | ".join(hand)
-
-    def make_embed(self, finished=False):
-        v1 = self.calculate_value(self.p1_hand)
-        v2 = self.calculate_value(self.p2_hand)
-        
-        embed = discord.Embed(title="🃏 Blackjack Duel", color=discord.Color.gold() if finished else discord.Color.blue())
-        
-        # P1 Display
-        p1_title = f"{self.ctx.author.display_name}'s Hand ({v1})"
-        embed.add_field(name=p1_title, value=self.get_hand_str(self.p1_hand), inline=False)
-        
-        # P2 Display
-        p2_val_str = f"({v2})" if finished or self.p1_done else "(?)"
-        p2_title = f"{self.target.display_name}'s Hand {p2_val_str}"
-        p2_content = self.get_hand_str(self.p2_hand, hide_last=not (finished or self.p1_done))
-        embed.add_field(name=p2_title, value=p2_content, inline=False)
-        
-        if not finished:
-            status = f"Current Turn: **{self.current_player.display_name}**"
-            embed.set_footer(text=f"{status} | Pot: {self.bet*2:,} JC")
-            # Show payments while playing
-            embed.add_field(name="Status", value="Bets locked in Vault 🔒", inline=False)
-        else:
-            embed.set_footer(text=f"Duel Finished | Total Pot: {self.bet*2:,} JC")
-            
-        return embed
-
-    @discord.ui.button(label="Hit", style=discord.ButtonStyle.green, emoji="➕")
-    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.current_player.id:
-            await interaction.response.send_message("It's not your turn!", ephemeral=True)
-            return
-
-        hand = self.p1_hand if self.current_player.id == self.ctx.author.id else self.p2_hand
-        hand.append(self.draw_card())
-        val = self.calculate_value(hand)
-
-        if val > 21:
-            await interaction.response.defer()
-            await self.next_turn()
-        else:
-            await interaction.response.edit_message(embed=self.make_embed())
-
-    @discord.ui.button(label="Stand", style=discord.ButtonStyle.grey, emoji="🛑")
-    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.current_player.id:
-            await interaction.response.send_message("It's not your turn!", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        await self.next_turn()
-
-    async def next_turn(self):
-        if self.current_player.id == self.ctx.author.id:
-            self.p1_done = True
-            self.current_player = self.target
-            await self.message.edit(embed=self.make_embed(), view=self)
-        else:
-            self.p2_done = True
-            await self.resolve_duel()
-
-    async def resolve_duel(self):
-        self.game_over = True
-        self.stop()
-        
-        v1 = self.calculate_value(self.p1_hand)
-        v2 = self.calculate_value(self.p2_hand)
-        
-        winner = None
-        result_text = ""
-        
-        if v1 > 21 and v2 > 21:
-            result_text = "Both Busted! It's a Tie. 🤝"
-        elif v1 > 21:
-            winner = self.target
-            result_text = f"{self.ctx.author.display_name} Busted! {self.target.display_name} wins! 🏆"
-        elif v2 > 21:
-            winner = self.ctx.author
-            result_text = f"{self.target.display_name} Busted! {self.ctx.author.display_name} wins! 🏆"
-        elif v1 > v2:
-            winner = self.ctx.author
-            result_text = f"{self.ctx.author.display_name} has the higher hand! 🏆"
-        elif v2 > v1:
-            winner = self.target
-            result_text = f"{self.target.display_name} has the higher hand! 🏆"
-        else:
-            result_text = "It's a Tie Score! 🤝"
-
-        # Payout
-        uid1 = str(self.ctx.author.id)
-        uid2 = str(self.target.id)
-        total_pot = self.bet * 2
-        
-        if winner:
-            fee = int(total_pot * 0.05)
-            winnings = total_pot - fee
-            new_bal = add_balance(str(winner.id), winnings)
-            log_transaction(str(winner.id), winnings, "BJ Duel Win")
-            log_transaction(uid1 if str(winner.id) != uid1 else uid2, -self.bet, "BJ Duel Loss")
-            
-            embed = self.make_embed(finished=True)
-            embed.title = f"⚔️ {result_text}"
-            embed.add_field(name="💰 Payout", value=f"**{winnings:,}** JC awarded to **{winner.display_name}**", inline=False)
-            embed.add_field(name="💳 New Balance", value=f"**{new_bal:,}** JC", inline=False)
-            embed.color = discord.Color.green()
-        else:
-            # Tie: Refund both
-            add_balance(uid1, self.bet)
-            add_balance(uid2, self.bet)
-            log_transaction(uid1, self.bet, "BJ Duel Push (Refund)")
-            log_transaction(uid2, self.bet, "BJ Duel Push (Refund)")
-            
-            embed = self.make_embed(finished=True)
-            embed.title = f"⚔️ {result_text}"
-            embed.add_field(name="🤝 Refund", value=f"**{self.bet:,}** JC returned to both players", inline=False)
-            embed.color = discord.Color.blue()
-            
-        await self.message.edit(embed=embed, view=None)
-
-    async def on_timeout(self):
-        if not self.game_over:
-            # Forfeiture: The current player who timed out loses?
-            # Or just refund both to avoid salt.
-            uid1 = str(self.ctx.author.id)
-            uid2 = str(self.target.id)
-            add_balance(uid1, self.bet)
-            add_balance(uid2, self.bet)
-            log_transaction(uid1, self.bet, "BJ Duel Timeout (Refund)")
-            log_transaction(uid2, self.bet, "BJ Duel Timeout (Refund)")
-            if self.message:
-                try: await self.message.edit(content="⏰ Game timed out! Both players refunded.", embed=None, view=None)
-                except: pass
 
 class BlackjackView(discord.ui.View):
     def __init__(self, ctx, bet):
@@ -3515,6 +3247,7 @@ class CrashView(discord.ui.View):
         tax_deducted = int(profit * tax_rate)
         final_payout = gross_payout - tax_deducted
         
+        track_fee(tax_deducted)
         new_bal = add_balance(str(self.ctx.author.id), final_payout)
         
         log_transaction(str(self.ctx.author.id), final_payout, f"Crash Win ({self.multiplier}x)")
