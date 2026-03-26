@@ -2,8 +2,8 @@ import sqlite3
 import os
 
 # --- CONFIGURATION ---
-DB_PATH = r"d:\Github\JenBot\economy.db" # Local testing path
-# DB_PATH = r"/root/aibot/economy.db" # Production path (Adjust if needed)
+#DB_PATH = r"d:\Github\JenBot\economy.db" # Local testing path
+DB_PATH = r"/root/aibot/economy.db" # Production path (Adjust if needed)
 
 def sync():
     if not os.path.exists(DB_PATH):
