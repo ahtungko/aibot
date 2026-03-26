@@ -130,7 +130,10 @@
                 </div>
                 <div>
                     <h1 class="text-xl font-bold tracking-tight">Jen<span class="text-brand-primary">Bot</span></h1>
-                    <p class="text-[10px] text-gray-400 font-mono tracking-widest uppercase">Admin Cluster</p>
+                    <div class="flex items-center space-x-1">
+                        <span class="text-[8px] font-bold px-1.5 py-0.5 rounded bg-brand-success/20 text-brand-success border border-brand-success/30 uppercase tracking-tighter">Vault-Backed</span>
+                        <p class="text-[9px] text-gray-500 font-mono tracking-widest uppercase">v2.0</p>
+                    </div>
                 </div>
             </div>
             <button onclick="toggleSidebar()" class="lg:hidden text-gray-400 hover:text-white">
@@ -272,8 +275,14 @@
                         <span class="text-[10px] font-bold opacity-70 uppercase tracking-widest text-gray-500">Stability</span>
                     </div>
                     <h3 class="text-2xl font-bold font-mono">{% set ratio = (vault_jc / total_jc * 100) if total_jc > 0 else 0 %}{{ "{:.2f}".format(ratio) }}%</h3>
+                    <div class="flex items-center justify-between mt-1">
+                        <p class="text-[10px] text-gray-500 uppercase tracking-tighter">Vault Coverage</p>
+                        <span class="text-[9px] font-bold px-2 py-0.5 rounded-full bg-{{ stability_color }}/20 text-{{ stability_color }} border border-{{ stability_color }}/30 animate-pulse">
+                            {{ stability_status }}
+                        </span>
+                    </div>
                     <div class="w-full bg-brand-border h-1.5 mt-2 rounded-full overflow-hidden">
-                        <div class="bg-brand-secondary h-full" style="width: {{ ratio }}%"></div>
+                        <div class="bg-brand-secondary h-full" style="width: {{ [ratio, 100]|min }}%"></div>
                     </div>
                 </div>
             </section>

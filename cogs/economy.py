@@ -61,6 +61,12 @@ def get_db():
             conn.execute(f"ALTER TABLE user_stats ADD COLUMN {col[0]} {col[1]}")
         except sqlite3.OperationalError:
             pass
+
+    # Migration: Add vault_processed to transactions
+    try:
+        conn.execute("ALTER TABLE transactions ADD COLUMN vault_processed INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
@@ -81,9 +87,18 @@ def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
     conn.close()
     return result
 
-def log_transaction(user_id: str, amount: int, trans_type: str):
-    ts = int(time.time())
-    db_query("INSERT INTO transactions (user_id, amount, type, timestamp) VALUES (?, ?, ?, ?)", (user_id, amount, trans_type, ts), commit=True)
+def log_transaction(user_id, amount, tx_type, processed=0):
+    db_query("INSERT INTO transactions (user_id, amount, type, timestamp, vault_processed) VALUES (?, ?, ?, ?, ?)", 
+             (str(user_id), amount, tx_type, int(time.time()), processed), commit=True)
+
+def track_fee(amount):
+    """Updates the global fee vault and returns True if successful."""
+    try:
+        vault_bal = int(float(get_setting("fee_vault", "0")))
+        set_setting("fee_vault", str(vault_bal + amount))
+        return True
+    except:
+        return False
 
 def get_balance(user_id: str) -> int:
     row = db_query("SELECT balance FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
@@ -468,6 +483,21 @@ class Economy(commands.Cog):
         self.bot = bot
         self.taxman_task.start()
         self.passive_cache = {} # {uid: last_awarded_time}
+
+    def _get_stability_ratio(self):
+        """Calculates current vault-to-circulation ratio."""
+        try:
+            # Get Wallet + Bank totals
+            row = db_query("SELECT SUM(balance + IFNULL(bank, 0)) FROM wallets", fetchone=True)
+            total_jc = row[0] if row and row[0] else 0
+            
+            # Get Vault
+            vault_jc = int(float(get_setting("fee_vault", "0")))
+            
+            if total_jc <= 0: return 2.0 # Assume high stability if no players
+            return vault_jc / total_jc
+        except:
+            return 0.5 # Safe default
 
     def cog_unload(self):
         self.taxman_task.cancel()
@@ -1119,7 +1149,7 @@ class Economy(commands.Cog):
         log_msg = "Work Reward"
         if is_overtime: log_msg += " (Overtime)"
         log_transaction(uid, net_reward, log_msg)
-        log_transaction(uid, -tax, "Work Tax")
+        log_transaction(uid, -tax, "Work Tax", processed=1)
         
         # 5. Coin Shard (Iron Pickaxe Perk)
         shard_msg = ""
@@ -1299,11 +1329,10 @@ class Economy(commands.Cog):
         tax = int(amount * 0.05)
         net_amount = amount - tax
         
-        add_balance(str(ctx.author.id), -amount)
-        new_receiver = add_balance(str(member.id), net_amount)
-
+        track_fee(tax)
         log_transaction(str(ctx.author.id), -amount, f"Transfer to {member.display_name}")
         log_transaction(str(member.id), net_amount, f"Transfer from {ctx.author.display_name}")
+        log_transaction(str(ctx.author.id), -tax, "Transfer Fee", processed=1)
 
         embed = discord.Embed(
             title="💸 Transfer Complete",
@@ -1415,7 +1444,7 @@ class Economy(commands.Cog):
         add_gold_grams(uid, grams_bought)
         track_fee(fee)
         log_transaction(uid, -(jc_amount - fee), "Bought Gold")
-        log_transaction(uid, -fee, "Gold Purchase Fee")
+        log_transaction(uid, -fee, "Gold Purchase Fee", processed=1)
         
         embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
         embed.add_field(name="Spent", value=f"**{jc_amount:,}** JC\n*(Includes **{fee:,}** JC fee)*", inline=True)
@@ -1516,7 +1545,7 @@ class Economy(commands.Cog):
         add_balance(uid, net_payout)
         track_fee(fee)
         log_transaction(uid, net_payout, "Sold Gold")
-        log_transaction(uid, -fee, "Gold Sale Fee")
+        log_transaction(uid, -fee, "Gold Sale Fee", processed=1)
         
         embed = discord.Embed(title="🏦 Gold Sale Receipt", color=discord.Color.green())
         embed.add_field(name="Sold", value=f"**{sell_amount:.4f}g** Gold", inline=True)
@@ -1642,7 +1671,8 @@ class Economy(commands.Cog):
             msg = f"🎉 You guessed right!\nYou won **{amount:,}** JC!"
         else:
             new_bal = get_balance(uid)
-            log_transaction(uid, -amount, "Flip Loss")
+            track_fee(amount)
+            log_transaction(uid, -amount, "Flip Loss", processed=1)
             color = discord.Color.red()
             msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JC."
 
@@ -1694,6 +1724,7 @@ class Economy(commands.Cog):
             color = discord.Color.blue()
         else:
             new_bal = get_balance(uid)
+            track_fee(amount) # Added track_fee for losses
             log_transaction(uid, -amount, "Slots Loss")
             title = "🎰 No Match"
             desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JC."
@@ -2027,7 +2058,11 @@ class Economy(commands.Cog):
         except ValueError:
             rate = 0.001
             
-        if random.random() < rate:
+        ratio = self._get_stability_ratio()
+        # If stability is over 100%, rain is 2x more likely
+        trigger_multiplier = 2.0 if ratio > 1.0 else 1.0
+
+        if random.random() < (rate * trigger_multiplier):
             # Vault and Cooldown check for random rain
             vault_bal = int(float(get_setting("fee_vault", "0")))
             now = int(time.time())
@@ -2084,10 +2119,18 @@ class Economy(commands.Cog):
             await ctx.send("❌ Please provide a positive amount.")
 
     async def start_rain(self, channel, is_random=False):
+        ratio = self._get_stability_ratio()
         if is_random:
             vault_bal = int(float(get_setting("fee_vault", "0")))
-            pool = int(vault_bal * 0.10)
-            pool = max(200, min(2000, pool))
+            
+            # DRAIN SURPLUS: If Stability > 100%, take 20% of vault. Else 10%.
+            drain_rate = 0.20 if ratio > 1.0 else 0.10
+            pool = int(vault_bal * drain_rate)
+            
+            # Increase caps for "Mega Rain"
+            max_cap = 10000 if ratio > 1.0 else 2000
+            pool = max(200, min(max_cap, pool))
+            
             set_setting("fee_vault", str(max(0, vault_bal - pool)))
         else:
             # Fetch pool or use default
@@ -2397,6 +2440,7 @@ class Economy(commands.Cog):
             track_fee(fee)
             add_item(uid, "Custom Role Pass", "Perk", "")
             log_transaction(uid, -cost, "Bought Custom Role Pass")
+            log_transaction(uid, -fee, "Role Fee", processed=1)
             
             embed = discord.Embed(title="✨ Custom Role Pass Purchased!", color=discord.Color.magenta())
             embed.description = (f"Congratulations {ctx.author.mention}! You can now create your own custom role.\n\n"
@@ -3104,12 +3148,13 @@ class BlackjackView(discord.ui.View):
             
             new_bal = add_balance(uid, payout)
             log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
-            log_transaction(uid, tax_amount, "Blackjack Tax")
+            log_transaction(uid, tax_amount, "Blackjack Tax", processed=1)
             
             color = discord.Color.green()
         elif win is False:
             new_bal = get_balance(uid)
-            log_transaction(uid, -self.bet, "Blackjack Loss")
+            track_fee(self.bet)
+            log_transaction(uid, -self.bet, "Blackjack Loss", processed=1)
             color = discord.Color.red()
         else: # Tie (Push) - Get bet back
             new_bal = add_balance(uid, self.bet)
@@ -3271,6 +3316,7 @@ class CrashView(discord.ui.View):
     async def do_crash(self):
         """Handles the crash state."""
         self.stop()
+        track_fee(self.active_bet)
         
         embed = discord.Embed(title="💥 CRASHED!!!", color=discord.Color.red())
         embed.description = (

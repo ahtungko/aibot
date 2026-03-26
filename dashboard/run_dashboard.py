@@ -131,23 +131,37 @@ def index():
     daily_history = cursor.fetchall()
     history_json = [dict(row) for row in daily_history]
 
-    # 9. Tax Flow Activity (Recent Taxes, Fees, Fines)
+    # 9. Tax Flow Activity (Recent Taxes, Fees, Fines, and Vaulted Losses)
     cursor.execute('''
         SELECT timestamp, user_id, amount, type as reason 
         FROM transactions 
-        WHERE (type LIKE '%Tax%' OR type LIKE '%Fee%' OR type LIKE '%Fine%')
+        WHERE (type LIKE '%Tax%' OR type LIKE '%Fee%' OR type LIKE '%Fine%' OR type LIKE '%Loss%' OR type LIKE '%Edge%')
         ORDER BY id DESC 
         LIMIT 20
     ''')
     tax_transactions = cursor.fetchall()
 
-    # 10. Total Tax Revenue (Lifetime JC from taxes/fines/fees)
+    # 10. Total Tax Revenue (Lifetime JC from taxes/fines/fees/losses)
     cursor.execute('''
         SELECT CAST(SUM(ABS(amount)) AS INTEGER) as total_collected 
         FROM transactions 
-        WHERE (type LIKE '%Tax%' OR type LIKE '%Fee%' OR type LIKE '%Fine%')
+        WHERE (type LIKE '%Tax%' OR type LIKE '%Fee%' OR type LIKE '%Fine%' OR type LIKE '%Loss%' OR type LIKE '%Edge%')
     ''')
     total_tax_revenue = int(cursor.fetchone()['total_collected'] or 0)
+    
+    # 11. Stability Status Metadata
+    stability_ratio = (vault_jc / total_jc) if total_jc > 0 else 0
+    stability_status = "Healthy"
+    stability_color = "brand-success"
+    if stability_ratio > 1.0:
+        stability_status = "Hyper-Stable (Mega Rain Active)"
+        stability_color = "brand-primary"
+    elif stability_ratio < 0.2:
+        stability_status = "Critical (Low Reserves)"
+        stability_color = "brand-danger"
+    elif stability_ratio < 0.5:
+        stability_status = "Moderate"
+        stability_color = "brand-secondary"
 
     # 11. Total Rain Distributed (Lifetime JC returned to community)
     cursor.execute('''
@@ -297,6 +311,8 @@ def index():
         total_tax_revenue=total_tax_revenue,
         total_rain_distributed=total_rain_distributed,
         net_tax_yield=net_tax_yield,
+        stability_status=stability_status,
+        stability_color=stability_color,
         top_players=enriched_top_players,
         transactions=enriched_transactions,
         rain_rate=rain_rate,
@@ -310,6 +326,7 @@ def index():
         box_leg_event=box_leg_event,
         box_epic_event=box_epic_event,
         box_rare_event=box_rare_event,
+        split_transactions=True, # Hint for frontend to show Losses
         event_remaining=event_remaining,
         event_expiry_ts=box_event_expiry,
         taxman_enabled=taxman_enabled,
