@@ -105,16 +105,37 @@
 </head>
 <body class="min-h-screen font-sans overflow-x-hidden">
 
+    <!-- Mobile Header -->
+    <header class="lg:hidden fixed top-0 left-0 right-0 h-16 glass border-b border-brand-border z-[60] flex items-center justify-between px-6">
+        <div class="flex items-center space-x-3">
+            <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center shadow-lg">
+                <i class="fas fa-robot text-white text-sm"></i>
+            </div>
+            <h1 class="text-lg font-bold tracking-tight">Jen<span class="text-brand-primary">Bot</span></h1>
+        </div>
+        <button onclick="toggleSidebar()" class="w-10 h-10 rounded-xl glass flex items-center justify-center text-brand-primary">
+            <i class="fas fa-bars"></i>
+        </button>
+    </header>
+
+    <!-- Sidebar Wrapper for Mobile Overlay -->
+    <div id="sidebar-overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[40] hidden lg:hidden transition-opacity duration-300 opacity-0"></div>
+
     <!-- Sidebar -->
-    <aside class="fixed left-0 top-0 h-full w-64 glass border-r border-brand-border hidden lg:flex flex-col z-50">
-        <div class="p-6 flex items-center space-x-3">
-            <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center shadow-lg animate-float">
-                <i class="fas fa-robot text-white text-xl"></i>
+    <aside id="sidebar" class="fixed left-0 top-0 h-full w-64 glass border-r border-brand-border flex flex-col z-50 transition-transform duration-300 -translate-x-full lg:translate-x-0">
+        <div class="p-6 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center shadow-lg animate-float">
+                    <i class="fas fa-robot text-white text-xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight">Jen<span class="text-brand-primary">Bot</span></h1>
+                    <p class="text-[10px] text-gray-400 font-mono tracking-widest uppercase">Admin Cluster</p>
+                </div>
             </div>
-            <div>
-                <h1 class="text-xl font-bold tracking-tight">Jen<span class="text-brand-primary">Bot</span></h1>
-                <p class="text-[10px] text-gray-400 font-mono tracking-widest uppercase">Admin Cluster v2.0</p>
-            </div>
+            <button onclick="toggleSidebar()" class="lg:hidden text-gray-400 hover:text-white">
+                <i class="fas fa-times text-xl"></i>
+            </button>
         </div>
 
         <nav class="flex-1 mt-6 px-4 space-y-2">
@@ -159,7 +180,7 @@
     </aside>
 
     <!-- Main Content -->
-    <main class="lg:ml-64 p-4 lg:p-8 space-y-8">
+    <main class="lg:ml-64 p-4 lg:p-8 space-y-8 pt-20 lg:pt-8">
         
         <!-- Header -->
         <header class="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -282,8 +303,8 @@
                         <h5 class="font-bold text-lg"><i class="fas fa-stream mr-3 text-brand-primary"></i> Global Stream</h5>
                         <div class="flex items-center space-x-2"><span class="animate-pulse w-2 h-2 rounded-full bg-brand-success"></span><span class="text-[10px] font-bold text-gray-500 uppercase">Live</span></div>
                     </div>
-                    <div class="flex-1 overflow-auto max-h-[460px]">
-                        <table class="w-full text-left">
+                    <div class="flex-1 overflow-x-auto max-h-[460px]">
+                        <table class="w-full text-left min-w-[600px]">
                             <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-md z-20"><tr class="text-[10px] text-gray-500 uppercase font-bold border-b border-brand-border"><th class="px-6 py-4">Time</th><th class="px-6 py-4">Identity</th><th class="px-6 py-4">Delta</th><th class="px-6 py-4">Task</th></tr></thead>
                             <tbody class="divide-y divide-brand-border/30">
                                 {% for tx in transactions %}
@@ -444,8 +465,8 @@
                 <div class="p-6 border-b border-brand-border bg-white/5 flex items-center justify-between">
                     <div><h5 class="font-bold text-xl"><i class="fas fa-cogs mr-3 text-gray-400"></i> Global Settings Database</h5><p class="text-xs text-gray-500 mt-1 uppercase">Raw key-value configuration state</p></div>
                 </div>
-                <div class="overflow-auto max-h-[600px]">
-                    <table class="w-full text-left">
+                <div class="overflow-x-auto max-h-[600px]">
+                    <table class="w-full text-left min-w-[500px]">
                         <thead class="bg-brand-dark/50 sticky top-0 backdrop-blur-md z-20"><tr class="text-[10px] text-gray-500 uppercase font-bold border-b border-brand-border"><th class="px-6 py-4">Configuration Key</th><th class="px-6 py-4">Current Value</th></tr></thead>
                         <tbody class="divide-y divide-brand-border/30">
                             {% for setting in all_settings %}
@@ -486,6 +507,22 @@
             'config': 'Raw database view of all active economy limits and multipliers.'
         };
 
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            const isHidden = sidebar.classList.contains('-translate-x-full');
+            
+            if (isHidden) {
+                sidebar.classList.remove('-translate-x-full');
+                overlay.classList.remove('hidden');
+                setTimeout(() => overlay.classList.remove('opacity-0'), 10);
+            } else {
+                sidebar.classList.add('-translate-x-full');
+                overlay.classList.add('opacity-0');
+                setTimeout(() => overlay.classList.add('hidden'), 300);
+            }
+        }
+
         function switchModule(id, el) {
             // Hide all modules
             document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
@@ -506,11 +543,15 @@
             
             // Re-render charts if economy is selected (fixing potential canvas sizing issues)
             if (id === 'economy') {
-                // Charts already initialized but visibility might affect sizing
                 window.dispatchEvent(new Event('resize'));
             }
             // Scroll to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            // Close sidebar on mobile after selection
+            if (window.innerWidth < 1024) {
+                toggleSidebar();
+            }
         }
 
         // Charts

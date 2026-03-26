@@ -3358,12 +3358,22 @@ class BlackjackView(discord.ui.View):
         
         uid = str(self.ctx.author.id)
         if win is True:
-            # Payout logic: Original bet back + winnings (2.2x total for natural, 1.9x for standard)
+            # Payout logic: Original bet back + winnings
+            # Standard: bet + (bet * 0.9) = 1.9x
+            # Natural: bet + (bet * 1.2) = 2.2x
+            # We redirect 10% of what should have been the winnings (bet * 0.1) to the vault
             profit_multiplier = 1.2 if self.is_natural else 0.9
             payout = int(self.bet + (self.bet * profit_multiplier))
             
+            # Tax Logic: The 0.1x difference is the tax
+            tax_amount = int(self.bet * 0.1)
+            vault_bal = int(float(get_setting("fee_vault", "0")))
+            set_setting("fee_vault", str(vault_bal + tax_amount))
+            
             new_bal = add_balance(uid, payout)
             log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
+            log_transaction(uid, tax_amount, "Blackjack Tax")
+            
             color = discord.Color.green()
         elif win is False:
             new_bal = get_balance(uid)
