@@ -91,14 +91,6 @@ def log_transaction(user_id, amount, tx_type, processed=0):
     db_query("INSERT INTO transactions (user_id, amount, type, timestamp, vault_processed) VALUES (?, ?, ?, ?, ?)", 
              (str(user_id), amount, tx_type, int(time.time()), processed), commit=True)
 
-def track_fee(amount):
-    """Updates the global fee vault and returns True if successful."""
-    try:
-        vault_bal = int(float(get_setting("fee_vault", "0")))
-        set_setting("fee_vault", str(vault_bal + amount))
-        return True
-    except:
-        return False
 
 def get_balance(user_id: str) -> int:
     row = db_query("SELECT balance FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
@@ -606,13 +598,13 @@ class Economy(commands.Cog):
         add_balance(v_uid, -wallet_tax)
         add_bank(v_uid, -bank_tax)
         track_fee(tax_amount) # Track tax collection
-        log_transaction(v_uid, -tax_amount, "The Taxman (10% Tax)")
+        log_transaction(v_uid, -tax_amount, f"The Taxman ({tax_pct}% Tax)")
         
         if channel:
             member = await self.bot.fetch_user(int(v_uid))
             embed = discord.Embed(
                 title="🚨 TAXED BY THE TAXMAN!",
-                description=f"The Taxman has visited {member.mention} and collected a **10%** wealth tax! 🏛️",
+                description=f"The Taxman has visited {member.mention} and collected a **{tax_pct}%** wealth tax! 🏛️",
                 color=discord.Color.red()
             )
             embed.add_field(name="Amount Collected", value=f"**{tax_amount:,}** JC", inline=True)
@@ -1007,7 +999,8 @@ class Economy(commands.Cog):
         if is_capped:
             await ctx.send(f"🏦 **Bank Full!** {ctx.author.mention}, you deposited **{amount:,}** JC (filling the vault to its **{limit:,}** limit).\nNew Bank Balance: **{new_bank:,}** JC.")
         else:
-            await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** / {limit if limit != float('inf') else 'Unlimited':,} JC.")
+            limit_str = f"{limit:,}" if limit != float('inf') else "Unlimited"
+            await ctx.send(f"🏦 {ctx.author.mention}, you deposited **{amount:,}** JC into your bank.\nNew Bank Balance: **{new_bank:,}** / {limit_str} JC.")
 
     @commands.command(name='withdraw', aliases=['with'])
     async def withdraw_command(self, ctx: commands.Context, amount_str: str = None):
@@ -1314,6 +1307,7 @@ class Economy(commands.Cog):
             return
         if member.id == ctx.author.id:
             await ctx.send("You can't give coins to yourself!")
+            return
         if member.bot:
             await ctx.send("You can't give coins to a bot!")
             return
@@ -1660,7 +1654,6 @@ class Economy(commands.Cog):
         
         user_choice = 'h' if side in ['h', 'heads'] else 't'
         outcome = user_choice if won else ("t" if user_choice == "h" else "h")
-        won = (user_choice == outcome)
         outcome_full = "Heads" if outcome == 'h' else "Tails"
 
         # Auto-deduct payment
@@ -3152,12 +3145,11 @@ class BlackjackView(discord.ui.View):
             
             # Tax Logic: The 0.1x difference is the tax
             tax_amount = int(self.bet * 0.1)
-            vault_bal = int(float(get_setting("fee_vault", "0")))
-            set_setting("fee_vault", str(vault_bal + tax_amount))
+            track_fee(tax_amount)
             
             new_bal = add_balance(uid, payout)
             log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
-            log_transaction(uid, tax_amount, "Blackjack Tax", processed=1)
+            log_transaction(uid, -tax_amount, "Blackjack Tax", processed=1)
             
             color = discord.Color.green()
         elif win is False:
