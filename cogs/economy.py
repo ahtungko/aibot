@@ -1329,10 +1329,13 @@ class Economy(commands.Cog):
         tax = int(amount * 0.05)
         net_amount = amount - tax
         
+        # Process the transfer
+        add_balance(str(ctx.author.id), -amount)     # Deduct full amount from sender
+        new_receiver = add_balance(str(member.id), net_amount) # Add net amount to receiver
+        
         track_fee(tax)
         log_transaction(str(ctx.author.id), -amount, f"Transfer to {member.display_name}")
         log_transaction(str(member.id), net_amount, f"Transfer from {ctx.author.display_name}")
-        log_transaction(str(ctx.author.id), -tax, "Transfer Fee", processed=1)
 
         embed = discord.Embed(
             title="💸 Transfer Complete",
