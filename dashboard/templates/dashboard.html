@@ -348,7 +348,7 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-8 h-full">
                         <div class="h-48 relative"><canvas id="distributionChart"></canvas></div>
                         <div class="space-y-4">
-                            <div class="p-4 rounded-2xl bg-white/5 border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold">In Circulation</p><p class="text-lg font-bold">{{ "{:,.0f}".format(total_jc - vault_jc) }} JC</p></div>
+                            <div class="p-4 rounded-2xl bg-white/5 border border-white/5"><p class="text-[10px] text-gray-500 uppercase font-bold">In Circulation</p><p class="text-lg font-bold">{{ "{:,.0f}".format(total_jc) }} JC</p></div>
                             <div class="p-4 rounded-2xl bg-brand-success/5 border border-brand-success/10"><p class="text-[10px] text-brand-success uppercase font-bold text-gray-400">Locked in Vault</p><p class="text-lg font-bold text-brand-success">{{ "{:,.0f}".format(vault_jc) }} JC</p></div>
                         </div>
                     </div>
@@ -581,7 +581,7 @@
         const distCtx = document.getElementById('distributionChart').getContext('2d');
         new Chart(distCtx, {
             type: 'doughnut',
-            data: { labels: ['Market', 'Vault'], datasets: [{ data: [{{ total_jc - vault_jc }}, {{ vault_jc }}], backgroundColor: ['#1E293B', '#10B981'], borderColor: 'transparent', cutout: '85%', borderRadius: 5 }]},
+            data: { labels: ['In Circulation', 'Vault'], datasets: [{ data: [{{ total_jc }}, {{ vault_jc }}], backgroundColor: ['#1E293B', '#10B981'], borderColor: 'transparent', cutout: '85%', borderRadius: 5 }]},
             options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
         });
     </script>
