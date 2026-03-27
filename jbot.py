@@ -190,7 +190,8 @@ class HelpDropdown(discord.ui.Select):
         elif val == "minigames":
             embed.title = "🎮 Interactive Minigames"
             embed.description = "Play games against the bot or community!"
-            embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (60s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
+            embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (30s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
+            embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word for 10-50 JC! (**5 JC Fee**)", inline=False)
             embed.add_field(name="AI Murder Mystery 🕵️‍♂️", value=f"`{p}mystery` - Solve an AI crime for a massive bounty!", inline=False)
             embed.set_footer(text="More minigames coming soon!")
 

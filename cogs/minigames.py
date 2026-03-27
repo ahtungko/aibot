@@ -110,7 +110,7 @@ class Minigames(commands.Cog):
     # --- Horse Race Commands ---
 
     @commands.group(name='race', invoke_without_command=True)
-    @commands.cooldown(1, 30, commands.BucketType.channel) # 30s cooldown for testing
+    @commands.cooldown(1, 30, commands.BucketType.channel)
     async def race_group(self, ctx):
         """Starts a Global Horse Race!"""
         if ctx.channel.id in self.active_races:
@@ -131,7 +131,7 @@ class Minigames(commands.Cog):
         embed.set_footer(text="Payout: 4.5x for the winner! (10% House Edge goes to Vault)")
         await ctx.send(embed=embed)
 
-        await asyncio.sleep(30) # User requested 30s sign-up phase
+        await asyncio.sleep(30)
 
         if not race.bets:
             await ctx.send("🚫 No bets were placed. The race has been cancelled.")
@@ -156,8 +156,7 @@ class Minigames(commands.Cog):
             embed = discord.Embed(title="🏇 THE RACE IS ON!", description=race.get_track_display(), color=discord.Color.gold())
             try:
                 await race_msg.edit(content=None, embed=embed)
-            except:
-                pass # Ignore rate limits/missing messages
+            except: pass
             
             if winner: break
             await asyncio.sleep(1.5)
@@ -182,11 +181,11 @@ class Minigames(commands.Cog):
                 winners_list.append(f"<@{uid}> won **{payout:,}** JC!")
                 total_paid_out += payout
 
-        # Calculate House Edge (Tax) for the Global Vault
+        # House Edge (Tax)
         house_edge = total_bet_pool - total_paid_out
         if house_edge > 0:
             track_fee(house_edge)
-            results_embed.set_footer(text=f"🏛️ {house_edge:,} JC in losing bets contributed to the Global Vault.")
+            results_embed.set_footer(text=f"🏛️ {house_edge:,} JC contributed to the Global Vault.")
 
         if winners_list:
             results_embed.add_field(name="Winners 🏆", value="\n".join(winners_list), inline=False)
@@ -200,36 +199,25 @@ class Minigames(commands.Cog):
     async def bet_command(self, ctx, horse_num: int, amount: str):
         """Place a bet on an active horse race."""
         if ctx.channel.id not in self.active_races:
-            await ctx.send("❌ There's no active race! Start one with `!race`.")
+            await ctx.send("❌ No active race! Start one with `!race`.")
             return
-        
         race = self.active_races[ctx.channel.id]
         if not race.recruiting:
-            await ctx.send("❌ Sign-ups for this race are closed!")
+            await ctx.send("❌ Sign-ups closed!")
             return
-
         if not 1 <= horse_num <= 5:
             await ctx.send("❌ Choose Horse 1-5.")
             return
 
         uid = str(ctx.author.id)
         bal = get_balance(uid)
-
-        if amount.lower() == 'all':
-            amt = bal
+        if amount.lower() == 'all': amt = bal
         else:
             try: amt = int(amount)
-            except: 
-                await ctx.send("❌ Invalid amount.")
-                return
-
-        if amt <= 0:
-            await ctx.send("❌ Positive bets only.")
+            except: return
+        if amt <= 0 or bal < amt:
+            await ctx.send("❌ Invalid amount.")
             return
-        if bal < amt:
-            await ctx.send(f"❌ Not enough JC (Bal: {bal:,}).")
-            return
-
         if uid in race.bets and race.bets[uid]['horse_index'] != (horse_num - 1):
              await ctx.send("❌ Already bet on another horse.")
              return
@@ -242,7 +230,75 @@ class Minigames(commands.Cog):
     @race_group.error
     async def race_error(self, ctx, error):
         if isinstance(error, commands.CommandOnCooldown):
-            await ctx.send(f"⏳ Wait **{int(error.retry_after)}s** before starting another.")
+            await ctx.send(f"⏳ Wait **{int(error.retry_after)}s**.")
+
+    # --- AI Scramble Commands ---
+
+    @commands.command(name='scramble')
+    @commands.cooldown(1, 30, commands.BucketType.channel)
+    async def scramble_command(self, ctx: commands.Context):
+        """Unscramble the AI-themed word! (Personal challenge)"""
+        uid = str(ctx.author.id)
+        bal = get_balance(uid)
+        
+        if bal < 5:
+            await ctx.send(f"❌ You need at least **5 JC** to play! (Balance: {bal:,} JC)")
+            return
+
+        # Deduct entry fee (Tax)
+        add_balance(uid, -5)
+        track_fee(5) # Sent to the Global Vault
+        log_transaction(uid, -5, "Scramble Entry Fee")
+
+        ai_cog = self.bot.get_cog("AI")
+        if ai_cog is None or ai_cog.openai_client is None:
+            await ctx.send("❌ This command / game is currently not available.")
+            add_balance(uid, 5) # Refund the fee
+            return
+
+        try:
+            async with ctx.typing():
+                prompt = (
+                    "Pick a word (6-10 letters) and scramble it. JSON only: "
+                    "{\"original\": \"WORD\", \"scrambled\": \"DWRO\", \"category\": \"Theme\"}"
+                )
+                response_text = await ai_cog.call_ai(
+                    [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                    instructions="Word puzzle master. Output JSON only."
+                )
+
+            if not response_text:
+                await ctx.send("❌ This command / game is currently not available.")
+                add_balance(uid, 5)
+                return
+
+            if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
+
+            data = json.loads(response_text)
+            original = data.get('original', "").strip().upper()
+            scrambled = data.get('scrambled', "").strip().upper()
+            category = data.get('category', "General")
+
+            bounty = random.randint(10, 50)
+            embed = discord.Embed(title="🧩 AI WORD SCRAMBLE!", color=discord.Color.purple())
+            embed.description = f"**SCRAMBLED:** `{scrambled}`\n**CATEGORY:** `{category}`\n\nOnly {ctx.author.mention} can solve this! Payout: **{bounty:,} JC**"
+            embed.set_footer(text="Fee: 5 JC (Sent to Vault) | Time: 60s")
+            await ctx.send(embed=embed)
+
+            def check(m):
+                return m.channel == ctx.channel and m.author == ctx.author and m.content.strip().upper() == original
+
+            try:
+                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                new_bal = add_balance(uid, bounty)
+                log_transaction(uid, bounty, f"Won Scramble ({original})")
+                await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
+            except asyncio.TimeoutError:
+                await ctx.send(f"⌛ **Time's up!** The word was **{original}**. Better luck next time!")
+
+        except Exception as e:
+            await ctx.send("❌ AI error. Entry fee not refunded.")
 
     # --- AI Murder Mystery Commands (Old) ---
 
@@ -251,12 +307,12 @@ class Minigames(commands.Cog):
     async def mystery_command(self, ctx: commands.Context):
         """Starts an AI-powered Murder Mystery game!"""
         if ctx.channel.id in self.active_mysteries:
-            await ctx.send("❌ A mystery is already being solved in this channel!")
+            await ctx.send("❌ A mystery is already being solved!")
             return
 
         ai_cog = self.bot.get_cog("AI")
         if ai_cog is None or ai_cog.openai_client is None:
-            await ctx.send("❌ My AI brain is offline!")
+            await ctx.send("❌ This command / game is currently not available.")
             return
         self.active_mysteries.add(ctx.channel.id)
         
@@ -268,11 +324,6 @@ class Minigames(commands.Cog):
                     instructions="Master mystery writer. Output JSON only."
                 )
 
-            if not response_text:
-                await ctx.send("❌ AI failed.")
-                self.active_mysteries.remove(ctx.channel.id)
-                return
-
             if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
             elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
 
@@ -280,7 +331,7 @@ class Minigames(commands.Cog):
             crime, suspects, clues, culprit = data.get('crime'), data.get('suspects'), data.get('clues'), data.get('culprit')
             bounty = random.randint(1000, 1500)
             
-            embed = discord.Embed(title="🕵️‍♂️ NEW MYSTERY", description=f"**CRIME:**\n{crime}", color=discord.Color.gold())
+            embed = discord.Embed(title="🕵️‍♂️ AI MYSTERY", description=f"**CRIME:**\n{crime}", color=discord.Color.gold())
             for s in suspects: embed.add_field(name=s['name'], value=s['desc'], inline=False)
             
             view = MysteryView(ctx, culprit, suspects, bounty)
@@ -300,7 +351,7 @@ class Minigames(commands.Cog):
             self.active_mysteries.remove(ctx.channel.id)
         except Exception as e:
             if ctx.channel.id in self.active_mysteries: self.active_mysteries.remove(ctx.channel.id)
-            await ctx.send(f"❌ Error: {e}")
+            await ctx.send("❌ Error setting up mystery.")
 
     @mystery_command.error
     async def mystery_error(self, ctx, error):
