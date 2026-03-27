@@ -2059,8 +2059,14 @@ class Economy(commands.Cog):
             rate = 0.001
             
         ratio = self._get_stability_ratio()
-        # If stability is over 100%, rain is 2x more likely
-        trigger_multiplier = 2.0 if ratio > 1.0 else 1.0
+        
+        # ADAPTIVE STABILITY SCALE:
+        # Higher stability = More aggressive rain to return JC to users
+        if ratio < 0.2:     trigger_multiplier = 0.5   # Critical Low (0.05% chance)
+        elif ratio < 1.0:   trigger_multiplier = 1.0   # Healthy (0.1% chance)
+        elif ratio < 3.0:   trigger_multiplier = 2.5   # Stable (0.25% chance)
+        elif ratio < 5.0:   trigger_multiplier = 5.0   # Hyper-Stable (0.5% chance)
+        else:               trigger_multiplier = 10.0  # Overloaded (1.0% chance)
 
         if random.random() < (rate * trigger_multiplier):
             # Vault and Cooldown check for random rain
