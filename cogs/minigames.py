@@ -235,7 +235,7 @@ class Minigames(commands.Cog):
     # --- AI Scramble Commands ---
 
     @commands.command(name='scramble')
-    @commands.cooldown(1, 30, commands.BucketType.channel)
+    @commands.cooldown(1, 3600, commands.BucketType.user)
     async def scramble_command(self, ctx: commands.Context):
         """Unscramble the AI-themed word! (Personal challenge)"""
         uid = str(ctx.author.id)
@@ -283,14 +283,14 @@ class Minigames(commands.Cog):
             bounty = random.randint(10, 50)
             embed = discord.Embed(title="🧩 AI WORD SCRAMBLE!", color=discord.Color.purple())
             embed.description = f"**SCRAMBLED:** `{scrambled}`\n**CATEGORY:** `{category}`\n\nOnly {ctx.author.mention} can solve this! Payout: **{bounty:,} JC**"
-            embed.set_footer(text="Fee: 5 JC (Sent to Vault) | Time: 60s")
+            embed.set_footer(text="Fee: 5 JC | Time: 15s | Cooldown: 1 Hour")
             await ctx.send(embed=embed)
 
             def check(m):
                 return m.channel == ctx.channel and m.author == ctx.author and m.content.strip().upper() == original
 
             try:
-                msg = await self.bot.wait_for('message', check=check, timeout=60.0)
+                msg = await self.bot.wait_for('message', check=check, timeout=15.0)
                 new_bal = add_balance(uid, bounty)
                 log_transaction(uid, bounty, f"Won Scramble ({original})")
                 await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
