@@ -43,6 +43,7 @@ COGS = [
     'cogs.music',
     'cogs.pins',
     'cogs.precious',
+    'cogs.minigames',
 ]
 
 
@@ -132,6 +133,7 @@ class HelpDropdown(discord.ui.Select):
             discord.SelectOption(label="Market & VIP", description="Gold, Silver, Currency, VIP Membership", emoji="📈", value="finance"),
             discord.SelectOption(label="Daily & Social", description="Check-in, Horoscope, Roasts, Cat Facts", emoji="🌟", value="social"),
             discord.SelectOption(label="Media & Music", description="Music, Steam Deals", emoji="🎵", value="media"),
+            discord.SelectOption(label="Minigames", description="Horse Race, AI Mystery", emoji="🎮", value="minigames"),
         ]
         
         if ctx.author.id == ctx.bot.owner_id or ctx.author.guild_permissions.administrator:
@@ -185,6 +187,13 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="Horoscope", value=f"`{p}reg` - Register\n`{p}mod` - Modify sign\n`{p}modtz` - Modify Timezone\n`{p}list` - Show in channel\n`{p}remove` - Remove record", inline=False)
             embed.add_field(name="Fun", value=f"`{p}c` - Cat Picture\n`{p}cf` - Cat Fact\n`{p}roast @user` - AI Roast", inline=False)
             
+        elif val == "minigames":
+            embed.title = "🎮 Interactive Minigames"
+            embed.description = "Play games against the bot or community!"
+            embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (60s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
+            embed.add_field(name="AI Murder Mystery 🕵️‍♂️", value=f"`{p}mystery` - Solve an AI crime for a massive bounty!", inline=False)
+            embed.set_footer(text="More minigames coming soon!")
+
         elif val == "media":
             embed.title = "🎵 Media & Games"
             embed.add_field(name="Music", value=f"`{p}ss [query]` - Search song\n`{p}d [number]` - Download song", inline=False)
