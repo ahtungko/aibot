@@ -16,6 +16,7 @@ class MysteryView(discord.ui.View):
         self.suspects = suspects
         self.bounty = bounty
         self.solved = False
+        self.failed = False
 
         # Add buttons for each suspect
         for i, suspect in enumerate(self.suspects):
@@ -32,7 +33,10 @@ class MysteryView(discord.ui.View):
             if self.solved:
                 await interaction.response.send_message("The mystery has already been solved!", ephemeral=True)
                 return
-            if interaction.user.id == self.ctx.bot.user.id:
+            
+            # Restrict to the person who started the game
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message(f"❌ This mystery belongs to **{self.ctx.author.display_name}**. Wait for the next one!", ephemeral=True)
                 return
 
             if name.lower() == self.culprit_name.lower():
@@ -40,22 +44,38 @@ class MysteryView(discord.ui.View):
                 self.stop()
                 
                 uid = str(interaction.user.id)
-                new_bal = add_balance(uid, self.bounty)
-                log_transaction(uid, self.bounty, "Solved AI Mystery")
+                # Tax 20% of bounty to vault
+                tax = int(self.bounty * 0.20)
+                net_bounty = self.bounty - tax
+                track_fee(tax)
+                
+                new_bal = add_balance(uid, net_bounty)
+                log_transaction(uid, net_bounty, "Solved AI Mystery")
+                log_transaction(uid, -tax, "Mystery Bounty Tax", processed=1)
                 
                 embed = discord.Embed(
                     title="🎉 MYSTERY SOLVED!",
                     description=f"Congratulations {interaction.user.mention}! \n\nYou correctly identified **{self.culprit_name}** as the culprit!",
                     color=discord.Color.green()
                 )
-                embed.add_field(name="Bounty Awarded", value=f"**{self.bounty:,}** JC", inline=True)
-                embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC", inline=True)
+                embed.add_field(name="Gross Bounty", value=f"**{self.bounty:,}** JC", inline=True)
+                embed.add_field(name="Tax (20%)", value=f"**{tax:,}** JC", inline=True)
+                embed.add_field(name="Net Received", value=f"**{net_bounty:,}** JC", inline=True)
+                embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC", inline=False)
                 embed.set_footer(text=f"Solved in {self.ctx.channel.name}")
                 
                 await interaction.response.edit_message(embed=embed, view=None)
-                await self.ctx.send(f"🏆 {interaction.user.mention} just won **{self.bounty:,}** JC for solving the mystery!")
+                await self.ctx.send(f"🏆 {interaction.user.mention} solved the mystery! Won **{net_bounty:,}** JC! (Tax: {tax:,} JC)")
             else:
-                await interaction.response.send_message(f"❌ **{name}** is innocent! Keep looking...", ephemeral=True)
+                # Wrong answer — Game Over immediately for the requester
+                self.failed = True
+                self.stop()
+                embed = discord.Embed(
+                    title="❌ CASE CLOSED (FAILED)",
+                    description=f"Sorry {interaction.user.mention}, your accusation was wrong.\n\n**{name}** is innocent! The real culprit was **{self.culprit_name}**.\n\nYou have failed the investigation.",
+                    color=discord.Color.red()
+                )
+                await interaction.response.edit_message(embed=embed, view=None)
         return callback
 
 # --- Horse Race Components ---
@@ -108,6 +128,7 @@ class Minigames(commands.Cog):
         self.active_mysteries = set()
         self.active_races = {} # channel_id -> HorseRaceInstance
         self.scramble_cooldowns = {} # user_id -> timestamp
+        self.mystery_cooldowns = {} # user_id -> expiry timestamp
 
     # --- Horse Race Commands ---
 
@@ -360,20 +381,44 @@ class Minigames(commands.Cog):
             # Tell the user about the cooldown
             await ctx.send(f"⏳ **{ctx.author.display_name}**, look at your hands! They are tired from scrambling words. \nTry again in **{int(error.retry_after/60)}m {int(error.retry_after%60)}s**.")
 
-    # --- AI Murder Mystery Commands (Old) ---
+    # --- AI Murder Mystery Commands ---
 
     @commands.command(name='mystery')
-    @commands.cooldown(1, 60, commands.BucketType.channel)
     async def mystery_command(self, ctx: commands.Context):
-        """Starts an AI-powered Murder Mystery game!"""
+        """Starts an AI-powered Murder Mystery game! (100 JC entry, 1hr CD)"""
+        uid = str(ctx.author.id)
+        now = time.time()
+
+        # Manual 1-hour User Cooldown
+        if uid in self.mystery_cooldowns:
+            remaining = self.mystery_cooldowns[uid] - now
+            if remaining > 0:
+                await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your detective brain. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
+                return
+
         if ctx.channel.id in self.active_mysteries:
-            await ctx.send("❌ A mystery is already being solved!")
+            await ctx.send("❌ A mystery is already being solved in this channel!")
+            return
+
+        # Entry Fee Check
+        bal = get_balance(uid)
+        if bal < 100:
+            await ctx.send(f"❌ You need at least **100 JC** to start a mystery! (Balance: {bal:,} JC)")
             return
 
         ai_cog = self.bot.get_cog("AI")
         if ai_cog is None or ai_cog.openai_client is None:
             await ctx.send("❌ This command / game is currently not available.")
             return
+
+        # Deduct entry fee AFTER all validation passes
+        add_balance(uid, -100)
+        track_fee(100)
+        log_transaction(uid, -100, "Mystery Entry Fee")
+
+        # Apply cooldown AFTER fee is taken
+        self.mystery_cooldowns[uid] = now + 3600
+
         self.active_mysteries.add(ctx.channel.id)
         
         try:
@@ -389,33 +434,33 @@ class Minigames(commands.Cog):
 
             data = json.loads(response_text)
             crime, suspects, clues, culprit = data.get('crime'), data.get('suspects'), data.get('clues'), data.get('culprit')
+            # AI sometimes returns culprit as a dict like {"name": "..."} instead of a string
+            if isinstance(culprit, dict):
+                culprit = culprit.get('name', str(culprit))
             bounty = random.randint(1000, 1500)
             
-            embed = discord.Embed(title="🕵️‍♂️ AI MYSTERY", description=f"**CRIME:**\n{crime}", color=discord.Color.gold())
+            embed = discord.Embed(title="🕵️‍♂️ AI MYSTERY", description=f"**CRIME:**\n{crime}\n\n⚠️ **One guess per person!** Choose wisely.", color=discord.Color.gold())
             for s in suspects: embed.add_field(name=s['name'], value=s['desc'], inline=False)
+            embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 1 Guess Only")
             
             view = MysteryView(ctx, culprit, suspects, bounty)
             msg = await ctx.send(embed=embed, view=view)
             
             for i, clue in enumerate(clues):
-                if view.solved: break
+                if view.solved or view.failed: break
                 await asyncio.sleep(45)
-                if view.solved: break
+                if view.solved or view.failed: break
                 await ctx.send(embed=discord.Embed(title=f"🔍 CLUE #{i+1}", description=f"*{clue}*", color=discord.Color.blue()))
 
             if not view.solved:
                 await asyncio.sleep(75)
                 if not view.solved:
                     view.stop()
-                    await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**.", color=discord.Color.light_grey()), view=None)
-            self.active_mysteries.remove(ctx.channel.id)
+                    await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
+            self.active_mysteries.discard(ctx.channel.id)
         except Exception as e:
-            if ctx.channel.id in self.active_mysteries: self.active_mysteries.remove(ctx.channel.id)
-            await ctx.send("❌ Error setting up mystery.")
-
-    @mystery_command.error
-    async def mystery_error(self, ctx, error):
-        if isinstance(error, commands.CommandOnCooldown): await ctx.send(f"⏳ Wait {int(error.retry_after)}s.")
+            self.active_mysteries.discard(ctx.channel.id)
+            await ctx.send("❌ Error setting up mystery. Entry fee not refunded.")
 
 async def setup(bot):
     await bot.add_cog(Minigames(bot))

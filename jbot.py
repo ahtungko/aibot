@@ -123,13 +123,6 @@ async def reload_cog(ctx, extension: str):
     except Exception as e:
         await ctx.send(f"❌ Failed to reload `{extension}`: {e}")
 
-    # Currency fallback (dynamic currency codes like !usd, !eur, etc.)
-    if message.content.startswith(COMMAND_PREFIX):
-        currency_cog = bot.get_cog("Currency")
-        if currency_cog:
-            await currency_cog.handle_currency_command(message)
-        return
-
 
 # --- Help Command ---
 
@@ -146,7 +139,7 @@ class HelpDropdown(discord.ui.Select):
             discord.SelectOption(label="Market & VIP", description="Gold, Silver, Currency, VIP Membership", emoji="📈", value="finance"),
             discord.SelectOption(label="Daily & Social", description="Check-in, Horoscope, Roasts, Cat Facts", emoji="🌟", value="social"),
             discord.SelectOption(label="Media & Music", description="Music, Steam Deals", emoji="🎵", value="media"),
-            discord.SelectOption(label="Minigames", description="Horse Race, AI Mystery", emoji="🎮", value="minigames"),
+            discord.SelectOption(label="Minigames", description="Horse Race, Scramble, Mystery", emoji="🎮", value="minigames"),
         ]
         
         if ctx.author.id == ctx.bot.owner_id or ctx.author.guild_permissions.administrator:
@@ -205,7 +198,7 @@ class HelpDropdown(discord.ui.Select):
             embed.description = "Play games against the bot or community!"
             embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (30s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
             embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word (15s) for 10-50 JC! (**1hr Cooldown**)", inline=False)
-            embed.add_field(name="AI Murder Mystery 🕵️‍♂️", value=f"`{p}mystery` - Solve an AI crime for a massive bounty!", inline=False)
+            embed.add_field(name="AI Murder Mystery 🕵️‍♂️", value=f"`{p}mystery` - **Solo Detective** game! **100 JC** entry, **1hr CD**, 1 guess only. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
             embed.set_footer(text="More minigames coming soon!")
 
         elif val == "media":
