@@ -298,6 +298,7 @@ class Minigames(commands.Cog):
         
         if bal < 5:
             await ctx.send(f"❌ You need at least **5 JC** to play! (Balance: {bal:,} JC)")
+            ctx.command.reset_cooldown(ctx)
             return
 
         # Try to pull from Word Bank
@@ -306,6 +307,7 @@ class Minigames(commands.Cog):
         if not row:
             await ctx.send("❌ Game bank is empty! Generating new words... please try again in a few seconds.")
             await self.refill_scramble_bank()
+            ctx.command.reset_cooldown(ctx)
             return
 
         row_id, original, scrambled, category = row
