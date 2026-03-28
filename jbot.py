@@ -97,7 +97,7 @@ async def on_message(message):
                 since = afk_users[mid].get('since', time.time())
                 await message.channel.send(f"{message.author.mention}, 💤 **{mentioned.display_name}** is AFK: *{reason}* (since {format_duration(time.time() - since)} ago)")
 
-    # Process commands FIRST (before mention check)
+    # Process commands LAST (after mention check)
     ctx = await bot.get_context(message)
     if ctx.valid:
         await bot.process_commands(message)
@@ -109,6 +109,19 @@ async def on_message(message):
         if ai_cog:
             asyncio.create_task(ai_cog.handle_ai_mention(message))
         return
+
+# Admin: Reload Cogs
+@bot.command(name='reload', hidden=True)
+async def reload_cog(ctx, extension: str):
+    if ctx.author.id != int(OWNER_ID):
+        return
+    try:
+        # Resolve full path if just 'minigames' is provided
+        name = f"cogs.{extension}" if not extension.startswith("cogs.") else extension
+        await bot.reload_extension(name)
+        await ctx.send(f"✅ Reloaded `{name}`")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to reload `{extension}`: {e}")
 
     # Currency fallback (dynamic currency codes like !usd, !eur, etc.)
     if message.content.startswith(COMMAND_PREFIX):

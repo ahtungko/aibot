@@ -1,4 +1,5 @@
 import random
+import time
 import json
 import asyncio
 import discord
@@ -106,6 +107,7 @@ class Minigames(commands.Cog):
         self.bot = bot
         self.active_mysteries = set()
         self.active_races = {} # channel_id -> HorseRaceInstance
+        self.scramble_cooldowns = {} # user_id -> timestamp
 
     # --- Horse Race Commands ---
 
@@ -290,15 +292,22 @@ class Minigames(commands.Cog):
             print(f"Refill error: {e}")
 
     @commands.command(name='scramble')
-    @commands.cooldown(1, 3600, commands.BucketType.user)
     async def scramble_command(self, ctx: commands.Context):
         """Unscramble the AI-themed word! (Personal challenge)"""
         uid = str(ctx.author.id)
+        now = time.time()
+
+        # Manual Cooldown Check
+        if uid in self.scramble_cooldowns:
+            remaining = self.scramble_cooldowns[uid] - now
+            if remaining > 0:
+                await ctx.send(f"⏳ **{ctx.author.display_name}**, look at your hands! They are tired from scrambling words. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
+                return
+
         bal = get_balance(uid)
         
         if bal < 5:
             await ctx.send(f"❌ You need at least **5 JC** to play! (Balance: {bal:,} JC)")
-            ctx.command.reset_cooldown(ctx)
             return
 
         # Try to pull from Word Bank
@@ -307,13 +316,15 @@ class Minigames(commands.Cog):
         if not row:
             await ctx.send("❌ Game bank is empty! Generating new words... please try again in a few seconds.")
             await self.refill_scramble_bank()
-            ctx.command.reset_cooldown(ctx)
             return
 
         row_id, original, scrambled, category = row
         
         # Mark as used immediately
         db_query("UPDATE scramble_words SET status = 1 WHERE id = ?", (row_id,), commit=True)
+
+        # Apply Cooldown ONLY after we know we have a word
+        self.scramble_cooldowns[uid] = now + 3600
 
         # Deduct entry fee (Tax)
         add_balance(uid, -5)
