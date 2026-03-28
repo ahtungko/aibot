@@ -58,8 +58,14 @@ def get_db():
         conn.execute("ALTER TABLE wallets ADD COLUMN bank INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
-    # Migration: Add scavenge columns if they don't exist
-    for col in [("scavenge_daily_total", "INTEGER DEFAULT 0"), ("scavenge_last_reset", "INTEGER DEFAULT 0"), ("last_scavenge", "INTEGER DEFAULT 0")]:
+    # Migration: Add scavenge and minigame columns if they don't exist
+    for col in [
+        ("scavenge_daily_total", "INTEGER DEFAULT 0"), 
+        ("scavenge_last_reset", "INTEGER DEFAULT 0"), 
+        ("last_scavenge", "INTEGER DEFAULT 0"),
+        ("last_scramble", "INTEGER DEFAULT 0"),
+        ("last_mystery", "INTEGER DEFAULT 0")
+    ]:
         try:
             conn.execute(f"ALTER TABLE user_stats ADD COLUMN {col[0]} {col[1]}")
         except sqlite3.OperationalError:
@@ -168,7 +174,7 @@ def set_last_work(user_id: str, ts_str: str):
     db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
 
 def get_user_stats(user_id: str) -> dict:
-    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, last_scavenge FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
+    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, last_scavenge, last_scramble, last_mystery FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
     if row:
         return {
             "overtime_uses": row[0],
@@ -179,7 +185,9 @@ def get_user_stats(user_id: str) -> dict:
             "passive_hour_start": row[5],
             "scavenge_daily_total": row[6] or 0,
             "scavenge_last_reset": row[7] or 0,
-            "last_scavenge": row[8] or 0
+            "last_scavenge": row[8] or 0,
+            "last_scramble": row[9] or 0,
+            "last_mystery": row[10] or 0
         }
     else:
         db_query("INSERT INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
@@ -192,7 +200,9 @@ def get_user_stats(user_id: str) -> dict:
             "passive_hour_start": 0,
             "scavenge_daily_total": 0,
             "scavenge_last_reset": 0,
-            "last_scavenge": 0
+            "last_scavenge": 0,
+            "last_scramble": 0,
+            "last_mystery": 0
         }
 
 def update_user_stats(user_id: str, **kwargs):
@@ -418,7 +428,7 @@ def apply_gold_fees(user_id: str):
         return None
     
     periods = int(diff // week_seconds)
-    rate = 0.08 if is_vip(user_id) else 0.10
+    rate = 0.03 if is_vip(user_id) else 0.05
     
     # Calculate compounded fee
     new_gold = gold * ((1 - rate) ** periods)
@@ -2165,7 +2175,7 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="👑 **VIP Membership** — `10,000 JC`",
-            value="30 days of elite perks: **-3% Work Tax** (progressive), **2% Gold fees**, **8% Storage fees**, **5% Robbery fines**, **+10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
+            value="30 days of elite perks: **-3% Work Tax** (progressive), **2% Gold fees**, **3% Storage fees**, **5% Robbery fines**, **+10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
             inline=False
         )
         embed.add_field(

@@ -184,7 +184,7 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "finance":
             embed.title = "📈 Market & Finance"
-            embed.add_field(name="Gold Market 📈", value=f"`{p}bg [JC]` - Buy Gold (Live rate)\n`{p}sg [grams]` - Sell Gold (Live rate)\n`{p}gold [currency]` - Current spot price", inline=False)
+            embed.add_field(name="Gold Market 📈", value=f"`{p}bg [JC]` - Buy Gold (Live rate)\n`{p}sg [grams]` - Sell Gold (Live rate)\n`{p}gold [currency]` - Current spot price\n*Note: 5% Weekly Storage Fee applies*", inline=False)
             embed.add_field(name="Currency & VIP", value=f"`{p}liverate` - Real-time conversion\n`{p}vip` - Get VIP perks (10k JC/mo)\n`{p}silver [curr]` - Silver Price", inline=False)
 
         elif val == "social":
@@ -197,9 +197,9 @@ class HelpDropdown(discord.ui.Select):
             embed.title = "🎮 Interactive Minigames"
             embed.description = "Play games against the bot or community!"
             embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (30s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
-            embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word (15s) for 10-50 JC! (**1hr Cooldown**)", inline=False)
+            embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word (15s) for 10-50 JC! (**5 JC Entry**, 1hr CD)", inline=False)
             embed.add_field(name="AI Murder Mystery 🕵️‍♂️", value=f"`{p}mystery` - **Solo Detective** game! **100 JC** entry, **1hr CD**, 1 guess only. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
-            embed.set_footer(text="More minigames coming soon!")
+            embed.set_footer(text="All cooldowns are persistent and survive bot restarts!")
 
         elif val == "media":
             embed.title = "🎵 Media & Games"

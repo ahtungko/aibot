@@ -4,7 +4,7 @@ import json
 import asyncio
 import discord
 from discord.ext import commands
-from cogs.economy import add_balance, log_transaction, get_balance, track_fee, db_query
+from cogs.economy import add_balance, log_transaction, get_balance, track_fee, db_query, get_user_stats, update_user_stats
 
 # --- AI Murder Mystery Components ---
 
@@ -127,8 +127,6 @@ class Minigames(commands.Cog):
         self.bot = bot
         self.active_mysteries = set()
         self.active_races = {} # channel_id -> HorseRaceInstance
-        self.scramble_cooldowns = {} # user_id -> timestamp
-        self.mystery_cooldowns = {} # user_id -> expiry timestamp
 
     # --- Horse Race Commands ---
 
@@ -318,12 +316,13 @@ class Minigames(commands.Cog):
         uid = str(ctx.author.id)
         now = time.time()
 
-        # Manual Cooldown Check
-        if uid in self.scramble_cooldowns:
-            remaining = self.scramble_cooldowns[uid] - now
-            if remaining > 0:
-                await ctx.send(f"⏳ **{ctx.author.display_name}**, look at your hands! They are tired from scrambling words. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
-                return
+        # Persistent Cooldown Check
+        stats = get_user_stats(uid)
+        last_scramble = stats.get('last_scramble', 0)
+        if last_scramble > now:
+            remaining = last_scramble - now
+            await ctx.send(f"⏳ **{ctx.author.display_name}**, look at your hands! They are tired from scrambling words. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
+            return
 
         bal = get_balance(uid)
         
@@ -345,7 +344,7 @@ class Minigames(commands.Cog):
         db_query("UPDATE scramble_words SET status = 1 WHERE id = ?", (row_id,), commit=True)
 
         # Apply Cooldown ONLY after we know we have a word
-        self.scramble_cooldowns[uid] = now + 3600
+        update_user_stats(uid, last_scramble=now + 3600)
 
         # Deduct entry fee (Tax)
         add_balance(uid, -5)
@@ -389,12 +388,13 @@ class Minigames(commands.Cog):
         uid = str(ctx.author.id)
         now = time.time()
 
-        # Manual 1-hour User Cooldown
-        if uid in self.mystery_cooldowns:
-            remaining = self.mystery_cooldowns[uid] - now
-            if remaining > 0:
-                await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your detective brain. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
-                return
+        # Persistent 1-hour User Cooldown
+        stats = get_user_stats(uid)
+        last_mystery = stats.get('last_mystery', 0)
+        if last_mystery > now:
+            remaining = last_mystery - now
+            await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your detective brain. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
+            return
 
         if ctx.channel.id in self.active_mysteries:
             await ctx.send("❌ A mystery is already being solved in this channel!")
@@ -417,7 +417,7 @@ class Minigames(commands.Cog):
         log_transaction(uid, -100, "Mystery Entry Fee")
 
         # Apply cooldown AFTER fee is taken
-        self.mystery_cooldowns[uid] = now + 3600
+        update_user_stats(uid, last_mystery=now + 3600)
 
         self.active_mysteries.add(ctx.channel.id)
         
