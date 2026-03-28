@@ -41,6 +41,9 @@ def get_db():
     conn.execute("CREATE TABLE IF NOT EXISTS scramble_words ("
                  "id INTEGER PRIMARY KEY AUTOINCREMENT, original TEXT, "
                  "scrambled TEXT, category TEXT, status INTEGER DEFAULT 0)")
+    conn.execute("CREATE TABLE IF NOT EXISTS mystery_bank ("
+                 "id INTEGER PRIMARY KEY AUTOINCREMENT, crime TEXT, "
+                 "suspects TEXT, clues TEXT, culprit TEXT, status INTEGER DEFAULT 0)")
     conn.execute("CREATE TABLE IF NOT EXISTS user_stats ("
                  "user_id TEXT PRIMARY KEY, overtime_uses INTEGER DEFAULT 0, "
                  "overtime_last_reset INTEGER DEFAULT 0, overtime_active INTEGER DEFAULT 0, "

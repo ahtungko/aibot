@@ -310,6 +310,46 @@ class Minigames(commands.Cog):
         except Exception as e:
             print(f"Refill error: {e}")
 
+    async def refill_mystery_bank(self):
+        """Pre-generate 5 unique mystery questions from AI and save to DB."""
+        ai_cog = self.bot.get_cog("AI")
+        if ai_cog is None or ai_cog.openai_client is None:
+            return
+
+        prompt = (
+            "Generate 5 unique Murder Mystery JSON objects in a list. "
+            "Each object should have: crime, suspects (list of {name, desc}), clues (list of 3 clues), and culprit (name). "
+            "Varied settings (Victorian, Cyberpunk, Space, Ancient, etc.). "
+            "Return ONLY raw JSON list of objects."
+        )
+
+        try:
+            response_text = await ai_cog.call_ai(
+                [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                instructions="Master mystery writer. Output raw JSON list only. No intro or outro."
+            )
+
+            if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
+
+            mysteries_data = json.loads(response_text)
+
+            for item in mysteries_data:
+                crime = item.get('crime')
+                suspects = json.dumps(item.get('suspects'))
+                clues = json.dumps(item.get('clues'))
+                culprit = item.get('culprit')
+                
+                # AI sometimes returns culprit as a dict like {"name": "..."} instead of a string
+                if isinstance(culprit, dict):
+                    culprit = culprit.get('name', str(culprit))
+
+                if crime and suspects and clues and culprit:
+                    db_query("INSERT INTO mystery_bank (crime, suspects, clues, culprit, status) VALUES (?, ?, ?, ?, 0)", 
+                             (crime, suspects, clues, culprit), commit=True)
+        except Exception as e:
+            print(f"Refill mystery error: {e}")
+
     @commands.command(name='scramble')
     async def scramble_command(self, ctx: commands.Context):
         """Unscramble the AI-themed word! (Personal challenge)"""
@@ -406,10 +446,28 @@ class Minigames(commands.Cog):
             await ctx.send(f"❌ You need at least **100 JC** to start a mystery! (Balance: {bal:,} JC)")
             return
 
-        ai_cog = self.bot.get_cog("AI")
-        if ai_cog is None or ai_cog.openai_client is None:
-            await ctx.send("❌ This command / game is currently not available.")
+        # Try to pull from Mystery Bank
+        row = db_query("SELECT id, crime, suspects, clues, culprit FROM mystery_bank WHERE status = 0 ORDER BY RANDOM() LIMIT 1", fetchone=True)
+        
+        if not row:
+            await ctx.send("❌ No mysteries available! Generating more... please try again in a few seconds.")
+            # Trigger refill
+            ai_cog = self.bot.get_cog("AI")
+            if ai_cog and ai_cog.openai_client:
+                await self.refill_mystery_bank()
             return
+
+        row_id, crime, suspects_raw, clues_raw, culprit = row
+        try:
+            suspects = json.loads(suspects_raw)
+            clues = json.loads(clues_raw)
+        except:
+            await ctx.send("❌ Corrupt mystery file in database. Please contact an admin.")
+            db_query("UPDATE mystery_bank SET status = 2 WHERE id = ?", (row_id,), commit=True) # Status 2 for corrupt
+            return
+
+        # Mark as used immediately
+        db_query("UPDATE mystery_bank SET status = 1 WHERE id = ?", (row_id,), commit=True)
 
         # Deduct entry fee AFTER all validation passes
         add_balance(uid, -100)
@@ -422,21 +480,6 @@ class Minigames(commands.Cog):
         self.active_mysteries.add(ctx.channel.id)
         
         try:
-            async with ctx.typing():
-                prompt = ("Generate a Murder Mystery JSON object with: crime, suspects (name/desc), clues, and culprit.")
-                response_text = await ai_cog.call_ai(
-                    [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                    instructions="Master mystery writer. Output JSON only."
-                )
-
-            if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
-
-            data = json.loads(response_text)
-            crime, suspects, clues, culprit = data.get('crime'), data.get('suspects'), data.get('clues'), data.get('culprit')
-            # AI sometimes returns culprit as a dict like {"name": "..."} instead of a string
-            if isinstance(culprit, dict):
-                culprit = culprit.get('name', str(culprit))
             bounty = random.randint(1000, 1500)
             
             embed = discord.Embed(title="🕵️‍♂️ AI MYSTERY", description=f"**CRIME:**\n{crime}\n\n⚠️ **One guess per person!** Choose wisely.", color=discord.Color.gold())
@@ -458,9 +501,16 @@ class Minigames(commands.Cog):
                     view.stop()
                     await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
             self.active_mysteries.discard(ctx.channel.id)
+
+            # Check if we need to refill the bank
+            unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
+            if unused_count < 5:
+                asyncio.create_task(self.refill_mystery_bank())
+
         except Exception as e:
             self.active_mysteries.discard(ctx.channel.id)
-            await ctx.send("❌ Error setting up mystery. Entry fee not refunded.")
+            print(f"Error mystery: {e}")
+            await ctx.send("❌ Error during mystery game setup.")
 
 async def setup(bot):
     await bot.add_cog(Minigames(bot))
