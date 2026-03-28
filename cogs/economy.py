@@ -38,6 +38,9 @@ def get_db():
     conn.execute("CREATE TABLE IF NOT EXISTS inventory (user_id TEXT, item_name TEXT, item_type TEXT, item_data TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS investments (user_id TEXT PRIMARY KEY, gold_grams REAL DEFAULT 0.0)")
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS scramble_words ("
+                 "id INTEGER PRIMARY KEY AUTOINCREMENT, original TEXT, "
+                 "scrambled TEXT, category TEXT, status INTEGER DEFAULT 0)")
     conn.execute("CREATE TABLE IF NOT EXISTS user_stats ("
                  "user_id TEXT PRIMARY KEY, overtime_uses INTEGER DEFAULT 0, "
                  "overtime_last_reset INTEGER DEFAULT 0, overtime_active INTEGER DEFAULT 0, "

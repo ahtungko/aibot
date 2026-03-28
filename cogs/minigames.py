@@ -3,7 +3,7 @@ import json
 import asyncio
 import discord
 from discord.ext import commands
-from cogs.economy import add_balance, log_transaction, get_balance, track_fee
+from cogs.economy import add_balance, log_transaction, get_balance, track_fee, db_query
 
 # --- AI Murder Mystery Components ---
 
@@ -234,6 +234,61 @@ class Minigames(commands.Cog):
 
     # --- AI Scramble Commands ---
 
+    async def refill_scramble_bank(self):
+        """Pre-generate 60 unique words from AI and save to DB."""
+        ai_cog = self.bot.get_cog("AI")
+        if ai_cog is None or ai_cog.openai_client is None:
+            return
+
+        categories = [
+            "Space Exploration", "Deep Sea Creatures", "Medieval Weapons", "Cyberpunk Cities", 
+            "Ancient Mythology", "Cooking Ingredients", "Fictional Magic Systems", "Types of Clouds",
+            "Board Games", "Retro Video Games", "Musical Instruments", "Rare Gemstones",
+            "Arctic Animals", "Famous Landmarks", "Modern Architecture", "Types of Cheese",
+            "Desserts", "Types of Fabric", "Invention History", "Superpowers", 
+            "Botanical Names", "Types of Pasta", "Olympic Sports", "Coffee Types",
+            "Car Parts", "Software Engineering Terms", "Sci-Fi Gadgets", "Tropical Fruits",
+            "Famous Artists", "Types of Dance", "Bird Species", "Dinosaurs",
+            "Pirate Terminology", "Steampunk Inventions", "Forest Ecosystems", "Volcanoes",
+            "Microscopic Life", "Ocean Currents", "Famous Explorers", "Wonders of the World"
+        ]
+        
+        # Pick 10 random categories to ask for 6 words each
+        selected_cats = random.sample(categories, 10)
+        
+        prompt = (
+            f"Provide 6 words each for these 10 categories: {', '.join(selected_cats)}.\n"
+            "Words should be 6-10 letters long and interesting.\n"
+            "Return ONLY a JSON list of objects: "
+            "[{\"original\": \"WORD\", \"scrambled\": \"DWRO\", \"category\": \"Theme\"}]"
+        )
+        
+        try:
+            response_text = await ai_cog.call_ai(
+                [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                instructions="You are a word puzzle master. Output raw JSON list only. No intro or outro."
+            )
+            
+            if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            words_data = json.loads(response_text)
+            
+            # Insert into DB
+            for item in words_data:
+                orig = item.get('original', "").strip().upper()
+                scram = item.get('scrambled', "").strip().upper()
+                cat = item.get('category', "General")
+                
+                if orig and scram:
+                    # Check for duplicates by original word
+                    exists = db_query("SELECT id FROM scramble_words WHERE original = ?", (orig,), fetchone=True)
+                    if not exists:
+                        db_query("INSERT INTO scramble_words (original, scrambled, category, status) VALUES (?, ?, ?, 0)", 
+                                 (orig, scram, cat), commit=True)
+        except Exception as e:
+            print(f"Refill error: {e}")
+
     @commands.command(name='scramble')
     @commands.cooldown(1, 3600, commands.BucketType.user)
     async def scramble_command(self, ctx: commands.Context):
@@ -245,60 +300,52 @@ class Minigames(commands.Cog):
             await ctx.send(f"❌ You need at least **5 JC** to play! (Balance: {bal:,} JC)")
             return
 
+        # Try to pull from Word Bank
+        row = db_query("SELECT id, original, scrambled, category FROM scramble_words WHERE status = 0 ORDER BY RANDOM() LIMIT 1", fetchone=True)
+        
+        if not row:
+            await ctx.send("❌ Game bank is empty! Generating new words... please try again in a few seconds.")
+            await self.refill_scramble_bank()
+            return
+
+        row_id, original, scrambled, category = row
+        
+        # Mark as used immediately
+        db_query("UPDATE scramble_words SET status = 1 WHERE id = ?", (row_id,), commit=True)
+
         # Deduct entry fee (Tax)
         add_balance(uid, -5)
         track_fee(5) # Sent to the Global Vault
         log_transaction(uid, -5, "Scramble Entry Fee")
 
-        ai_cog = self.bot.get_cog("AI")
-        if ai_cog is None or ai_cog.openai_client is None:
-            await ctx.send("❌ This command / game is currently not available.")
-            add_balance(uid, 5) # Refund the fee
-            return
+        # Start game
+        bounty = random.randint(10, 50)
+        embed = discord.Embed(title="🧩 AI WORD SCRAMBLE!", color=discord.Color.purple())
+        embed.description = f"**SCRAMBLED:** `{scrambled}`\n**CATEGORY:** `{category}`\n\nOnly {ctx.author.mention} can solve this! Payout: **{bounty:,} JC**"
+        embed.set_footer(text="Fee: 5 JC | Time: 15s | Cooldown: 1 Hour")
+        await ctx.send(embed=embed)
+
+        def check(m):
+            return m.channel == ctx.channel and m.author == ctx.author and m.content.strip().upper() == original
 
         try:
-            async with ctx.typing():
-                prompt = (
-                    "Pick a word (6-10 letters) and scramble it. JSON only: "
-                    "{\"original\": \"WORD\", \"scrambled\": \"DWRO\", \"category\": \"Theme\"}"
-                )
-                response_text = await ai_cog.call_ai(
-                    [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-                    instructions="Word puzzle master. Output JSON only."
-                )
+            msg = await self.bot.wait_for('message', check=check, timeout=15.0)
+            new_bal = add_balance(uid, bounty)
+            log_transaction(uid, bounty, f"Won Scramble ({original})")
+            await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
+        except asyncio.TimeoutError:
+            await ctx.send(f"⌛ **Time's up!** The word was **{original}**. Better luck next time!")
 
-            if not response_text:
-                await ctx.send("❌ This command / game is currently not available.")
-                add_balance(uid, 5)
-                return
+        # Check if we need to refill the bank
+        unused_count = db_query("SELECT COUNT(*) FROM scramble_words WHERE status = 0", fetchone=True)[0]
+        if unused_count < 30:
+            asyncio.create_task(self.refill_scramble_bank())
 
-            if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
-
-            data = json.loads(response_text)
-            original = data.get('original', "").strip().upper()
-            scrambled = data.get('scrambled', "").strip().upper()
-            category = data.get('category', "General")
-
-            bounty = random.randint(10, 50)
-            embed = discord.Embed(title="🧩 AI WORD SCRAMBLE!", color=discord.Color.purple())
-            embed.description = f"**SCRAMBLED:** `{scrambled}`\n**CATEGORY:** `{category}`\n\nOnly {ctx.author.mention} can solve this! Payout: **{bounty:,} JC**"
-            embed.set_footer(text="Fee: 5 JC | Time: 15s | Cooldown: 1 Hour")
-            await ctx.send(embed=embed)
-
-            def check(m):
-                return m.channel == ctx.channel and m.author == ctx.author and m.content.strip().upper() == original
-
-            try:
-                msg = await self.bot.wait_for('message', check=check, timeout=15.0)
-                new_bal = add_balance(uid, bounty)
-                log_transaction(uid, bounty, f"Won Scramble ({original})")
-                await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
-            except asyncio.TimeoutError:
-                await ctx.send(f"⌛ **Time's up!** The word was **{original}**. Better luck next time!")
-
-        except Exception as e:
-            await ctx.send("❌ AI error. Entry fee not refunded.")
+    @scramble_command.error
+    async def scramble_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            # Tell the user about the cooldown
+            await ctx.send(f"⏳ **{ctx.author.display_name}**, look at your hands! They are tired from scrambling words. \nTry again in **{int(error.retry_after/60)}m {int(error.retry_after%60)}s**.")
 
     # --- AI Murder Mystery Commands (Old) ---
 
