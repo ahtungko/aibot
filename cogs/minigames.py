@@ -125,7 +125,6 @@ class HorseRaceInstance:
 class Minigames(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.active_mysteries = set()
         self.active_races = {} # channel_id -> HorseRaceInstance
 
     # --- Horse Race Commands ---
@@ -436,10 +435,6 @@ class Minigames(commands.Cog):
             await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your detective brain. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
             return
 
-        if ctx.channel.id in self.active_mysteries:
-            await ctx.send("❌ A mystery is already being solved in this channel!")
-            return
-
         # Entry Fee Check
         bal = get_balance(uid)
         if bal < 100:
@@ -477,8 +472,6 @@ class Minigames(commands.Cog):
         # Apply cooldown AFTER fee is taken
         update_user_stats(uid, last_mystery=now + 3600)
 
-        self.active_mysteries.add(ctx.channel.id)
-        
         try:
             bounty = random.randint(1000, 1500)
             
@@ -500,8 +493,6 @@ class Minigames(commands.Cog):
                 if not view.solved:
                     view.stop()
                     await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
-            self.active_mysteries.discard(ctx.channel.id)
-
             # Check if we need to refill the bank
             unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
             if unused_count < 5:
@@ -509,7 +500,6 @@ class Minigames(commands.Cog):
                 task.add_done_callback(lambda t: print(f"refill_mystery_bank error: {t.exception()}") if t.exception() else None)
 
         except Exception as e:
-            self.active_mysteries.discard(ctx.channel.id)
             print(f"Error mystery: {e}")
             await ctx.send("❌ Error during mystery game setup.")
 
