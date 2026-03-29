@@ -207,6 +207,9 @@ class CodeCrackerView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=None)
 
     async def handle_loss(self, interaction: discord.Interaction):
+        uid = str(self.ctx.author.id)
+        log_transaction(uid, 0, "Code Cracker Loss") # Log result for audit records
+        
         embed = self.create_embed()
         embed.title = "💥 ACCESS DENIED!"
         embed.color = discord.Color.red()
@@ -704,7 +707,7 @@ class Minigames(commands.Cog):
         view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(name='resetcrack', aliases=['resetmystery', 'rc'])
-    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
+    @commands.is_owner()
     async def resetcrack_command(self, ctx: commands.Context, member: discord.Member = None):
         """Owner/Admin Only: Reset the crack/mystery cooldown for a user."""
         member = member or ctx.author

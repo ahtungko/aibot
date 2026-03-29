@@ -2018,6 +2018,117 @@ class Economy(commands.Cog):
         embed.set_footer(text=f"Current Balance: {bal:,} JC")
         await ctx.send(embed=embed)
 
+    @commands.command(name='audit', aliases=['txl', 'txlogs'])
+    @commands.is_owner()
+    async def audit_command(self, ctx: commands.Context, member: discord.Member = None, filter_mode: str = None):
+        """Bot Owner Only: View detailed user history with transaction IDs. 
+        Use !audit @user broken to find failed sessions."""
+        target = member or ctx.author
+        uid = str(target.id)
+        
+        # Fetch a larger set for analytical filtering
+        rows = db_query("SELECT id, amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 100", (uid,), fetchall=True)
+
+        if not rows:
+            await ctx.send(f"📭 No transactions found for **{target.display_name}**.")
+            return
+
+        embed = discord.Embed(title=f"🔍 Audit Log: {target.display_name}", color=discord.Color.dark_gold())
+        if filter_mode: embed.title += f" ({filter_mode.capitalize()})"
+        
+        history_text = ""
+        count = 0
+        
+        # Pre-scan for result matching (Win/Loss/Refund)
+        all_tx = [{"id": r[0], "amt": r[1], "type": r[2], "ts": int(float(r[3]))} for r in rows]
+        
+        for i, tx in enumerate(all_tx):
+            if count >= 15: break
+            
+            is_entry = "entry fee" in tx["type"].lower()
+            is_broken = False
+            
+            if is_entry:
+                # Look for a result within 30 mins (1800s) AFTER the entry
+                has_result = False
+                for other in all_tx:
+                    if other["id"] == tx["id"]: continue
+                    # Same game type?
+                    game_key = "crack" if "crack" in tx["type"].lower() else "mystery"
+                    if game_key in other["type"].lower():
+                        # Is it a result?
+                        if any(x in other["type"].lower() for x in ["win", "loss", "refund"]):
+                            # Is it within 30 mins?
+                            if 0 <= (other["ts"] - tx["ts"]) <= 1800:
+                                has_result = True
+                                break
+                if not has_result:
+                    is_broken = True
+
+            # Apply Filter
+            if filter_mode == "broken" and not is_broken:
+                continue
+
+            sign = "+" if tx["amt"] > 0 else ""
+            fmt_amount = f"{sign}{tx['amt']:,}"
+            ts_display = f"<t:{tx['ts']}:R>"
+            
+            prefix = "⚠️ [BROKEN] " if is_broken else ""
+            history_text += f"{prefix}`#{tx['id']}` | {ts_display} | **{tx['type']}**: `{fmt_amount} JC`\n"
+            count += 1
+
+        if not history_text:
+            history_text = f"✅ No {filter_mode or ''} transactions found in recent history."
+
+        embed.description = history_text
+        embed.set_footer(text="Use !refund <id> to reverse a transaction.")
+        await ctx.send(embed=embed)
+
+    @commands.command(name='refund', aliases=['ref'])
+    @commands.is_owner()
+    async def refund_command(self, ctx: commands.Context, tx_id: int, *, reason: str = "Admin decision"):
+        """Bot Owner Only: Refund a transaction by ID and reset minigame cooldowns."""
+        # 1. Fetch transaction
+        row = db_query("SELECT user_id, amount, type FROM transactions WHERE id = ?", (tx_id,), fetchone=True)
+        if not row:
+            await ctx.send(f"❌ Transaction `#{tx_id}` not found.")
+            return
+
+        uid, amt, orig_type = row
+        
+        # 2. Process Refund
+        # We reverse the amount (e.g., if they paid 100, we add 100)
+        refund_amt = abs(amt) if amt < 0 else -amt
+        new_bal = add_balance(uid, refund_amt)
+        
+        # 3. Handle Vault/Minigame Logic
+        # If it was a minigame fee, return it from the vault
+        if "crack" in orig_type.lower() or "safe" in orig_type.lower() or "mystery" in orig_type.lower():
+            from cogs.economy import track_fee
+            track_fee(-abs(amt)) # Remove from vault
+            update_user_stats(uid, last_mystery=0) # Reset cooldown
+            
+        # 4. Log Refund
+        log_transaction(uid, refund_amt, f"Refund: {orig_type}", processed=1)
+        
+        # 5. Notify
+        member = self.bot.get_user(int(uid))
+        member_name = member.display_name if member else f"User {uid}"
+        
+        embed = discord.Embed(title="✅ Transaction Refunded", color=discord.Color.green())
+        embed.add_field(name="Target", value=member_name, inline=True)
+        embed.add_field(name="Amount", value=f"{refund_amt:,} JC", inline=True)
+        embed.add_field(name="Original Type", value=orig_type, inline=True)
+        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.set_footer(text=f"New Balance: {new_bal:,} JC")
+        
+        await ctx.send(embed=embed)
+        if member:
+            try:
+                await member.send(f"💰 **Refund Issued!**\nYou have been refunded **{refund_amt:,} JC** for `{orig_type}`.\nReason: {reason}")
+            except:
+                pass
+
     # --- Blackjack ---
 
     @commands.command(name='blackjack', aliases=['bj'])
