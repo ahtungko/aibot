@@ -424,84 +424,89 @@ class Minigames(commands.Cog):
     @commands.command(name='mystery')
     async def mystery_command(self, ctx: commands.Context):
         """Starts an AI-powered Murder Mystery game! (100 JC entry, 1hr CD)"""
-        uid = str(ctx.author.id)
-        now = time.time()
-
-        # Persistent 1-hour User Cooldown
-        stats = get_user_stats(uid)
-        last_mystery = stats.get('last_mystery', 0)
-        if last_mystery > now:
-            remaining = last_mystery - now
-            await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your detective brain. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
-            return
-
-        # Entry Fee Check
-        bal = get_balance(uid)
-        if bal < 100:
-            await ctx.send(f"❌ You need at least **100 JC** to start a mystery! (Balance: {bal:,} JC)")
-            return
-
-        # Try to pull from Mystery Bank
-        row = db_query("SELECT id, crime, suspects, clues, culprit FROM mystery_bank WHERE status = 0 ORDER BY RANDOM() LIMIT 1", fetchone=True)
+        await ctx.send("🕵️‍♂️ **Mystery Solving is temporarily disabled.** \nDue to AI connectivity issues, the investigation office is closed for maintenance. Please check back later!")
+        return
         
-        if not row:
-            await ctx.send("❌ No mysteries available! Generating more... please try again in a few seconds.")
-            # Trigger refill
-            ai_cog = self.bot.get_cog("AI")
-            if ai_cog and ai_cog.openai_client:
-                await self.refill_mystery_bank()
-            return
+        # --- CODE TEMPORARILY DISABLED ---
+        # uid = str(ctx.author.id)
+        # now = time.time()
 
-        row_id, crime, suspects_raw, clues_raw, culprit = row
-        try:
-            suspects = json.loads(suspects_raw)
-            clues = json.loads(clues_raw)
-        except:
-            await ctx.send("❌ Corrupt mystery file in database. Please contact an admin.")
-            db_query("UPDATE mystery_bank SET status = 2 WHERE id = ?", (row_id,), commit=True) # Status 2 for corrupt
-            return
+        # # Persistent 1-hour User Cooldown
+        # stats = get_user_stats(uid)
+        # last_mystery = stats.get('last_mystery', 0)
+        # if last_mystery > now:
+        #     remaining = last_mystery - now
+        #     await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your detective brain. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
+        #     return
 
-        # Mark as used immediately
-        db_query("UPDATE mystery_bank SET status = 1 WHERE id = ?", (row_id,), commit=True)
+        # # Entry Fee Check
+        # bal = get_balance(uid)
+        # if bal < 100:
+        #     await ctx.send(f"❌ You need at least **100 JC** to start a mystery! (Balance: {bal:,} JC)")
+        #     return
 
-        # Deduct entry fee AFTER all validation passes
-        add_balance(uid, -100)
-        track_fee(100)
-        log_transaction(uid, -100, "Mystery Entry Fee")
+        # # Try to pull from Mystery Bank
+        # row = db_query("SELECT id, crime, suspects, clues, culprit FROM mystery_bank WHERE status = 0 ORDER BY RANDOM() LIMIT 1", fetchone=True)
+        
+        # if not row:
+        #     await ctx.send("❌ No mysteries available! Generating more... please try again in a few seconds.")
+        #     # Trigger refill
+        #     ai_cog = self.bot.get_cog("AI")
+        #     if ai_cog and ai_cog.openai_client:
+        #         await self.refill_mystery_bank()
+        #     return
 
-        # Apply cooldown AFTER fee is taken
-        update_user_stats(uid, last_mystery=now + 3600)
+        # row_id, crime, suspects_raw, clues_raw, culprit = row
+        # try:
+        #     suspects = json.loads(suspects_raw)
+        #     clues = json.loads(clues_raw)
+        # except:
+        #     await ctx.send("❌ Corrupt mystery file in database. Please contact an admin.")
+        #     db_query("UPDATE mystery_bank SET status = 2 WHERE id = ?", (row_id,), commit=True) # Status 2 for corrupt
+        #     return
 
-        try:
-            bounty = random.randint(1000, 1500)
+        # # Mark as used immediately
+        # db_query("UPDATE mystery_bank SET status = 1 WHERE id = ?", (row_id,), commit=True)
+
+        # # Deduct entry fee AFTER all validation passes
+        # add_balance(uid, -100)
+        # track_fee(100)
+        # log_transaction(uid, -100, "Mystery Entry Fee")
+
+        # # Apply cooldown AFTER fee is taken
+        # update_user_stats(uid, last_mystery=now + 3600)
+
+        # try:
+        #     bounty = random.randint(1000, 1500)
             
-            embed = discord.Embed(title="🕵️‍♂️ AI MYSTERY", description=f"**CRIME:**\n{crime}\n\n⚠️ **One guess per person!** Choose wisely.", color=discord.Color.gold())
-            for s in suspects: embed.add_field(name=s['name'], value=s['desc'], inline=False)
-            embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 1 Guess Only")
+        #     embed = discord.Embed(title="🕵️‍♂️ AI MYSTERY", description=f"**CRIME:**\n{crime}\n\n⚠️ **One guess per person!** Choose wisely.", color=discord.Color.gold())
+        #     for s in suspects: embed.add_field(name=s['name'], value=s['desc'], inline=False)
+        #     embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 1 Guess Only")
             
-            view = MysteryView(ctx, culprit, suspects, bounty)
-            msg = await ctx.send(embed=embed, view=view)
+        #     view = MysteryView(ctx, culprit, suspects, bounty)
+        #     msg = await ctx.send(embed=embed, view=view)
             
-            for i, clue in enumerate(clues):
-                if view.solved or view.failed: break
-                await asyncio.sleep(45)
-                if view.solved or view.failed: break
-                await ctx.send(embed=discord.Embed(title=f"🔍 CLUE #{i+1}", description=f"*{clue}*", color=discord.Color.blue()))
+        #     for i, clue in enumerate(clues):
+        #         if view.solved or view.failed: break
+        #         await asyncio.sleep(45)
+        #         if view.solved or view.failed: break
+        #         await ctx.send(embed=discord.Embed(title=f"🔍 CLUE #{i+1}", description=f"*{clue}*", color=discord.Color.blue()))
 
-            if not view.solved:
-                await asyncio.sleep(75)
-                if not view.solved:
-                    view.stop()
-                    await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
-            # Check if we need to refill the bank
-            unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
-            if unused_count < 5:
-                task = asyncio.create_task(self.refill_mystery_bank())
-                task.add_done_callback(lambda t: print(f"refill_mystery_bank error: {t.exception()}") if t.exception() else None)
+        #     if not view.solved:
+        #         await asyncio.sleep(75)
+        #         if not view.solved:
+        #             view.stop()
+        #             await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
+        #     # Check if we need to refill the bank
+        #     unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
+        #     if unused_count < 5:
+        #         task = asyncio.create_task(self.refill_mystery_bank())
+        #         task.add_done_callback(lambda t: print(f"refill_mystery_bank error: {t.exception()}") if t.exception() else None)
 
-        except Exception as e:
-            print(f"Error mystery: {e}")
-            await ctx.send("❌ Error during mystery game setup.")
+        # except Exception as e:
+        #     print(f"Error mystery: {e}")
+        #     await ctx.send("❌ Error during mystery game setup.")
+
 
 async def setup(bot):
     await bot.add_cog(Minigames(bot))
