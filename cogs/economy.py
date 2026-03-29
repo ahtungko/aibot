@@ -2173,36 +2173,36 @@ class Economy(commands.Cog):
         """Browse the JenBot Shop! 🛍️"""
         embed = discord.Embed(
             title="Convenience Store 🎭",
-            description="Spend your JC on unique rewards!",
+            description=f"Spend your JC on unique rewards! Use `{COMMAND_PREFIX}buy [item] [qty]` to purchase.\nExample: `{COMMAND_PREFIX}buy box 3`",
             color=discord.Color.blue()
         )
         embed.add_field(
             name="👑 **VIP Membership** — `10,000 JC`",
-            value="30 days of elite perks: **-3% Work Tax** (progressive), **2% Gold fees**, **3% Storage fees**, **5% Robbery fines**, **+10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
+            value="30 days of elite perks: **-3% Work Tax**, **2% Gold fees**, **-10% Robbery defense**, **10% Crash Entry Fee**, and **-3% Crash Profit Tax**.\nUsage: `!buyvip` or `!vip` (for short)",
             inline=False
         )
         embed.add_field(
             name="✨ **Custom Role** — `500,000 JC`",
-            value="Create and equip your own custom Discord role!\nUsage: `!buy role` then `!setrole <name> <#hex>`",
+            value="Create and equip your own custom Discord role!\nUsage: `!buy role` then `!setrole <#hex>`",
             inline=False
         )
         embed.add_field(
             name="🎁 **Mystery Box** — `1,000 JC`",
-            value="High stakes! Win coins or rare collectibles.\nUsage: `!buy box [qty]` (Max 10)",
+            value="High stakes! Win coins or rare collectibles.\nUsage: `!buy box [qty]` (Max 10 per purchase)",
             inline=False
         )
-        embed.add_field(
-            name="⛏️ **Mining Tool Upgrades**",
-            value=(
-                "**Stone Pickaxe** — `500 JC` (+10 JC)\n"
-                "**Iron Pickaxe** — `1,500 JC` (+20 JC, 5% Shard) • *Req: Stone*\n"
-                "**Golden Pickaxe** — `3,500 JC` (+30 JC, -1% Tax) • *Req: Iron*\n"
-                "**Diamond Pickaxe** — `8,000 JC` (+45 JC, 1x OT) • *Req: Golden*\n"
-                "**Netherite Pickaxe** — `20,000 JC` (+60 JC, 2x OT, 10% Dodge) • *Req: Diamond*\n"
-                "**Mithril Drill** — `50,000 JC` (+80 JC, 3x OT, Chat Passive) • *Req: Netherite*"
-            ),
-            inline=False
+        
+        mining_tools = (
+            "Upgrade your tools to earn more while working!\n"
+            "**Stone Pickaxe** — `500 JC` (+10 JC) — `!buy stone` \n"
+            "**Iron Pickaxe** — `1,500 JC` (+20 JC, 5% Shard) • *Req: Stone* — `!buy ironpick` \n"
+            "**Golden Pickaxe** — `3,500 JC` (+30 JC, -1% Tax) • *Req: Iron* — `!buy golden` \n"
+            "**Diamond Pickaxe** — `8,000 JC` (+45 JC, 1x OT) • *Req: Golden* — `!buy diamond` \n"
+            "**Netherite Pickaxe** — `20,000 JC` (+60 JC, 2x OT, 10% Dodge) • *Req: Diamond* — `!buy netherite` \n"
+            "**Mithril Drill** — `50,000 JC` (+80 JC, 3x OT, Chat Passive) • *Req: Netherite* — `!buy mithril`"
         )
+        embed.add_field(name="⛏️ **Mining Tool Upgrades**", value=mining_tools, inline=False)
+
         embed.add_field(
             name="🍀 **Lucky Charm** — `2,000 JC`",
             value="Increases gambling win chance by **+5%** for **1 hour**.\nUsage: `!buy charm`",
@@ -2215,19 +2215,20 @@ class Economy(commands.Cog):
         )
         embed.add_field(
             name="🛡️ **Vault Shield** — `2,000 JC`",
-            value="Protects you from **1** robbery attempt (100% block). **Max 3 in inventory!**\nUsage: `!buy shield`",
+            value="Protects from **1** robbery (100% block). **Max 3!**\nUsage: `!buy shield`",
             inline=True
         )
         embed.add_field(
             name="📦 **Iron Safe** — `20,000 JC`",
-            value="Increases your Bank Capacity by **+50,000 JC**.\nUsage: `!buy iron`",
+            value="Increases Bank Capacity by **+50,000 JC**.\nUsage: `!buy iron`",
             inline=True
         )
         embed.add_field(
             name="🛡️ **Steel Vault** — `100,000 JC`",
-            value="Increases your Bank Capacity by **+250,000 JC**.\nUsage: `!buy steel`",
+            value="Increases Bank Capacity by **+250,000 JC**.\nUsage: `!buy steel`",
             inline=True
         )
+        
         embed.set_footer(text=f"Your Balance: {get_balance(str(ctx.author.id)):,} JC")
         await ctx.send(embed=embed)
 
