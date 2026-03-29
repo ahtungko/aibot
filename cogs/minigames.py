@@ -78,6 +78,133 @@ class MysteryView(discord.ui.View):
                 await interaction.response.edit_message(embed=embed, view=None)
         return callback
 
+# --- Code Cracker Components ---
+
+class CodeCrackerView(discord.ui.View):
+    def __init__(self, ctx, secret_code, bounty):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.secret_code = secret_code # List of 4 digits
+        self.bounty = bounty
+        self.current_guess = []
+        self.attempts_left = 6
+        self.history = [] # List of {"guess": str, "bulls": int, "cows": int}
+        self.game_over = False
+
+        # Add 0-9 buttons
+        for i in range(10):
+            button = discord.ui.Button(label=str(i), style=discord.ButtonStyle.secondary, custom_id=f"num_{i}", row=i // 5)
+            button.callback = self.create_num_callback(i)
+            self.add_item(button)
+        
+        # Add utility buttons
+        clear_btn = discord.ui.Button(label="Clear", style=discord.ButtonStyle.danger, row=2)
+        clear_btn.callback = self.clear_callback
+        self.add_item(clear_btn)
+
+        submit_btn = discord.ui.Button(label="Submit", style=discord.ButtonStyle.success, row=2)
+        submit_btn.callback = self.submit_callback
+        self.add_item(submit_btn)
+
+    def create_num_callback(self, num):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.ctx.author.id:
+                await interaction.response.send_message("❌ This is not your game!", ephemeral=True)
+                return
+            if self.game_over: return
+
+            if len(self.current_guess) < 4:
+                self.current_guess.append(num)
+                await self.update_message(interaction)
+            else:
+                await interaction.response.send_message("Code is already 4 digits!", ephemeral=True)
+        return callback
+
+    async def clear_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id: return
+        self.current_guess = []
+        await self.update_message(interaction)
+
+    async def submit_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id: return
+        if len(self.current_guess) < 4:
+            await interaction.response.send_message("Enter a 4-digit code first!", ephemeral=True)
+            return
+        
+        # Calculate Bulls and Cows
+        bulls = 0
+        cows = 0
+        temp_secret = list(self.secret_code)
+        temp_guess = list(self.current_guess)
+
+        # First pass: Bulls
+        for i in range(4):
+            if temp_guess[i] == temp_secret[i]:
+                bulls += 1
+                temp_secret[i] = -1 # Mark as used
+                temp_guess[i] = -2
+
+        # Second pass: Cows
+        for i in range(4):
+            if temp_guess[i] in temp_secret:
+                cows += 1
+                temp_secret[temp_secret.index(temp_guess[i])] = -1 # Mark as used
+
+        self.history.append({"guess": "".join(map(str, self.current_guess)), "bulls": bulls, "cows": cows})
+        self.attempts_left -= 1
+        self.current_guess = []
+
+        if bulls == 4:
+            self.game_over = True
+            await self.handle_win(interaction)
+        elif self.attempts_left <= 0:
+            self.game_over = True
+            await self.handle_loss(interaction)
+        else:
+            await self.update_message(interaction)
+
+    async def update_message(self, interaction: discord.Interaction):
+        embed = self.create_embed()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    def create_embed(self):
+        display_guess = "".join(map(str, self.current_guess)).ljust(4, "_")
+        desc = f"**Current Guess:** `{display_guess}`\n"
+        desc += f"**Attempts Left:** `{self.attempts_left}`\n\n"
+        
+        if self.history:
+            desc += "**History:**\n"
+            for h in self.history:
+                desc += f"`{h['guess']}` - 🟢 {h['bulls']} | 🟡 {h['cows']}\n"
+        
+        embed = discord.Embed(title="🔐 CODE CRACKER", description=desc, color=discord.Color.blue())
+        embed.set_footer(text="🟢 = Correct digit & spot | 🟡 = Correct digit, wrong spot")
+        return embed
+
+    async def handle_win(self, interaction: discord.Interaction):
+        uid = str(self.ctx.author.id)
+        tax = int(self.bounty * 0.20)
+        net_bounty = self.bounty - tax
+        track_fee(tax)
+        new_bal = add_balance(uid, net_bounty)
+        log_transaction(uid, net_bounty, "Win Code Cracker")
+        log_transaction(uid, -tax, "Code Cracker Tax", processed=1)
+
+        embed = discord.Embed(title="🎊 CODE CRACKED!", color=discord.Color.green())
+        embed.description = f"Excellent work {self.ctx.author.mention}! The code was indeed `{''.join(map(str, self.secret_code))}`."
+        embed.add_field(name="Bounty", value=f"**{net_bounty:,}** JC")
+        embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC")
+        
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def handle_loss(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="💥 ACCESS DENIED!", color=discord.Color.red())
+        embed.description = f"Security lockout engaged. The code was `{''.join(map(str, self.secret_code))}`.\nBetter luck next time, {self.ctx.author.mention}."
+        await interaction.response.edit_message(embed=embed, view=None)
+
 # --- Horse Race Components ---
 
 class Horse:
@@ -507,6 +634,43 @@ class Minigames(commands.Cog):
         #     print(f"Error mystery: {e}")
         #     await ctx.send("❌ Error during mystery game setup.")
 
+
+    @commands.command(name='crack', aliases=['safe'])
+    async def crack_command(self, ctx: commands.Context):
+        """Logic-based Code Cracker puzzle! (100 JC entry, 1hr CD)"""
+        uid = str(ctx.author.id)
+        now = time.time()
+
+        # Shared Cooldown with Mystery
+        stats = get_user_stats(uid)
+        last_mystery = stats.get('last_mystery', 0)
+        if last_mystery > now:
+            remaining = last_mystery - now
+            await ctx.send(f"⏳ **{ctx.author.display_name}**, you need to rest your hacking fingers. \nTry again in **{int(remaining/60)}m {int(remaining%60)}s**.")
+            return
+
+        # Entry Fee Check
+        bal = get_balance(uid)
+        if bal < 100:
+            await ctx.send(f"❌ You need at least **100 JC** to attempt a crack! (Balance: {bal:,} JC)")
+            return
+
+        # Deduct Fee
+        add_balance(uid, -100)
+        track_fee(100)
+        log_transaction(uid, -100, "Code Cracker Entry Fee")
+
+        # Apply Cooldown
+        update_user_stats(uid, last_mystery=now + 3600)
+
+        # Generate unique 4-digit code
+        secret = random.sample(range(10), 4)
+        bounty = random.randint(1000, 1500)
+
+        view = CodeCrackerView(ctx, secret, bounty)
+        embed = view.create_embed()
+        embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 6 Attempts")
+        await ctx.send(embed=embed, view=view)
 
 async def setup(bot):
     await bot.add_cog(Minigames(bot))
