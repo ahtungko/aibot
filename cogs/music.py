@@ -111,6 +111,7 @@ class Music(commands.Cog):
             audio_file = discord.File(fp=audio_data, filename=f"{song_title}_{song_artist}.{file_format}")
             await ctx.send(file=audio_file)
             await ctx.send(f"✅ Download complete!")
+            self.search_results_cache.pop(user_id, None)
 
         except Exception as e:
             print(f"Error downloading song: {e}")
