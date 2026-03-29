@@ -637,7 +637,7 @@ class Minigames(commands.Cog):
 
     @commands.command(name='crack', aliases=['safe'])
     async def crack_command(self, ctx: commands.Context):
-        """Logic-based Code Cracker puzzle! (100 JC entry, 1hr CD)"""
+        """Logic-based Code Cracker puzzle! (100 JC entry, 30s CD)"""
         uid = str(ctx.author.id)
         now = time.time()
 
@@ -661,7 +661,7 @@ class Minigames(commands.Cog):
         log_transaction(uid, -100, "Code Cracker Entry Fee")
 
         # Apply Cooldown
-        update_user_stats(uid, last_mystery=now + 3600)
+        update_user_stats(uid, last_mystery=now + 30)
 
         # Generate unique 4-digit code
         secret = random.sample(range(10), 4)
@@ -669,8 +669,17 @@ class Minigames(commands.Cog):
 
         view = CodeCrackerView(ctx, secret, bounty)
         embed = view.create_embed()
-        embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 6 Attempts")
+        embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 6 Attempts | 30s CD")
         await ctx.send(embed=embed, view=view)
+
+    @commands.command(name='resetcrack', aliases=['resetmystery', 'rc'])
+    @commands.is_owner()
+    async def resetcrack_command(self, ctx: commands.Context, member: discord.Member = None):
+        """Owner Only: Reset the crack/mystery cooldown for a user."""
+        member = member or ctx.author
+        uid = str(member.id)
+        update_user_stats(uid, last_mystery=0)
+        await ctx.send(f"✅ Cooldown reset for **{member.display_name}**!")
 
 async def setup(bot):
     await bot.add_cog(Minigames(bot))
