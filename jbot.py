@@ -198,7 +198,7 @@ class HelpDropdown(discord.ui.Select):
             embed.description = "Play games against the bot or community!"
             embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (30s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
             embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word (15s) for 10-50 JC! (**5 JC Entry**, 1hr CD)", inline=False)
-            embed.add_field(name="Code Cracker 🔐", value=f"`{p}crack` - **Solo Logic** game! **100 JC** entry, **30s CD**, 6 attempts. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
+            embed.add_field(name="Code Cracker 🔐", value=f"`{p}crack` - **Solo Logic** game! **100 JC** entry, **30s CD**, 5 attempts. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
             embed.set_footer(text="All cooldowns are persistent and survive bot restarts!")
 
         elif val == "media":
@@ -213,7 +213,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="Taxman System 🕵️", value=f"`{p}settaxmantoggle [on/off]` - Enable daily tax\n`{p}settaxmanpercent [%]` - Set tax rate\n`{p}taxstatus` - System status & timer\n`{p}settaxchannel [#ch]` - Set announcement channel", inline=False)
             embed.add_field(name="Rain & Notices", value=f"`{p}rainrate [%]` - Set rain chance\n`{p}setnoticechannel [#ch]` - Set notice channel\n`{p}setnotice [msg]` - Post announcement", inline=False)
             embed.add_field(name="Mystery Box", value=f"`{p}setbox [rates...]` - Start loot event\n`{p}setboxchannel [#ch]` - Set box channel", inline=False)
-            embed.add_field(name="System", value=f"`{p}olist` - List active users\n`{p}test` - Test horoscope delivery", inline=False)
+            embed.add_field(name="System", value=f"`{p}audit @user [broken]` - Audit history\n`{p}refund <tx_id>` - Reverse transaction\n`{p}rc @user` - Reset CD", inline=False)
             
         embed.set_footer(text="Made with ❤️ by Jenny")
         await interaction.response.edit_message(embed=embed)

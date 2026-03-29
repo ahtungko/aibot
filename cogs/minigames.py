@@ -88,7 +88,7 @@ class CodeCrackerView(discord.ui.View):
         self.secret_code = secret_code # List of 4 digits
         self.bounty = bounty
         self.current_guess = []
-        self.attempts_left = 6
+        self.attempts_left = 5
         self.history = [] # List of {"guess": str, "bulls": int, "cows": int}
         self.game_over = False
 
@@ -703,7 +703,7 @@ class Minigames(commands.Cog):
 
         view = CodeCrackerView(ctx, secret, bounty)
         embed = view.create_embed()
-        embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 6 Attempts | 30s CD")
+        embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 5 Attempts | 30s CD")
         view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(name='resetcrack', aliases=['resetmystery', 'rc'])
