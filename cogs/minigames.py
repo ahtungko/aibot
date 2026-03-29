@@ -505,7 +505,8 @@ class Minigames(commands.Cog):
             # Check if we need to refill the bank
             unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
             if unused_count < 5:
-                asyncio.create_task(self.refill_mystery_bank())
+                task = asyncio.create_task(self.refill_mystery_bank())
+                task.add_done_callback(lambda t: print(f"refill_mystery_bank error: {t.exception()}") if t.exception() else None)
 
         except Exception as e:
             self.active_mysteries.discard(ctx.channel.id)
