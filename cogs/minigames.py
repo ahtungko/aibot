@@ -82,8 +82,9 @@ class MysteryView(discord.ui.View):
 
 class CodeCrackerView(discord.ui.View):
     def __init__(self, ctx, secret_code, bounty):
-        super().__init__(timeout=300)
+        super().__init__(timeout=900) # Increased to 15 minutes
         self.ctx = ctx
+        self.message = None # Set by command
         self.secret_code = secret_code # List of 4 digits
         self.bounty = bounty
         self.current_guess = []
@@ -193,17 +194,47 @@ class CodeCrackerView(discord.ui.View):
         log_transaction(uid, net_bounty, "Win Code Cracker")
         log_transaction(uid, -tax, "Code Cracker Tax", processed=1)
 
-        embed = discord.Embed(title="🎊 CODE CRACKED!", color=discord.Color.green())
+        embed = self.create_embed()
+        embed.title = "🎊 CODE CRACKED!"
+        embed.color = discord.Color.green()
         embed.description = f"Excellent work {self.ctx.author.mention}! The code was indeed `{''.join(map(str, self.secret_code))}`."
-        embed.add_field(name="Bounty", value=f"**{net_bounty:,}** JC")
-        embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC")
+        
+        embed.add_field(name="Prize Money", value=f"**{self.bounty:,}** JC", inline=True)
+        embed.add_field(name="Tax Paid (20%)", value=f"- **{tax:,}** JC", inline=True)
+        embed.add_field(name="Net Bounty", value=f"**{net_bounty:,}** JC", inline=True)
+        embed.add_field(name="New Balance", value=f"**{new_bal:,}** JC", inline=False)
         
         await interaction.response.edit_message(embed=embed, view=None)
 
     async def handle_loss(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="💥 ACCESS DENIED!", color=discord.Color.red())
+        embed = self.create_embed()
+        embed.title = "💥 ACCESS DENIED!"
+        embed.color = discord.Color.red()
         embed.description = f"Security lockout engaged. The code was `{''.join(map(str, self.secret_code))}`.\nBetter luck next time, {self.ctx.author.mention}."
         await interaction.response.edit_message(embed=embed, view=None)
+
+    async def on_timeout(self):
+        if self.game_over: return
+        
+        for child in self.children:
+            child.disabled = True
+            
+        uid = str(self.ctx.author.id)
+        # Refund 100 JC and reset cooldown
+        add_balance(uid, 100)
+        update_user_stats(uid, last_mystery=0)
+        log_transaction(uid, 100, "Code Cracker Timeout Refund")
+
+        try:
+            if self.message:
+                embed = self.create_embed()
+                embed.title = "⏰ SESSION EXPIRED - REFUNDED"
+                embed.description += "\n\n💰 **100 JC has been refunded** and your cooldown reset."
+                embed.color = discord.Color.orange()
+                await self.message.edit(embed=embed, view=self)
+                await self.ctx.send(f"⚠️ {self.ctx.author.mention}, your Code Cracker session timed out. **100 JC has been refunded.**", delete_after=15)
+        except:
+            pass
 
 # --- Horse Race Components ---
 
@@ -670,12 +701,12 @@ class Minigames(commands.Cog):
         view = CodeCrackerView(ctx, secret, bounty)
         embed = view.create_embed()
         embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 6 Attempts | 30s CD")
-        await ctx.send(embed=embed, view=view)
+        view.message = await ctx.send(embed=embed, view=view)
 
     @commands.command(name='resetcrack', aliases=['resetmystery', 'rc'])
-    @commands.is_owner()
+    @commands.check_any(commands.is_owner(), commands.has_permissions(administrator=True))
     async def resetcrack_command(self, ctx: commands.Context, member: discord.Member = None):
-        """Owner Only: Reset the crack/mystery cooldown for a user."""
+        """Owner/Admin Only: Reset the crack/mystery cooldown for a user."""
         member = member or ctx.author
         uid = str(member.id)
         update_user_stats(uid, last_mystery=0)
