@@ -216,6 +216,9 @@ def get_user_stats(user_id: str) -> dict:
 
 def update_user_stats(user_id: str, **kwargs):
     if not kwargs: return
+    # Ensure row exists first
+    db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
+    
     fields = []
     values = []
     for k, v in kwargs.items():
