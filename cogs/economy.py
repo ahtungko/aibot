@@ -1463,7 +1463,46 @@ class Economy(commands.Cog):
         """Owner Only: Release a user from jail immediately."""
         uid = str(member.id)
         update_user_stats(uid, jail_until=0)
+        
+        # Reset the crime command cooldown for them if possible
+        # We find the 'crime' command and reset its bucket
+        try:
+            cmd = self.bot.get_command('crime')
+            if cmd:
+                # We need to simulate a context/message for that user
+                fake_msg = ctx.message
+                fake_msg.author = member
+                fake_ctx = await self.bot.get_context(fake_msg)
+                cmd.reset_cooldown(fake_ctx)
+        except Exception as e:
+            print(f"Failed to reset crime cooldown on unjail: {e}")
+
         await ctx.send(f"🔓 **{member.display_name}** has been released from jail early by the governor!")
+
+    @commands.command(name='rc', aliases=['resetcooldown'])
+    @commands.is_owner()
+    async def rc_command(self, ctx: commands.Context, member: discord.Member = None):
+        """Owner Only: Reset all economy-related cooldowns for a user."""
+        if not member:
+            member = ctx.author
+            
+        uid = str(member.id)
+        # Reset DB-based cooldowns
+        update_user_stats(uid, last_work=0, last_scavenge=0, last_scramble=0, last_mystery=0, last_beg=0, last_crime=0)
+        
+        # Reset Discord.py cooldowns for major commands
+        for cmd_name in ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime']:
+            try:
+                cmd = self.bot.get_command(cmd_name)
+                if cmd:
+                    fake_msg = ctx.message
+                    fake_msg.author = member
+                    fake_ctx = await self.bot.get_context(fake_msg)
+                    cmd.reset_cooldown(fake_ctx)
+            except:
+                pass
+                
+        await ctx.send(f"🔄 All cooldowns for **{member.display_name}** have been reset.")
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
     async def give_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
