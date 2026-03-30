@@ -198,7 +198,8 @@ class HelpDropdown(discord.ui.Select):
             embed.description = "Play games against the bot or community!"
             embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (30s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
             embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word (15s) for 10-50 JC! (**5 JC Entry**, 1hr CD)", inline=False)
-            embed.add_field(name="Code Cracker 🔐", value=f"`{p}crack` - **Solo Logic** game! **100 JC** entry, **30s CD**, 5 attempts. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
+            embed.add_field(name="AI Mystery 🕵️‍♂️", value=f"`{p}mystery` - **Detective** game! **100 JC** entry, **1hr CD**, 1 guess only. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
+            embed.add_field(name="Code Cracker 🔐", value=f"`{p}crack` - **Solo Logic** game! **100 JC** entry, **1hr CD**, 5 attempts. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
             embed.set_footer(text="All cooldowns are persistent and survive bot restarts!")
 
         elif val == "media":
