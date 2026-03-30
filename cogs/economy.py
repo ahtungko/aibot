@@ -3,6 +3,7 @@ import random
 import sqlite3
 import time
 import asyncio
+import copy
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands, tasks
@@ -73,6 +74,8 @@ def get_db():
         ("last_mystery", "INTEGER DEFAULT 0"),
         ("last_beg", "INTEGER DEFAULT 0"),
         ("last_crime", "INTEGER DEFAULT 0"),
+        ("last_fish", "INTEGER DEFAULT 0"),
+        ("last_crack", "INTEGER DEFAULT 0"),
         ("jail_until", "INTEGER DEFAULT 0")
     ]:
         try:
@@ -183,7 +186,10 @@ def set_last_work(user_id: str, ts_str: str):
     db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
 
 def get_user_stats(user_id: str) -> dict:
-    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, last_scavenge, last_scramble, last_mystery FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
+    row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, "
+                   "passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, "
+                   "last_scavenge, last_scramble, last_mystery, last_beg, last_crime, last_fish, last_crack, "
+                   "jail_until FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
     if row:
         return {
             "overtime_uses": row[0],
@@ -196,22 +202,20 @@ def get_user_stats(user_id: str) -> dict:
             "scavenge_last_reset": row[7] or 0,
             "last_scavenge": row[8] or 0,
             "last_scramble": row[9] or 0,
-            "last_mystery": row[10] or 0
+            "last_mystery": row[10] or 0,
+            "last_beg": row[11] or 0,
+            "last_crime": row[12] or 0,
+            "last_fish": row[13] or 0,
+            "last_crack": row[14] or 0,
+            "jail_until": row[15] or 0
         }
     else:
-        db_query("INSERT INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
+        db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
         return {
-            "overtime_uses": 0,
-            "overtime_last_reset": 0,
-            "overtime_active": 0,
-            "last_passive_time": 0,
-            "passive_hourly_total": 0,
-            "passive_hour_start": 0,
-            "scavenge_daily_total": 0,
-            "scavenge_last_reset": 0,
-            "last_scavenge": 0,
-            "last_scramble": 0,
-            "last_mystery": 0
+            "overtime_uses": 0, "overtime_last_reset": 0, "overtime_active": 0, "last_passive_time": 0,
+            "passive_hourly_total": 0, "passive_hour_start": 0, "scavenge_daily_total": 0, "scavenge_last_reset": 0,
+            "last_scavenge": 0, "last_scramble": 0, "last_mystery": 0, "last_beg": 0, "last_crime": 0,
+            "last_fish": 0, "last_crack": 0, "jail_until": 0
         }
 
 def update_user_stats(user_id: str, **kwargs):
@@ -800,10 +804,19 @@ class Economy(commands.Cog):
 
             
     @commands.command(name='fish')
-    @commands.cooldown(1, 15, commands.BucketType.user)
     async def fish_command(self, ctx: commands.Context):
         """Cast your line! Cost: 50 JC | Returns: 85-95% (Avg)"""
         uid = str(ctx.author.id)
+        now = int(time.time())
+        
+        # Persistent Cooldown Check (15 seconds)
+        stats = get_user_stats(uid)
+        last_fish = stats.get('last_fish', 0)
+        if last_fish > now:
+            remaining = last_fish - now
+            await ctx.send(f"⏳ {ctx.author.mention}, slow down! You can cast your line again in **{remaining}s**.")
+            return
+
         cost = 50
         
         # Check balance
@@ -815,6 +828,7 @@ class Economy(commands.Cog):
             
         # Deduct cost
         add_balance(uid, -cost)
+        update_user_stats(uid, last_fish=now + 15)
         log_transaction(uid, -cost, "Fishing Trip Fee")
         
         # --- RNG & Outcomes ---
@@ -1325,10 +1339,20 @@ class Economy(commands.Cog):
         await ctx.send(f"🔥 **OVERTIME ACTIVATED!** ({uses}/{max_uses} uses today).\n{ctx.author.mention}, your VERY NEXT `!work` will yield **DOUBLE** JC!")
         
     @commands.command(name='beg')
-    @commands.cooldown(1, 300, commands.BucketType.user)
     async def beg_command(self, ctx: commands.Context):
         """Beg for some spare change! (5 min CD)"""
         uid = str(ctx.author.id)
+        now = int(time.time())
+
+        # Persistent Cooldown Check (300 seconds)
+        stats = get_user_stats(uid)
+        last_beg = stats.get('last_beg', 0)
+        if last_beg > now:
+            remaining = last_beg - now
+            mins = remaining // 60
+            secs = remaining % 60
+            await ctx.send(f"⏳ {ctx.author.mention}, you've begged enough recently! Come back in **{mins}m {secs}s**.")
+            return
         
         # 30% Failure rate
         if random.random() < 0.30:
@@ -1364,12 +1388,22 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='crime')
-    @commands.cooldown(1, 3600, commands.BucketType.user)
     async def crime_command(self, ctx: commands.Context):
         """Commit a crime for big rewards! Risk: Jail & Wealth Fines. (1hr CD)"""
         uid = str(ctx.author.id)
         now = int(time.time())
-        
+
+        # Persistent Cooldown Check (1 hour)
+        stats = get_user_stats(uid)
+        last_crime = stats.get('last_crime', 0)
+        if last_crime > now:
+            remaining = last_crime - now
+            mins = remaining // 60
+            hrs = mins // 60
+            mins %= 60
+            await ctx.send(f"⏳ {ctx.author.mention}, you need to lay low! You can commit another crime in **{hrs}h {mins}m**.")
+            return
+
         # Get wealth (Wallet + Bank)
         wallet = get_balance(uid)
         bank = get_bank(uid)
@@ -1383,6 +1417,7 @@ class Economy(commands.Cog):
         if random.random() < 0.40:
             # Success
             add_balance(uid, base_amt)
+            update_user_stats(uid, last_crime=now + 3600)
             log_transaction(uid, base_amt, "Crime Success")
             
             crimes = [
@@ -1432,7 +1467,7 @@ class Economy(commands.Cog):
             jail_until = now + jail_time_seconds + debt_penalty_secs
             
             # Update user stats
-            update_user_stats(uid, jail_until=jail_until)
+            update_user_stats(uid, jail_until=jail_until, last_crime=now + 3600)
             track_fee(fine - (debt_penalty_secs / 60 / 10 * 10 if debt_penalty_secs > 0 else 0)) # Log actual JC collected? No, user said deduct...
             # Actually track full fine even if in debt (the house gets it eventually)
             track_fee(fine) 
@@ -1465,12 +1500,16 @@ class Economy(commands.Cog):
         update_user_stats(uid, jail_until=0)
         
         # Reset the crime command cooldown for them if possible
+        update_user_stats(uid, last_crime=0)
+        
+        # Reset the crime command cooldown for them if possible
         # We find the 'crime' command and reset its bucket
         try:
             cmd = self.bot.get_command('crime')
             if cmd:
-                # We need to simulate a context/message for that user
-                fake_msg = ctx.message
+                # To reset for someone else: we can manually use the bucket
+                # Or just use the reset_cooldown with a fake context
+                fake_msg = copy.copy(ctx.message)
                 fake_msg.author = member
                 fake_ctx = await self.bot.get_context(fake_msg)
                 cmd.reset_cooldown(fake_ctx)
@@ -1488,14 +1527,14 @@ class Economy(commands.Cog):
             
         uid = str(member.id)
         # Reset DB-based cooldowns
-        update_user_stats(uid, last_work=0, last_scavenge=0, last_scramble=0, last_mystery=0, last_beg=0, last_crime=0)
+        update_user_stats(uid, last_work=0, last_scavenge=0, last_scramble=0, last_mystery=0, last_beg=0, last_crime=0, last_fish=0, last_crack=0)
         
         # Reset Discord.py cooldowns for major commands
-        for cmd_name in ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime']:
+        for cmd_name in ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']:
             try:
                 cmd = self.bot.get_command(cmd_name)
                 if cmd:
-                    fake_msg = ctx.message
+                    fake_msg = copy.copy(ctx.message)
                     fake_msg.author = member
                     fake_ctx = await self.bot.get_context(fake_msg)
                     cmd.reset_cooldown(fake_ctx)
@@ -1503,6 +1542,36 @@ class Economy(commands.Cog):
                 pass
                 
         await ctx.send(f"🔄 All cooldowns for **{member.display_name}** have been reset.")
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Cog-wide error handler for economy commands."""
+        # Only handle certain errors, let others propagate to the global handler or logger
+        if isinstance(error, commands.CommandOnCooldown):
+            remaining = error.retry_after
+            hrs = int(remaining // 3600)
+            mins = int((remaining % 3600) // 60)
+            secs = int(remaining % 60)
+            
+            time_str = ""
+            if hrs > 0: time_str += f"{hrs}h "
+            if mins > 0: time_str += f"{mins}m "
+            time_str += f"{secs}s"
+            
+            await ctx.send(f"⏳ {ctx.author.mention}, slow down! You can use `{ctx.command.name}` again in **{time_str}**.")
+            return
+            
+        elif isinstance(error, commands.NotOwner):
+            await ctx.send("❌ This is a high-level administrative command. Shoo!")
+            return
+            
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send(f"❌ Invalid argument! {error}")
+            return
+            
+        # For other errors, we can log them or let them go
+        # If we handle it here, it won't show in console/traceback
+        # So we only handle "expected" user-facing errors
+        raise error
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
     async def give_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
