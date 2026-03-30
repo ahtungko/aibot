@@ -6,6 +6,10 @@ import aiohttp
 from discord.ext import commands
 from config import DISCORD_BOT_TOKEN, COMMAND_PREFIX, OWNER_ID
 from utils.helpers import format_duration
+import sqlite3
+import os
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'economy.db')
 
 # --- Bot Setup ---
 intents = discord.Intents.default()
@@ -100,6 +104,29 @@ async def on_message(message):
     # Process commands LAST (after mention check)
     ctx = await bot.get_context(message)
     if ctx.valid:
+        # Jail Check
+        uid = str(ctx.author.id)
+        is_owner = ctx.author.id == int(OWNER_ID)
+        
+        if not is_owner:
+            # Simple direct DB query to avoid circular imports
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.execute("SELECT jail_until FROM user_stats WHERE user_id = ?", (uid,))
+                row = cursor.fetchone()
+                conn.close()
+                
+                if row and row[0] > int(time.time()):
+                    remaining = int(row[0]) - int(time.time())
+                    mins = remaining // 60
+                    hrs = mins // 60
+                    mins %= 60
+                    time_str = f"{hrs}h {mins}m" if hrs > 0 else f"{mins}m"
+                    await ctx.send(f"🚨 {ctx.author.mention}, you are currently in **Jail**! You cannot use any commands for another **{time_str}**.")
+                    return
+            except Exception as e:
+                print(f"Jail check error: {e}")
+
         await bot.process_commands(message)
         return
 
@@ -167,7 +194,7 @@ class HelpDropdown(discord.ui.Select):
             
         elif val == "eco":
             embed.title = "💰 Economy & Banking"
-            embed.add_field(name="Earning JC", value=f"`{p}daily` - Open daily crate\n`{p}work` - Earn JC (Progressive Tax 5-12%)\n`{p}fish` - Cast a line (Cost 50, CD 15s)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
+            embed.add_field(name="Earning JC", value=f"`{p}daily` - Open daily crate\n`{p}work` - Earn JC (Progressive Tax 5-12%)\n`{p}beg` - Beg for change (5 min CD)\n`{p}fish` - Cast a line (Cost 50, CD 15s)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
             embed.add_field(name="Banking & Transfers", value=f"`{p}bal [@user]` - Check balance\n`{p}dep [amount]` - Secure JC in Bank\n`{p}with [amount]` - Withdraw JC\n`{p}give @user [amt]` - Transfer JC", inline=False)
             embed.add_field(name="Trading & Stats", value=f"`{p}pf` - Portfolio & Net Worth\n`{p}history` - Transaction logs\n`{p}vault` - Global community pool", inline=False)
 
@@ -175,7 +202,7 @@ class HelpDropdown(discord.ui.Select):
             embed.title = "🎲 Gambling & Duels"
             embed.add_field(name="PVP Duels ⚔️", value=f"`{p}duel @user [bet]` - Coin Flip Duel", inline=False)
             embed.add_field(name="Gambling 🎲", value=f"`{p}flip [bet] [h/t]` - Coin Flip\n`{p}slots [bet]` - Slot Machine\n`{p}bj [bet]` - Blackjack\n`{p}crash [bet]` - Crash Game 🚀", inline=False)
-            embed.add_field(name="Crimes 🥷", value=f"`{p}rob @user` - Steal JC & Gold!", inline=False)
+            embed.add_field(name="Crimes 🥷", value=f"`{p}crime` - High stakes heist (Risk: Jail)\n`{p}rob @user` - Steal JC & Gold!", inline=False)
             
         elif val == "shop":
             embed.title = "🏪 Shop & Collection"
@@ -199,7 +226,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="Global Horse Race 🏇", value=f"`{p}race` - Start sign-ups (30s)\n`{p}bet <#1-5> <amt>` - Bet on a horse (Payout 4.5x!)", inline=False)
             embed.add_field(name="AI Word Scramble 🧩", value=f"`{p}scramble` - Unscramble a word (15s) for 10-50 JC! (**5 JC Entry**, 1hr CD)", inline=False)
             embed.add_field(name="AI Mystery 🕵️‍♂️", value=f"`{p}mystery` - **Detective** game! **100 JC** entry, **1hr CD**, 1 guess only. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
-            embed.add_field(name="Code Cracker 🔐", value=f"`{p}crack` - **Solo Logic** game! **100 JC** entry, **1hr CD**, 5 attempts. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
+            embed.add_field(name="Code Cracker 🔐", value=f"`{p}crack` - **Solo Logic** game! **100 JC** entry, **30s CD**, 5 attempts. Bounty: 1,000-1,500 JC (20% tax)", inline=False)
             embed.set_footer(text="All cooldowns are persistent and survive bot restarts!")
 
         elif val == "media":
@@ -214,7 +241,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="Taxman System 🕵️", value=f"`{p}settaxmantoggle [on/off]` - Enable daily tax\n`{p}settaxmanpercent [%]` - Set tax rate\n`{p}taxstatus` - System status & timer\n`{p}settaxchannel [#ch]` - Set announcement channel", inline=False)
             embed.add_field(name="Rain & Notices", value=f"`{p}rainrate [%]` - Set rain chance\n`{p}setnoticechannel [#ch]` - Set notice channel\n`{p}setnotice [msg]` - Post announcement", inline=False)
             embed.add_field(name="Mystery Box", value=f"`{p}setbox [rates...]` - Start loot event\n`{p}setboxchannel [#ch]` - Set box channel", inline=False)
-            embed.add_field(name="System", value=f"`{p}audit @user [broken]` - Audit history\n`{p}refund <tx_id>` - Reverse transaction\n`{p}rc @user` - Reset CD", inline=False)
+            embed.add_field(name="System", value=f"`{p}audit @user [broken]` - Audit history\n`{p}refund <tx_id>` - Reverse transaction\n`{p}rc @user` - Reset CD\n`{p}unjail @user` - Release from jail", inline=False)
             
         embed.set_footer(text="Made with ❤️ by Jenny")
         await interaction.response.edit_message(embed=embed)

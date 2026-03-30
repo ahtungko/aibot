@@ -50,7 +50,10 @@ def get_db():
                  "last_passive_time INTEGER DEFAULT 0, passive_hourly_total INTEGER DEFAULT 0, "
                  "passive_hour_start INTEGER DEFAULT 0, "
                  "scavenge_daily_total INTEGER DEFAULT 0, "
-                 "scavenge_last_reset INTEGER DEFAULT 0)")
+                 "scavenge_last_reset INTEGER DEFAULT 0, "
+                 "last_beg INTEGER DEFAULT 0, "
+                 "last_crime INTEGER DEFAULT 0, "
+                 "jail_until INTEGER DEFAULT 0)")
     # Migration: Add last_work column if it doesn't exist
     try:
         conn.execute("ALTER TABLE wallets ADD COLUMN last_work TEXT DEFAULT ''")
@@ -67,7 +70,10 @@ def get_db():
         ("scavenge_last_reset", "INTEGER DEFAULT 0"), 
         ("last_scavenge", "INTEGER DEFAULT 0"),
         ("last_scramble", "INTEGER DEFAULT 0"),
-        ("last_mystery", "INTEGER DEFAULT 0")
+        ("last_mystery", "INTEGER DEFAULT 0"),
+        ("last_beg", "INTEGER DEFAULT 0"),
+        ("last_crime", "INTEGER DEFAULT 0"),
+        ("jail_until", "INTEGER DEFAULT 0")
     ]:
         try:
             conn.execute(f"ALTER TABLE user_stats ADD COLUMN {col[0]} {col[1]}")
@@ -1314,6 +1320,147 @@ class Economy(commands.Cog):
         update_user_stats(uid, overtime_active=1, overtime_uses=uses)
         
         await ctx.send(f"🔥 **OVERTIME ACTIVATED!** ({uses}/{max_uses} uses today).\n{ctx.author.mention}, your VERY NEXT `!work` will yield **DOUBLE** JC!")
+        
+    @commands.command(name='beg')
+    @commands.cooldown(1, 300, commands.BucketType.user)
+    async def beg_command(self, ctx: commands.Context):
+        """Beg for some spare change! (5 min CD)"""
+        uid = str(ctx.author.id)
+        
+        # 30% Failure rate
+        if random.random() < 0.30:
+            roasts = [
+                "A billionaire walked by and spat on your shoes.",
+                "Someone threw a penny at you, but it missed.",
+                "You held out your hat, but someone used it as a trash can.",
+                "A stray cat hissed at you and stole your spot.",
+                "You were caught begging in a 'No Loitering' zone. Be glad you weren't fined!"
+            ]
+            await ctx.send(f"❌ {ctx.author.mention}, {random.choice(roasts)}")
+            return
+            
+        # 70% Success
+        reward = random.randint(1, 15)
+        new_bal = add_balance(uid, reward)
+        log_transaction(uid, reward, "Begging Success")
+        
+        favors = [
+            "A kind stranger dropped some change.",
+            "You found a few coins in a fountain.",
+            "A tourist gave you a small tip for being 'local flavor'.",
+            "Someone felt sorry for you and gave you a couple of coins.",
+            "You found a crumpled bill on the sidewalk."
+        ]
+        
+        embed = discord.Embed(
+            title="🤏 Begging Results",
+            description=f"{ctx.author.mention}, {random.choice(favors)} You earned **{reward}** JC!",
+            color=discord.Color.green()
+        )
+        embed.set_footer(text=f"Total Wallet: {new_bal:,} JC")
+        await ctx.send(embed=embed)
+
+    @commands.command(name='crime')
+    @commands.cooldown(1, 3600, commands.BucketType.user)
+    async def crime_command(self, ctx: commands.Context):
+        """Commit a crime for big rewards! Risk: Jail & Wealth Fines. (1hr CD)"""
+        uid = str(ctx.author.id)
+        now = int(time.time())
+        
+        # Get wealth (Wallet + Bank)
+        wallet = get_balance(uid)
+        bank = get_bank(uid)
+        total_wealth = wallet + bank
+        
+        # Calculate 15% Reward/Fine
+        # Ensure a minimum amount for the gamble to feel real even for broke players
+        base_amt = max(300, int(total_wealth * 0.15))
+        
+        # Success Chance 60%
+        if random.random() < 0.60:
+            # Success
+            add_balance(uid, base_amt)
+            log_transaction(uid, base_amt, "Crime Success")
+            
+            crimes = [
+                "hacked a local vending machine", "pulled off a sophisticated bank heist",
+                "stole a rare collectible from a museum", "pickpocketed a group of tourists",
+                "scammed a corrupt official", "intercepted a high-value data package"
+            ]
+            crime = random.choice(crimes)
+            
+            embed = discord.Embed(
+                title="🏆 CRIME SUCCESS!",
+                description=f"{ctx.author.mention}, you **{crime}** and earned **{base_amt:,}** JC!",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Total Wealth", value=f"**{wallet + bank + base_amt:,}** JC", inline=False)
+            await ctx.send(embed=embed)
+        else:
+            # Failure - 40%
+            fine = base_amt
+            jail_time_seconds = 4 * 3600
+            
+            # Deduct from wallet first
+            if wallet >= fine:
+                add_balance(uid, -fine)
+                wallet_taken = fine
+                bank_taken = 0
+                debt_penalty_secs = 0
+            else:
+                # Wallet empty or not enough, take all from wallet then bank
+                add_balance(uid, -wallet)
+                wallet_taken = wallet
+                remaining_fine = fine - wallet
+                
+                if bank >= remaining_fine:
+                    add_bank(uid, -remaining_fine)
+                    bank_taken = remaining_fine
+                    debt_penalty_secs = 0
+                else:
+                    # Bank also not enough
+                    add_bank(uid, -bank) # Take everything
+                    bank_taken = bank
+                    debt_amt = remaining_fine - bank
+                    
+                    # Debt penalty: +10 mins per 10 JC missing
+                    debt_penalty_secs = int(debt_amt / 10) * 600 
+                    
+            jail_until = now + jail_time_seconds + debt_penalty_secs
+            
+            # Update user stats
+            update_user_stats(uid, jail_until=jail_until)
+            track_fee(fine - (debt_penalty_secs / 60 / 10 * 10 if debt_penalty_secs > 0 else 0)) # Log actual JC collected? No, user said deduct...
+            # Actually track full fine even if in debt (the house gets it eventually)
+            track_fee(fine) 
+            
+            log_transaction(uid, -fine, "Crime Fine (Caught!)")
+            
+            embed = discord.Embed(
+                title="🚨 BUSTED!",
+                description=f"{ctx.author.mention}, you were caught by the authorities!",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Fine Paid", value=f"**{fine:,}** JC", inline=True)
+            embed.add_field(name="Base Sentence", value="4 Hours", inline=True)
+            
+            if debt_penalty_secs > 0:
+                h = debt_penalty_secs // 3600
+                m = (debt_penalty_secs % 3600) // 60
+                embed.add_field(name="Debt Sentence", value=f"+{h}h {m}m", inline=True)
+                
+            embed.add_field(name="Jail Release", value=f"<t:{jail_until}:R>", inline=False)
+            embed.set_footer(text="While in jail, you cannot use any bot commands!")
+            
+            await ctx.send(content=ctx.author.mention, embed=embed)
+
+    @commands.command(name='unjail')
+    @commands.is_owner()
+    async def unjail_command(self, ctx: commands.Context, member: discord.Member):
+        """Owner Only: Release a user from jail immediately."""
+        uid = str(member.id)
+        update_user_stats(uid, jail_until=0)
+        await ctx.send(f"🔓 **{member.display_name}** has been released from jail early by the governor!")
 
     @commands.command(name='give', aliases=['pay', 'transfer'])
     async def give_command(self, ctx: commands.Context, member: discord.Member = None, amount: int = None):
