@@ -20,7 +20,7 @@ PINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pins.json"
 
 # API URLs
 BASE_CURRENCY_API_URL = "https://api.frankfurter.dev/v1/latest"
-OPENAI_BASE_URL = "https://ai.qaq.al/v1"
+OPENAI_BASE_URL = "https://codex.sakurapy.de/v1"
 DEFAULT_MODEL = "gpt-5.4"
 FALLBACK_MODEL = "gpt-5.3-codex"
 
