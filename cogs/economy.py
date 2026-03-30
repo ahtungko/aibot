@@ -1376,8 +1376,8 @@ class Economy(commands.Cog):
         # Ensure a minimum amount for the gamble to feel real even for broke players
         base_amt = max(300, int(total_wealth * 0.15))
         
-        # Success Chance 60%
-        if random.random() < 0.60:
+        # Success Chance 40%
+        if random.random() < 0.40:
             # Success
             add_balance(uid, base_amt)
             log_transaction(uid, base_amt, "Crime Success")
