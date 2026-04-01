@@ -2597,6 +2597,11 @@ class Economy(commands.Cog):
             value="Increases Bank Capacity by **+250,000 JC**.\nUsage: `!buy steel`",
             inline=True
         )
+        embed.add_field(
+            name="📜 **Coin Insurance** — `3,000 JC`",
+            value="Protects you from **The Taxman** for **7 days**!\nUsage: `!buy insurance`",
+            inline=True
+        )
         
         embed.set_footer(text=f"Your Balance: {get_balance(str(ctx.author.id)):,} JC")
         await ctx.send(embed=embed)
@@ -2623,7 +2628,8 @@ class Economy(commands.Cog):
             "diamond": 8000,
             "netherite": 20000,
             "drill": 50000,
-            "mithril": 50000
+            "mithril": 50000,
+            "insurance": 3000
         }
         
         if item_type in ["pickaxe", "stone", "ironpick", "golden", "diamond", "netherite", "drill", "mithril"]:
@@ -2849,6 +2855,41 @@ class Economy(commands.Cog):
             new_limit = get_bank_limit(uid)
             await ctx.send(f"📦 **{ctx.author.name}**, you purchased an **Iron Safe**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
+
+        elif item_type in ['insurance', 'coin insurance', 'coininsurance']:
+            cost = shop["insurance"]
+            
+            # Check for existing insurance
+            now = int(time.time())
+            existing_expiry = 0
+            row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'Coin Insurance'", (uid,), fetchone=True)
+            if row:
+                try:
+                    existing_expiry = int(row[0])
+                except: pass
+            
+            # Purchase logic
+            success, pay_msg = pay_jc(uid, cost)
+            if not success:
+                await ctx.send(pay_msg)
+                return
+            
+            start_time = max(now, existing_expiry)
+            new_expiry = start_time + (7 * 24 * 3600)
+            
+            if existing_expiry > 0:
+                db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Coin Insurance'", (str(new_expiry), uid), commit=True)
+            else:
+                add_item(uid, "Coin Insurance", "Protection", str(new_expiry))
+                
+            log_transaction(uid, -cost, "Bought Coin Insurance")
+            
+            embed = discord.Embed(title="📜 Coin Insurance Policy Active!", color=discord.Color.blue())
+            embed.description = (f"You are now protected from **The Taxman** until <t:{new_expiry}:F>!\n\n"
+                                 f"**Expires:** <t:{new_expiry}:R>\n"
+                                 f"*(Any previous coverage has been extended)*")
+            await ctx.send(embed=embed)
+            return
             
         elif item_type == "steel":
             cost = shop["steel"]
@@ -2946,6 +2987,11 @@ class Economy(commands.Cog):
                 try:
                     expiry = int(item_details[name][0])
                     line += f" (Expires: <t:{expiry}:d>)"
+                except: pass
+            elif name == "Coin Insurance" and name in item_details:
+                try:
+                    expiry = int(item_details[name][0])
+                    line += f" (Expires: <t:{expiry}:R>)"
                 except: pass
                 
             lines.append(line)

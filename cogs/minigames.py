@@ -327,59 +327,61 @@ class Minigames(commands.Cog):
         race.recruiting = False
         race.started = True
         
-        # Start the Race Animation
-        race_msg = await ctx.send("🏇 **AND THEY'RE OFF!**")
-        
-        while True:
-            winner = None
-            for horse in race.horses:
-                move = random.randint(0, 2)
-                horse.position += move
-                if horse.position >= race.finish_line:
-                    winner = horse
-                    break
+        try:
+            # Start the Race Animation
+            race_msg = await ctx.send("🏇 **AND THEY'RE OFF!**")
             
-            embed = discord.Embed(title="🏇 THE RACE IS ON!", description=race.get_track_display(), color=discord.Color.gold())
-            try:
-                await race_msg.edit(content=None, embed=embed)
-            except: pass
+            while True:
+                winner = None
+                for horse in race.horses:
+                    move = random.randint(0, 2)
+                    horse.position += move
+                    if horse.position >= race.finish_line:
+                        winner = horse
+                        break
+                
+                embed = discord.Embed(title="🏇 THE RACE IS ON!", description=race.get_track_display(), color=discord.Color.gold())
+                try:
+                    await race_msg.edit(content=None, embed=embed)
+                except: pass
+                
+                if winner: break
+                await asyncio.sleep(1.5)
+
+            # Handle Results
+            winner_index = race.horses.index(winner)
+            results_embed = discord.Embed(
+                title="🏁 RACE RESULTS!",
+                description=f"The winner is **Horse #{winner_index+1}: {winner.emoji} {winner.name}**!",
+                color=discord.Color.green()
+            )
             
-            if winner: break
-            await asyncio.sleep(1.5)
+            total_bet_pool = sum(b['amount'] for b in race.bets.values())
+            total_paid_out = 0
+            winners_list = []
+            
+            for uid, bet in race.bets.items():
+                if bet['horse_index'] == winner_index:
+                    payout = int(bet['amount'] * 4.5)
+                    add_balance(uid, payout)
+                    log_transaction(uid, payout, f"Won Horse Race (Horse #{winner_index+1})")
+                    winners_list.append(f"<@{uid}> won **{payout:,}** JC!")
+                    total_paid_out += payout
 
-        # Handle Results
-        winner_index = race.horses.index(winner)
-        results_embed = discord.Embed(
-            title="🏁 RACE RESULTS!",
-            description=f"The winner is **Horse #{winner_index+1}: {winner.emoji} {winner.name}**!",
-            color=discord.Color.green()
-        )
-        
-        total_bet_pool = sum(b['amount'] for b in race.bets.values())
-        total_paid_out = 0
-        winners_list = []
-        
-        for uid, bet in race.bets.items():
-            if bet['horse_index'] == winner_index:
-                payout = int(bet['amount'] * 4.5)
-                add_balance(uid, payout)
-                log_transaction(uid, payout, f"Won Horse Race (Horse #{winner_index+1})")
-                winners_list.append(f"<@{uid}> won **{payout:,}** JC!")
-                total_paid_out += payout
+            # House Edge (Tax)
+            house_edge = total_bet_pool - total_paid_out
+            if house_edge > 0:
+                track_fee(house_edge)
+                results_embed.set_footer(text=f"🏛️ {house_edge:,} JC contributed to the Global Vault.")
 
-        # House Edge (Tax)
-        house_edge = total_bet_pool - total_paid_out
-        if house_edge > 0:
-            track_fee(house_edge)
-            results_embed.set_footer(text=f"🏛️ {house_edge:,} JC contributed to the Global Vault.")
+            if winners_list:
+                results_embed.add_field(name="Winners 🏆", value="\n".join(winners_list), inline=False)
+            else:
+                results_embed.add_field(name="Outcome", value="No one bet on the winning horse. The House takes the pool!", inline=False)
 
-        if winners_list:
-            results_embed.add_field(name="Winners 🏆", value="\n".join(winners_list), inline=False)
-        else:
-            results_embed.add_field(name="Outcome", value="No one bet on the winning horse. The House takes the pool!", inline=False)
-
-        await ctx.send(embed=results_embed)
-        del self.active_races[ctx.channel.id]
+            await ctx.send(embed=results_embed)
+        finally:
+            del self.active_races[ctx.channel.id]
 
     @commands.command(name='bet')
     async def bet_command(self, ctx, horse_num: int, amount: str):
@@ -654,9 +656,9 @@ class Minigames(commands.Cog):
                 if view.solved or view.failed: break
                 await ctx.send(embed=discord.Embed(title=f"🔍 CLUE #{i+1}", description=f"*{clue}*", color=discord.Color.blue()))
 
-            if not view.solved:
+            if not view.solved and not view.failed:
                 await asyncio.sleep(75)
-                if not view.solved:
+                if not view.solved and not view.failed:
                     view.stop()
                     await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
             # Check if we need to refill the bank
@@ -710,7 +712,11 @@ class Minigames(commands.Cog):
         
         embed = view.create_embed()
         embed.set_footer(text=f"Entry: 100 JC | Bounty: {bounty:,} JC (20% Tax) | 5 Attempts | 30s CD")
-        view.message = await ctx.send(embed=embed, view=view)
+        try:
+            view.message = await ctx.send(embed=embed, view=view)
+        except:
+            self.active_cracks.pop(ctx.channel.id, None)
+            raise
 
 async def setup(bot):
     await bot.add_cog(Minigames(bot))
