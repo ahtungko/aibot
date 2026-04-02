@@ -1431,7 +1431,7 @@ class Economy(commands.Cog):
         else:
             # Failure - 40%
             fine = base_amt
-            jail_time_seconds = 4 * 3600
+            jail_time_seconds = 2 * 3600
             
             # Deduct from wallet first
             if wallet >= fine:
@@ -1474,7 +1474,7 @@ class Economy(commands.Cog):
                 color=discord.Color.red()
             )
             embed.add_field(name="Fine Paid", value=f"**{fine:,}** JC", inline=True)
-            embed.add_field(name="Base Sentence", value="4 Hours", inline=True)
+            embed.add_field(name="Base Sentence", value="2 Hours", inline=True)
             
             if debt_penalty_secs > 0:
                 h = debt_penalty_secs // 3600
