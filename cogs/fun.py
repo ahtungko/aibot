@@ -224,7 +224,7 @@ class Fun(commands.Cog):
 
         # Get the AI cog for generating the roast
         ai_cog = self.bot.get_cog("AI")
-        if ai_cog is None or ai_cog.openai_client is None:
+        if ai_cog is None or ai_cog.http_client is None:
             await ctx.send("❌ AI is offline. Can't roast without brains!")
             return
 
@@ -252,7 +252,7 @@ class Fun(commands.Cog):
                 )
 
                 roast_text = await ai_cog.call_ai(
-                    [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                    [{"role": "user", "content": prompt}],
                     instructions="You are a witty comedian. Write a short, funny roast. Be playful, not mean."
                 )
 

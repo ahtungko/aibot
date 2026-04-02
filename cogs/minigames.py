@@ -425,7 +425,7 @@ class Minigames(commands.Cog):
     async def refill_scramble_bank(self):
         """Pre-generate 60 unique words from AI and save to DB."""
         ai_cog = self.bot.get_cog("AI")
-        if ai_cog is None or ai_cog.openai_client is None:
+        if ai_cog is None or ai_cog.http_client is None:
             return
 
         categories = [
@@ -453,7 +453,7 @@ class Minigames(commands.Cog):
         
         try:
             response_text = await ai_cog.call_ai(
-                [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                [{"role": "user", "content": prompt}],
                 instructions="You are a word puzzle master. Output raw JSON list only. No intro or outro."
             )
             
@@ -480,7 +480,7 @@ class Minigames(commands.Cog):
     async def refill_mystery_bank(self):
         """Pre-generate 5 unique mystery questions from AI and save to DB."""
         ai_cog = self.bot.get_cog("AI")
-        if ai_cog is None or ai_cog.openai_client is None:
+        if ai_cog is None or ai_cog.http_client is None:
             return
 
         prompt = (
@@ -492,7 +492,7 @@ class Minigames(commands.Cog):
 
         try:
             response_text = await ai_cog.call_ai(
-                [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                [{"role": "user", "content": prompt}],
                 instructions="Master mystery writer. Output raw JSON list only. No intro or outro."
             )
 
@@ -616,7 +616,7 @@ class Minigames(commands.Cog):
             await ctx.send("❌ No mysteries available! Generating more... please try again in a few seconds.")
             # Trigger refill
             ai_cog = self.bot.get_cog("AI")
-            if ai_cog and ai_cog.openai_client:
+            if ai_cog and ai_cog.http_client:
                 await self.refill_mystery_bank()
             return
 
