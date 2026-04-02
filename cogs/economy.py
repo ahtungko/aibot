@@ -190,26 +190,7 @@ def get_user_stats(user_id: str) -> dict:
                    "passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, "
                    "last_scavenge, last_scramble, last_mystery, last_beg, last_crime, last_fish, last_crack, "
                    "jail_until FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
-    if row:
-        return {
-            "overtime_uses": row[0],
-            "overtime_last_reset": row[1],
-            "overtime_active": row[2],
-            "last_passive_time": row[3],
-            "passive_hourly_total": row[4],
-            "passive_hour_start": row[5],
-            "scavenge_daily_total": row[6] or 0,
-            "scavenge_last_reset": row[7] or 0,
-            "last_scavenge": row[8] or 0,
-            "last_scramble": row[9] or 0,
-            "last_mystery": row[10] or 0,
-            "last_beg": row[11] or 0,
-            "last_crime": row[12] or 0,
-            "last_fish": row[13] or 0,
-            "last_crack": row[14] or 0,
-            "jail_until": row[15] or 0
-        }
-    else:
+    if not row:
         db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
         return {
             "overtime_uses": 0, "overtime_last_reset": 0, "overtime_active": 0, "last_passive_time": 0,
@@ -217,6 +198,19 @@ def get_user_stats(user_id: str) -> dict:
             "last_scavenge": 0, "last_scramble": 0, "last_mystery": 0, "last_beg": 0, "last_crime": 0,
             "last_fish": 0, "last_crack": 0, "jail_until": 0
         }
+    return {
+        "overtime_uses": row[0], "overtime_last_reset": row[1], "overtime_active": row[2],
+        "last_passive_time": row[3], "passive_hourly_total": row[4], "passive_hour_start": row[5],
+        "scavenge_daily_total": row[6] or 0, "scavenge_last_reset": row[7] or 0,
+        "last_scavenge": row[8] or 0, "last_scramble": row[9] or 0, "last_mystery": row[10] or 0,
+        "last_beg": row[11] or 0, "last_crime": row[12] or 0, "last_fish": row[13] or 0,
+        "last_crack": row[14] or 0, "jail_until": row[15] or 0
+    }
+
+def get_legendary_fish_count(user_id: str) -> int:
+    """Retroactively counts legendary fish from transaction history."""
+    row = db_query("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'Fishing Reward (Legendary)'", (user_id,), fetchone=True)
+    return row[0] if row else 0
 
 def update_user_stats(user_id: str, **kwargs):
     if not kwargs: return
@@ -1656,6 +1650,11 @@ class Economy(commands.Cog):
         embed.add_field(name="VIP Membership 👑", value=vip_status, inline=False)
         embed.add_field(name="Balances 💵🏦", value=f"Wallet: **{wallet:,}** JC\nBank: **{bank:,}** / {limit_str} JC", inline=False)
         embed.add_field(name="Collectibles 🎒✨", value=coll_str, inline=False)
+        
+        # Fishing Legend Stat
+        leg_fish = get_legendary_fish_count(uid)
+        if leg_fish > 0:
+            embed.add_field(name="Fishing Trophies 🏆🎣", value=f"**{leg_fish:,}** Legendary catches found in history!", inline=False)
         
         base_net_worth = wallet + bank
         
