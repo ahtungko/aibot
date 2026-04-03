@@ -4,6 +4,7 @@ import sqlite3
 import time
 import asyncio
 import copy
+import re
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands, tasks
@@ -113,6 +114,59 @@ def log_transaction(user_id, amount, tx_type, processed=0):
              (str(user_id), amount, tx_type, int(time.time()), processed), commit=True)
 
 
+CRASH_ENTRY_FEE_TX = "Crash Entry Fee"
+CRASH_PROFIT_TAX_TX = "Crash Profit Tax"
+CRASH_LOSS_TX = "Crash Loss"
+SCRAMBLE_ENTRY_FEE_TX = "Scramble Entry Fee"
+SCRAMBLE_WIN_PREFIX = "Won Scramble ("
+SCRAMBLE_TIMEOUT_TX = "Scramble Timeout"
+MYSTERY_ENTRY_FEE_TX = "Mystery Entry Fee"
+MYSTERY_SOLVED_TX = "Solved AI Mystery"
+MYSTERY_LOSS_TX = "Mystery Loss"
+MYSTERY_EXPIRED_TX = "Mystery Expired"
+CODE_CRACKER_ENTRY_FEE_TX = "Code Cracker Entry Fee"
+CODE_CRACKER_WIN_TX = "Win Code Cracker"
+CODE_CRACKER_LOSS_TX = "Code Cracker Loss"
+CODE_CRACKER_TIMEOUT_REFUND_TX = "Code Cracker Timeout Refund"
+
+AUDIT_ENTRY_RULES = {
+    SCRAMBLE_ENTRY_FEE_TX.lower(): {
+        "window": 900,
+        "results": [
+            ("prefix", SCRAMBLE_WIN_PREFIX.lower()),
+            ("exact", SCRAMBLE_TIMEOUT_TX.lower()),
+            ("exact", f"refund: {SCRAMBLE_ENTRY_FEE_TX.lower()}"),
+        ],
+    },
+    MYSTERY_ENTRY_FEE_TX.lower(): {
+        "window": 1800,
+        "results": [
+            ("exact", MYSTERY_SOLVED_TX.lower()),
+            ("exact", MYSTERY_LOSS_TX.lower()),
+            ("exact", MYSTERY_EXPIRED_TX.lower()),
+            ("exact", f"refund: {MYSTERY_ENTRY_FEE_TX.lower()}"),
+        ],
+    },
+    CODE_CRACKER_ENTRY_FEE_TX.lower(): {
+        "window": 1800,
+        "results": [
+            ("exact", CODE_CRACKER_WIN_TX.lower()),
+            ("exact", CODE_CRACKER_LOSS_TX.lower()),
+            ("exact", CODE_CRACKER_TIMEOUT_REFUND_TX.lower()),
+            ("exact", f"refund: {CODE_CRACKER_ENTRY_FEE_TX.lower()}"),
+        ],
+    },
+    CRASH_ENTRY_FEE_TX.lower(): {
+        "window": 1800,
+        "results": [
+            ("prefix", "crash win ("),
+            ("exact", CRASH_LOSS_TX.lower()),
+            ("exact", f"refund: {CRASH_ENTRY_FEE_TX.lower()}"),
+        ],
+    },
+}
+
+
 def get_balance(user_id: str) -> int:
     row = db_query("SELECT balance FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
     return row[0] if row else STARTING_BALANCE
@@ -140,6 +194,31 @@ def add_bank(user_id: str, amount: int) -> int:
     new_bank = max(0, get_bank(user_id) + amount)
     set_bank(user_id, new_bank)
     return new_bank
+
+def seize_jc(user_id: str, amount: int, include_bank: bool = False) -> dict:
+    """Collect up to `amount` JC from wallet, and optionally bank, without going negative."""
+    amount = max(0, int(amount))
+    wallet_before = get_balance(user_id)
+    bank_before = get_bank(user_id) if include_bank else 0
+
+    wallet_taken = min(wallet_before, amount)
+    if wallet_taken:
+        add_balance(user_id, -wallet_taken)
+
+    remaining = amount - wallet_taken
+    bank_taken = 0
+    if include_bank and remaining > 0:
+        bank_taken = min(bank_before, remaining)
+        if bank_taken:
+            add_bank(user_id, -bank_taken)
+
+    collected = wallet_taken + bank_taken
+    return {
+        "wallet_taken": wallet_taken,
+        "bank_taken": bank_taken,
+        "collected": collected,
+        "shortfall": amount - collected,
+    }
 
 def pay_jc(user_id: str, amount: int) -> tuple[bool, str]:
     """
@@ -229,6 +308,21 @@ def update_user_stats(user_id: str, **kwargs):
     values.append(user_id)
     query = f"UPDATE user_stats SET {', '.join(fields)} WHERE user_id = ?"
     db_query(query, tuple(values), commit=True)
+
+def reset_persistent_economy_cooldowns(user_id: str):
+    """Clears persistent cooldowns stored outside discord.py buckets."""
+    set_last_work(user_id, "")
+    set_last_rob(user_id, 0)
+    update_user_stats(
+        user_id,
+        last_scavenge=0,
+        last_scramble=0,
+        last_mystery=0,
+        last_beg=0,
+        last_crime=0,
+        last_fish=0,
+        last_crack=0,
+    )
 
 def get_top_balances(limit=10) -> list:
     """Returns Top users with their JC and Gold stats for Net Worth calculation."""
@@ -378,6 +472,134 @@ def track_fee(amount: int):
     except ValueError:
         current = 0
     set_setting("fee_vault", str(current + int(amount)))
+
+def get_refund_side_effects(orig_type: str, amount: int) -> tuple[int, dict]:
+    """Returns vault adjustments and cooldown resets for a refund."""
+    tx_type = orig_type.lower().strip()
+    vault_delta = 0
+    stats_updates = {}
+
+    vault_refund_types = {
+        "blackjack loss",
+        "blackjack tax",
+        CODE_CRACKER_ENTRY_FEE_TX.lower(),
+        "code cracker tax",
+        "crime fine (caught!)",
+        CRASH_ENTRY_FEE_TX.lower(),
+        CRASH_LOSS_TX.lower(),
+        CRASH_PROFIT_TAX_TX.lower(),
+        "flip loss",
+        "gold purchase fee",
+        "gold sale fee",
+        "mystery bounty tax",
+        MYSTERY_ENTRY_FEE_TX.lower(),
+        "role fee",
+        SCRAMBLE_ENTRY_FEE_TX.lower(),
+        "slots loss",
+        "work tax",
+    }
+    cooldown_reset_fields = {
+        CODE_CRACKER_ENTRY_FEE_TX.lower(): "last_crack",
+        MYSTERY_ENTRY_FEE_TX.lower(): "last_mystery",
+        SCRAMBLE_ENTRY_FEE_TX.lower(): "last_scramble",
+    }
+
+    if tx_type in vault_refund_types or (
+        tx_type.startswith("the taxman (") and tx_type.endswith("% tax)")
+    ):
+        vault_delta = -abs(amount)
+    else:
+        legacy_crash = re.fullmatch(r"crash game \(fee: (\d+) jc\)", tx_type)
+        if legacy_crash:
+            # Legacy crash logs mixed wallet stake and fee in a single row.
+            # Only the parsed entry fee is safe to reverse automatically.
+            vault_delta = -min(abs(amount), int(legacy_crash.group(1)))
+
+    reset_field = cooldown_reset_fields.get(tx_type)
+    if reset_field:
+        stats_updates[reset_field] = 0
+
+    return vault_delta, stats_updates
+
+def get_audit_entry_rule(tx_type: str) -> dict | None:
+    """Returns the audit resolution rule for a transaction type, if it is an entry."""
+    return AUDIT_ENTRY_RULES.get(tx_type.lower().strip())
+
+def transaction_matches_audit_result(tx_type: str, patterns: list[tuple[str, str]]) -> bool:
+    """Checks whether a transaction type satisfies one of the audit result patterns."""
+    normalized = tx_type.lower().strip()
+    for match_type, expected in patterns:
+        if match_type == "exact" and normalized == expected:
+            return True
+        if match_type == "prefix" and normalized.startswith(expected):
+            return True
+    return False
+
+def get_broken_audit_entry_ids(transactions: list[dict], now_ts: int | None = None) -> set[int]:
+    """Returns unresolved entry transaction ids whose expected result never arrived in time."""
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    ordered = sorted(transactions, key=lambda tx: tx["id"])
+    pending: dict[str, list[dict]] = {entry_type: [] for entry_type in AUDIT_ENTRY_RULES}
+    broken_ids: set[int] = set()
+
+    for tx in ordered:
+        tx_type = tx["type"]
+        tx_ts = tx["ts"]
+
+        for entry_type, queue in pending.items():
+            window = AUDIT_ENTRY_RULES[entry_type]["window"]
+            while queue and tx_ts - queue[0]["ts"] > window:
+                broken_ids.add(queue.pop(0)["id"])
+
+        entry_rule = get_audit_entry_rule(tx_type)
+        if entry_rule:
+            pending[tx_type.lower().strip()].append(tx)
+            continue
+
+        for entry_type, rule in AUDIT_ENTRY_RULES.items():
+            if not transaction_matches_audit_result(tx_type, rule["results"]):
+                continue
+
+            queue = pending[entry_type]
+            window = rule["window"]
+            while queue and tx_ts - queue[0]["ts"] > window:
+                broken_ids.add(queue.pop(0)["id"])
+            if queue:
+                queue.pop(0)
+            break
+
+    for entry_type, queue in pending.items():
+        window = AUDIT_ENTRY_RULES[entry_type]["window"]
+        for entry in queue:
+            if now_ts - entry["ts"] > window:
+                broken_ids.add(entry["id"])
+
+    return broken_ids
+
+def record_crash_entry(user_id: str, entry_fee: int):
+    """Logs the crash game's upfront fee that immediately enters the vault."""
+    entry_fee = max(0, int(entry_fee))
+    if entry_fee <= 0:
+        return
+    track_fee(entry_fee)
+    log_transaction(user_id, -entry_fee, CRASH_ENTRY_FEE_TX, processed=1)
+
+def record_crash_cashout(user_id: str, final_payout: int, tax_deducted: int, multiplier: float):
+    """Logs crash cash-out results and any profit tax sent to the vault."""
+    if tax_deducted > 0:
+        track_fee(tax_deducted)
+        log_transaction(user_id, -tax_deducted, CRASH_PROFIT_TAX_TX, processed=1)
+    log_transaction(user_id, final_payout, f"Crash Win ({multiplier}x)")
+
+def record_crash_loss(user_id: str, active_bet: int):
+    """Logs the active crash stake that was burned when the rocket crashed."""
+    active_bet = max(0, int(active_bet))
+    if active_bet <= 0:
+        return
+    track_fee(active_bet)
+    log_transaction(user_id, -active_bet, CRASH_LOSS_TX, processed=1)
 
 def track_gold_fee(amount: float):
     """Adds to the global gold fee vault."""
@@ -1440,47 +1662,39 @@ class Economy(commands.Cog):
             fine = base_amt
             jail_time_seconds = 2 * 3600
             
-            # Deduct from wallet first
-            if wallet >= fine:
-                add_balance(uid, -fine)
-                wallet_taken = fine
-                bank_taken = 0
-                debt_penalty_secs = 0
+            collection = seize_jc(uid, fine, include_bank=True)
+            wallet_taken = collection["wallet_taken"]
+            bank_taken = collection["bank_taken"]
+            collected_fine = collection["collected"]
+            debt_amt = collection["shortfall"]
+
+            if debt_amt > 0:
+                # Debt penalty: +10 mins per 10 JC missing
+                debt_penalty_secs = int(debt_amt / 10) * 600
             else:
-                # Wallet empty or not enough, take all from wallet then bank
-                add_balance(uid, -wallet)
-                wallet_taken = wallet
-                remaining_fine = fine - wallet
-                
-                if bank >= remaining_fine:
-                    add_bank(uid, -remaining_fine)
-                    bank_taken = remaining_fine
-                    debt_penalty_secs = 0
-                else:
-                    # Bank also not enough
-                    add_bank(uid, -bank) # Take everything
-                    bank_taken = bank
-                    debt_amt = remaining_fine - bank
-                    
-                    # Debt penalty: +10 mins per 10 JC missing
-                    debt_penalty_secs = int(debt_amt / 10) * 600 
+                debt_penalty_secs = 0
                     
             jail_until = now + jail_time_seconds + debt_penalty_secs
             
             # Update user stats
             update_user_stats(uid, jail_until=jail_until, last_crime=now + 3600)
-            # Actually track full fine even if in debt (the house gets it eventually)
-            track_fee(fine) 
+            track_fee(collected_fine)
             
-            log_transaction(uid, -fine, "Crime Fine (Caught!)")
+            log_transaction(uid, -collected_fine, "Crime Fine (Caught!)")
             
             embed = discord.Embed(
                 title="🚨 BUSTED!",
                 description=f"{ctx.author.mention}, you were caught by the authorities!",
                 color=discord.Color.red()
             )
-            embed.add_field(name="Fine Paid", value=f"**{fine:,}** JC", inline=True)
+            embed.add_field(name="Fine Assessed", value=f"**{fine:,}** JC", inline=True)
+            embed.add_field(name="Collected Now", value=f"**{collected_fine:,}** JC", inline=True)
             embed.add_field(name="Base Sentence", value="2 Hours", inline=True)
+
+            if debt_amt > 0:
+                embed.add_field(name="Unpaid Balance", value=f"**{debt_amt:,}** JC", inline=True)
+            if wallet_taken > 0 or bank_taken > 0:
+                embed.add_field(name="Seized Funds", value=f"Wallet: **{wallet_taken:,}** JC\nBank: **{bank_taken:,}** JC", inline=False)
             
             if debt_penalty_secs > 0:
                 h = debt_penalty_secs // 3600
@@ -1527,7 +1741,7 @@ class Economy(commands.Cog):
             
         uid = str(member.id)
         # Reset DB-based cooldowns
-        update_user_stats(uid, last_work=0, last_scavenge=0, last_scramble=0, last_mystery=0, last_beg=0, last_crime=0, last_fish=0, last_crack=0)
+        reset_persistent_economy_cooldowns(uid)
         
         # Reset Discord.py cooldowns for major commands
         for cmd_name in ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']:
@@ -2070,8 +2284,7 @@ class Economy(commands.Cog):
         
         # Deduct TOTAL bet upfront
         _, pay_msg = pay_jc(uid, amount)
-        track_fee(entry_fee)
-        log_transaction(uid, -amount, f"Crash Game (Fee: {entry_fee} JC)")
+        record_crash_entry(uid, entry_fee)
 
         view = CrashView(ctx, active_bet, amount, is_user_vip) # Pass VIP status
         embed = discord.Embed(
@@ -2304,32 +2517,16 @@ class Economy(commands.Cog):
         
         # Pre-scan for result matching (Win/Loss/Refund)
         all_tx = [{"id": r[0], "amt": r[1], "type": r[2], "ts": int(float(r[3]))} for r in rows]
+        broken_entry_ids = get_broken_audit_entry_ids(all_tx)
+        normalized_filter = (filter_mode or "").lower()
         
         for i, tx in enumerate(all_tx):
             if count >= 15: break
             
-            is_entry = "entry fee" in tx["type"].lower()
-            is_broken = False
-            
-            if is_entry:
-                # Look for a result within 30 mins (1800s) AFTER the entry
-                has_result = False
-                for other in all_tx:
-                    if other["id"] == tx["id"]: continue
-                    # Same game type?
-                    game_key = "crack" if "crack" in tx["type"].lower() else "mystery"
-                    if game_key in other["type"].lower():
-                        # Is it a result?
-                        if any(x in other["type"].lower() for x in ["win", "loss", "refund"]):
-                            # Is it within 30 mins?
-                            if 0 <= (other["ts"] - tx["ts"]) <= 1800:
-                                has_result = True
-                                break
-                if not has_result:
-                    is_broken = True
+            is_broken = tx["id"] in broken_entry_ids
 
             # Apply Filter
-            if filter_mode == "broken" and not is_broken:
+            if normalized_filter == "broken" and not is_broken:
                 continue
 
             sign = "+" if tx["amt"] > 0 else ""
@@ -2365,11 +2562,11 @@ class Economy(commands.Cog):
         new_bal = add_balance(uid, refund_amt)
         
         # 3. Handle Vault/Minigame Logic
-        # If it was a minigame fee, return it from the vault
-        if "crack" in orig_type.lower() or "safe" in orig_type.lower() or "mystery" in orig_type.lower():
-            from cogs.economy import track_fee
-            track_fee(-abs(amt)) # Remove from vault
-            update_user_stats(uid, last_mystery=0) # Reset cooldown
+        vault_delta, stats_updates = get_refund_side_effects(orig_type, amt)
+        if vault_delta:
+            track_fee(vault_delta)
+        if stats_updates:
+            update_user_stats(uid, **stats_updates)
             
         # 4. Log Refund
         log_transaction(uid, refund_amt, f"Refund: {orig_type}", processed=1)
@@ -3730,10 +3927,9 @@ class CrashView(discord.ui.View):
         tax_deducted = int(profit * tax_rate)
         final_payout = gross_payout - tax_deducted
         
-        track_fee(tax_deducted)
         new_bal = add_balance(str(self.ctx.author.id), final_payout)
         
-        log_transaction(str(self.ctx.author.id), final_payout, f"Crash Win ({self.multiplier}x)")
+        record_crash_cashout(str(self.ctx.author.id), final_payout, tax_deducted, self.multiplier)
         
         embed = discord.Embed(title="🚀 CASHED OUT!", color=discord.Color.green())
         net_result = final_payout - self.original_bet
@@ -3754,7 +3950,7 @@ class CrashView(discord.ui.View):
     async def do_crash(self):
         """Handles the crash state."""
         self.stop()
-        track_fee(self.active_bet)
+        record_crash_loss(str(self.ctx.author.id), self.active_bet)
         
         embed = discord.Embed(title="💥 CRASHED!!!", color=discord.Color.red())
         embed.description = (

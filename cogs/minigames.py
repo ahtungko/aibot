@@ -4,7 +4,26 @@ import json
 import asyncio
 import discord
 from discord.ext import commands
-from cogs.economy import add_balance, log_transaction, get_balance, track_fee, db_query, get_user_stats, update_user_stats
+from cogs.economy import (
+    CODE_CRACKER_ENTRY_FEE_TX,
+    CODE_CRACKER_LOSS_TX,
+    CODE_CRACKER_TIMEOUT_REFUND_TX,
+    CODE_CRACKER_WIN_TX,
+    MYSTERY_ENTRY_FEE_TX,
+    MYSTERY_EXPIRED_TX,
+    MYSTERY_LOSS_TX,
+    MYSTERY_SOLVED_TX,
+    SCRAMBLE_ENTRY_FEE_TX,
+    SCRAMBLE_TIMEOUT_TX,
+    SCRAMBLE_WIN_PREFIX,
+    add_balance,
+    log_transaction,
+    get_balance,
+    track_fee,
+    db_query,
+    get_user_stats,
+    update_user_stats,
+)
 
 # --- AI Murder Mystery Components ---
 
@@ -50,7 +69,7 @@ class MysteryView(discord.ui.View):
                 track_fee(tax)
                 
                 new_bal = add_balance(uid, net_bounty)
-                log_transaction(uid, net_bounty, "Solved AI Mystery")
+                log_transaction(uid, net_bounty, MYSTERY_SOLVED_TX)
                 log_transaction(uid, -tax, "Mystery Bounty Tax", processed=1)
                 
                 embed = discord.Embed(
@@ -70,6 +89,7 @@ class MysteryView(discord.ui.View):
                 # Wrong answer — Game Over immediately for the requester
                 self.failed = True
                 self.stop()
+                log_transaction(str(interaction.user.id), 0, MYSTERY_LOSS_TX)
                 embed = discord.Embed(
                     title="❌ CASE CLOSED (FAILED)",
                     description=f"Sorry {interaction.user.mention}, your accusation was wrong.\n\n**{name}** is innocent! The real culprit was **{self.culprit_name}**.\n\nYou have failed the investigation.",
@@ -194,7 +214,7 @@ class CodeCrackerView(discord.ui.View):
         net_bounty = self.bounty - tax
         track_fee(tax)
         new_bal = add_balance(uid, net_bounty)
-        log_transaction(uid, net_bounty, "Win Code Cracker")
+        log_transaction(uid, net_bounty, CODE_CRACKER_WIN_TX)
         log_transaction(uid, -tax, "Code Cracker Tax", processed=1)
 
         embed = self.create_embed()
@@ -211,7 +231,7 @@ class CodeCrackerView(discord.ui.View):
 
     async def handle_loss(self, interaction: discord.Interaction):
         uid = str(self.ctx.author.id)
-        log_transaction(uid, 0, "Code Cracker Loss") # Log result for audit records
+        log_transaction(uid, 0, CODE_CRACKER_LOSS_TX) # Log result for audit records
         
         embed = self.create_embed()
         embed.title = "💥 ACCESS DENIED!"
@@ -230,7 +250,7 @@ class CodeCrackerView(discord.ui.View):
         # Refund 100 JC and reset cooldown
         add_balance(uid, 100)
         update_user_stats(uid, last_crack=0)
-        log_transaction(uid, 100, "Code Cracker Timeout Refund")
+        log_transaction(uid, 100, CODE_CRACKER_TIMEOUT_REFUND_TX)
 
         try:
             if self.message:
@@ -556,7 +576,7 @@ class Minigames(commands.Cog):
         # Deduct entry fee (Tax)
         add_balance(uid, -5)
         track_fee(5) # Sent to the Global Vault
-        log_transaction(uid, -5, "Scramble Entry Fee")
+        log_transaction(uid, -5, SCRAMBLE_ENTRY_FEE_TX)
 
         # Start game
         bounty = random.randint(10, 50)
@@ -571,9 +591,10 @@ class Minigames(commands.Cog):
         try:
             msg = await self.bot.wait_for('message', check=check, timeout=15.0)
             new_bal = add_balance(uid, bounty)
-            log_transaction(uid, bounty, f"Won Scramble ({original})")
+            log_transaction(uid, bounty, f"{SCRAMBLE_WIN_PREFIX}{original})")
             await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
         except asyncio.TimeoutError:
+            log_transaction(uid, 0, SCRAMBLE_TIMEOUT_TX)
             await ctx.send(f"⌛ **Time's up!** The word was **{original}**. Better luck next time!")
 
         # Check if we need to refill the bank
@@ -635,7 +656,7 @@ class Minigames(commands.Cog):
         # Deduct entry fee AFTER all validation passes
         add_balance(uid, -100)
         track_fee(100)
-        log_transaction(uid, -100, "Mystery Entry Fee")
+        log_transaction(uid, -100, MYSTERY_ENTRY_FEE_TX)
 
         # Apply cooldown AFTER fee is taken
         update_user_stats(uid, last_mystery=now + 3600)
@@ -660,6 +681,7 @@ class Minigames(commands.Cog):
                 await asyncio.sleep(75)
                 if not view.solved and not view.failed:
                     view.stop()
+                    log_transaction(uid, 0, MYSTERY_EXPIRED_TX)
                     await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
             # Check if we need to refill the bank
             unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
@@ -700,7 +722,7 @@ class Minigames(commands.Cog):
         add_balance(uid, -100)
         update_user_stats(uid, last_crack=now + 30)
         track_fee(100)
-        log_transaction(uid, -100, "Code Cracker Entry Fee")
+        log_transaction(uid, -100, CODE_CRACKER_ENTRY_FEE_TX)
 
         # Generate unique 4-digit code
         secret = random.sample(range(10), 4)
