@@ -21,6 +21,8 @@ PINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pins.json"
 # API URLs
 BASE_CURRENCY_API_URL = "https://api.frankfurter.dev/v1/latest"
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+OPENAI_BACKUP_BASE_URL = os.getenv("OPENAI_BACKUP_BASE_URL")
+OPENAI_BACKUP_API_KEY = os.getenv("OPENAI_BACKUP_API_KEY", OPENAI_API_KEY)
 DEFAULT_MODEL = "gpt-5.4"
 FALLBACK_MODEL = "gpt-5.3-codex"
 

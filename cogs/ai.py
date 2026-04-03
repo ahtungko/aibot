@@ -6,7 +6,8 @@ import httpx
 from discord.ext import commands
 from config import (
     OPENAI_API_KEY, OPENAI_BASE_URL, DEFAULT_MODEL, FALLBACK_MODEL,
-    AI_PERSONALITY, MAX_HISTORY_MESSAGES, HISTORY_EXPIRY_SECONDS, MIN_DELAY_BETWEEN_CALLS
+    AI_PERSONALITY, MAX_HISTORY_MESSAGES, HISTORY_EXPIRY_SECONDS, MIN_DELAY_BETWEEN_CALLS,
+    OPENAI_BACKUP_BASE_URL, OPENAI_BACKUP_API_KEY
 )
 
 
@@ -14,6 +15,7 @@ class AI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.http_client = None
+        self.backup_client = None
         self.last_ai_call_time = 0
         self.conversation_history = {}  # {user_id: {"messages": [...], "last_active": timestamp}}
 
@@ -29,66 +31,105 @@ class AI(commands.Cog):
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
                     },
                     verify=False,
-                    timeout=60.0
+                    timeout=15.0
                 )
                 print(f"Successfully initialized AI HTTP client: model={DEFAULT_MODEL}, base_url={OPENAI_BASE_URL}")
             except Exception as e:
-                print(f"CRITICAL: Error initializing AI HTTP client: {e}")
+                print(f"CRITICAL: Error initializing primary AI HTTP client: {e}")
                 self.http_client = None
-        else:
-            print("AI API key or Base URL not found. AI functionality is disabled.")
+                
+        if OPENAI_BACKUP_BASE_URL:
+            try:
+                self.backup_client = httpx.AsyncClient(
+                    base_url=OPENAI_BACKUP_BASE_URL,
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_BACKUP_API_KEY}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                    },
+                    verify=False,
+                    timeout=15.0
+                )
+                print(f"Successfully initialized Backup AI HTTP client: base_url={OPENAI_BACKUP_BASE_URL}")
+            except Exception as e:
+                print(f"CRITICAL: Error initializing backup AI HTTP client: {e}")
+                self.backup_client = None
+
+        if not OPENAI_API_KEY and not OPENAI_BACKUP_BASE_URL:
+            print("AI API configuration not found. AI functionality is disabled.")
 
     async def cog_unload(self):
         if self.http_client:
             await self.http_client.aclose()
+        if getattr(self, 'backup_client', None):
+            await getattr(self, 'backup_client').aclose()
 
-    async def call_ai(self, messages, instructions=AI_PERSONALITY):
+    async def call_ai(self, messages, instructions=AI_PERSONALITY, return_node=False):
         """Call the AI with retry and fallback logic. Returns response text or None."""
-        if not self.http_client:
-            return None
+        clients = []
+        if self.http_client:
+            clients.append((self.http_client, "Primary"))
+        if getattr(self, 'backup_client', None):
+            clients.append((self.backup_client, "Backup"))
+            
+        if not clients:
+            return (None, None) if return_node else None
 
         ai_response_text = None
         models_to_try = [DEFAULT_MODEL, FALLBACK_MODEL]
         full_messages = [{"role": "system", "content": instructions}] + messages
 
         for model_name in models_to_try:
-            for attempt in range(3):
-                try:
-                    payload = {
-                        "model": model_name,
-                        "messages": full_messages,
-                        "temperature": 0.7
-                    }
-                    
-                    response = await self.http_client.post("/chat/completions", json=payload)
-                    
-                    # Log the JSON output for debugging
+            for client, client_name in clients:
+                for attempt in range(2):
                     try:
-                        resp_json = response.json()
-                        import json
-                        print(f"--- AI RESPONSE JSON ({model_name}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+                        payload = {
+                            "model": model_name,
+                            "messages": full_messages,
+                            "temperature": 0.7
+                        }
                         
-                        if response.status_code == 200:
-                            ai_response_text = resp_json['choices'][0]['message']['content']
-                            return ai_response_text
-                        else:
-                            print(f"API Error ({response.status_code}): {response.text}")
-                    except Exception as log_err:
-                        print(f"Log Error: Could not parse response: {log_err}")
-                        print(f"Raw Response: {response.text}")
+                        response = await client.post("/chat/completions", json=payload)
+                        
+                        # Log the JSON output for debugging
+                        try:
+                            resp_json = response.json()
+                            import json
+                            print(f"--- AI RESPONSE JSON ({model_name}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+                            
+                            if response.status_code == 200:
+                                ai_response_text = resp_json['choices'][0]['message']['content']
+                                return (ai_response_text, client_name) if return_node else ai_response_text
+                            else:
+                                print(f"API Error ({response.status_code}): {response.text}")
+                                if response.status_code in [400, 401, 403, 404]:
+                                    break # Do not retry bad requests
+                                elif response.status_code in [429, 500, 502, 503, 504]:
+                                    print(f"Server overloaded ({response.status_code}), instantly shifting to next node.")
+                                    break # Instantly fallback to the backup client
+                        except Exception as log_err:
+                            print(f"Log Error: Could not parse response: {log_err}")
+                            print(f"Raw Response: {response.text}")
 
-                except Exception as e:
-                    err_str = str(e)
-                    if '503' in err_str or '502' in err_str or '529' in err_str:
-                        await asyncio.sleep(2)
-                    else:
-                        print(f"AI Call error: {e}")
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if '503' in err_str or '502' in err_str or '529' in err_str:
+                            print(f"AI Call overloaded [{client_name}]: {e}")
+                            break # Fallback on explicit server connection errors too
+                        elif 'timeout' in err_str or 'closed' in err_str:
+                            print(f"AI Call early-break [{client_name}] (connection dead): {e}")
+                            break
+                        else:
+                            print(f"AI Call error [{client_name}]: {e}")
+                            await asyncio.sleep(1) # Add tiny sleep to prevent spam on unknown connection exceptions
+                if ai_response_text:
+                    break
             if ai_response_text:
                 break
-        return ai_response_text
+        return (None, None) if return_node else None
 
     async def handle_ai_mention(self, message):
-        if self.http_client is None:
+        if getattr(self, 'http_client', None) is None and getattr(self, 'backup_client', None) is None:
             await message.reply("My AI brain is currently offline.")
             return
         user_message = message.content.replace(f'<@{self.bot.user.id}>', '').strip()
@@ -122,13 +163,14 @@ class AI(commands.Cog):
 
         try:
             async with message.channel.typing():
-                ai_response_text = await self.call_ai(history["messages"])
+                result = await self.call_ai(history["messages"], return_node=True)
+                ai_response_text, client_name = result if result != (None, None) else (None, None)
 
                 if not ai_response_text:
                     await message.reply("I'm sorry, I couldn't generate a response right now.")
                     return
 
-                # Save assistant reply to history
+                # Save assistant reply to history (pure text, no watermark)
                 history["messages"].append({
                     "role": "assistant",
                     "content": ai_response_text
@@ -137,8 +179,10 @@ class AI(commands.Cog):
                     history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
                 self.last_ai_call_time = time.time()
-                if len(ai_response_text) > 2000:
-                    chunks = [ai_response_text[i:i + 1990] for i in range(0, len(ai_response_text), 1990)]
+                
+                display_text = f"{ai_response_text}\n\n*[{client_name}]*"
+                if len(display_text) > 2000:
+                    chunks = [display_text[i:i + 1990] for i in range(0, len(display_text), 1990)]
                     for i, chunk in enumerate(chunks):
                         if i == 0:
                             await message.reply(chunk)
@@ -146,7 +190,7 @@ class AI(commands.Cog):
                             await message.channel.send(chunk)
                         await asyncio.sleep(1)
                 else:
-                    await message.reply(ai_response_text)
+                    await message.reply(display_text)
         except Exception as e:
             print(f"Error processing OpenAI prompt: {e}")
             await message.reply("I'm sorry, I encountered an error while trying to generate a response.")
@@ -164,7 +208,7 @@ class AI(commands.Cog):
     @commands.command(name='tldr', aliases=['summarize'])
     async def tldr_command(self, ctx: commands.Context, count: int = 50):
         """Summarize the last N messages in this channel using AI."""
-        if self.http_client is None:
+        if getattr(self, 'http_client', None) is None and getattr(self, 'backup_client', None) is None:
             await ctx.send("❌ AI is currently offline. Can't summarize.")
             return
 
@@ -201,10 +245,12 @@ class AI(commands.Cog):
                     f"--- CHAT LOG ({len(messages)} messages) ---\n{conversation_log}\n--- END ---"
                 )
 
-                ai_response_text = await self.call_ai(
+                result = await self.call_ai(
                     [{"role": "user", "content": prompt}],
-                    instructions="You are a concise summarizer. Output only the summary, no preamble."
+                    instructions="You are a concise summarizer. Output only the summary, no preamble.",
+                    return_node=True
                 )
+                ai_response_text, client_name = result if result != (None, None) else (None, None)
 
                 if not ai_response_text:
                     await ctx.send("❌ AI couldn't generate a summary. Try again later.")
@@ -215,7 +261,7 @@ class AI(commands.Cog):
                     description=ai_response_text[:4000],
                     color=discord.Color.blue()
                 )
-                embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+                embed.set_footer(text=f"Requested by {ctx.author.display_name} • Node: [{client_name}]")
                 await ctx.send(embed=embed)
 
         except Exception as e:
