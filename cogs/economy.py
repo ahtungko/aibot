@@ -118,9 +118,11 @@ def get_balance(user_id: str) -> int:
     return row[0] if row else STARTING_BALANCE
 
 def set_balance(user_id: str, amount: int):
+    amount = int(amount)
     db_query("INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = ?", (user_id, amount, amount), commit=True)
 
 def add_balance(user_id: str, amount: int) -> int:
+    amount = int(amount)
     new_bal = max(0, get_balance(user_id) + amount)
     set_balance(user_id, new_bal)
     return new_bal
@@ -130,9 +132,11 @@ def get_bank(user_id: str) -> int:
     return row[0] if row and row[0] is not None else 0
 
 def set_bank(user_id: str, amount: int):
+    amount = int(amount)
     db_query("INSERT INTO wallets (user_id, bank) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET bank = ?", (user_id, amount, amount), commit=True)
 
 def add_bank(user_id: str, amount: int) -> int:
+    amount = int(amount)
     new_bank = max(0, get_bank(user_id) + amount)
     set_bank(user_id, new_bank)
     return new_bank
@@ -221,7 +225,7 @@ def update_user_stats(user_id: str, **kwargs):
     values = []
     for k, v in kwargs.items():
         fields.append(f"{k} = ?")
-        values.append(v)
+        values.append(int(v) if isinstance(v, float) else v)
     values.append(user_id)
     query = f"UPDATE user_stats SET {', '.join(fields)} WHERE user_id = ?"
     db_query(query, tuple(values), commit=True)
