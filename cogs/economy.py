@@ -369,8 +369,11 @@ def set_last_rob(user_id: str, ts: int):
 
 def track_fee(amount: int):
     """Adds to the global fee vault."""
-    current = int(get_setting("fee_vault", "0"))
-    set_setting("fee_vault", str(current + amount))
+    try:
+        current = int(float(get_setting("fee_vault", "0")))
+    except ValueError:
+        current = 0
+    set_setting("fee_vault", str(current + int(amount)))
 
 def track_gold_fee(amount: float):
     """Adds to the global gold fee vault."""
@@ -1462,7 +1465,6 @@ class Economy(commands.Cog):
             
             # Update user stats
             update_user_stats(uid, jail_until=jail_until, last_crime=now + 3600)
-            track_fee(fine - (debt_penalty_secs / 60 / 10 * 10 if debt_penalty_secs > 0 else 0)) # Log actual JC collected? No, user said deduct...
             # Actually track full fine even if in debt (the house gets it eventually)
             track_fee(fine) 
             
