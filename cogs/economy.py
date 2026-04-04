@@ -142,6 +142,7 @@ ROBBERY_GOLD_FINE_PREFIX = "Robbery Fine: "
 ROBBERY_GOLD_RESTITUTION_PREFIX = "Restitution: Received "
 LINKED_TRANSFER_REFUND_LOG = "Admin Linked Refund: Transfer counterpart"
 LINKED_ROBBERY_REFUND_LOG = "Admin Linked Refund: Robbery counterpart"
+BOX_EVENT_END_ANNOUNCED_KEY = "box_event_last_end_announcement"
 RC_DISCORD_BUCKET_COMMANDS = ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']
 UNJAIL_DISCORD_BUCKET_COMMANDS = ['crime']
 
@@ -1156,6 +1157,16 @@ def track_gold_fee(amount: float):
     current = float(get_setting("gold_fee_vault", "0.0"))
     set_setting("gold_fee_vault", str(current + amount))
 
+def get_box_base_rates() -> dict:
+    """Returns the default Mystery Box loot rates outside of events."""
+    return {
+        'legendary': float(get_setting('box_legendary_rate', '0.001')),
+        'epic': float(get_setting('box_epic_rate', '0.01')),
+        'rare': float(get_setting('box_rare_rate', '0.03')),
+        'is_event': False,
+        'expiry': 0,
+    }
+
 def get_box_rates():
     """Returns the currently active Mystery Box loot rates."""
     now = int(time.time())
@@ -1167,10 +1178,11 @@ def get_box_rates():
         rare = float(get_setting('box_rare_event', '0.03'))
         is_event = True
     else:
-        leg = float(get_setting('box_legendary_rate', '0.001'))
-        epic = float(get_setting('box_epic_rate', '0.01'))
-        rare = float(get_setting('box_rare_rate', '0.03'))
-        is_event = False
+        base_rates = get_box_base_rates()
+        leg = base_rates['legendary']
+        epic = base_rates['epic']
+        rare = base_rates['rare']
+        is_event = base_rates['is_event']
         
     return {
         'legendary': leg,
@@ -1178,6 +1190,27 @@ def get_box_rates():
         'rare': rare,
         'is_event': is_event,
         'expiry': expiry
+    }
+
+def get_box_event_end_plan(now_ts: int | None = None) -> dict:
+    """Returns whether a Mystery Box event end announcement should be posted."""
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    expiry = int(float(get_setting('box_event_expiry', '0')))
+    last_announced = int(float(get_setting(BOX_EVENT_END_ANNOUNCED_KEY, '0')))
+    base_rates = get_box_base_rates()
+
+    common_pct = 100 - (base_rates['legendary'] * 100) - (base_rates['epic'] * 100) - (base_rates['rare'] * 100)
+
+    return {
+        "should_announce": expiry > 0 and now_ts >= expiry and last_announced != expiry,
+        "expiry": expiry,
+        "last_announced": last_announced,
+        "legendary_pct": base_rates['legendary'] * 100,
+        "epic_pct": base_rates['epic'] * 100,
+        "rare_pct": base_rates['rare'] * 100,
+        "common_pct": common_pct,
     }
 
 def get_last_gold_fee(user_id: str):
@@ -1276,6 +1309,7 @@ class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.taxman_task.start()
+        self.box_event_task.start()
         self.passive_cache = {} # {uid: last_awarded_time}
 
     async def _resolve_admin_member_preview_args(self, ctx: commands.Context, args: tuple[str, ...], *, member_required: bool, default_to_author: bool):
@@ -1325,6 +1359,44 @@ class Economy(commands.Cog):
                 print(f"Failed to reset cooldown bucket '{cmd_name}': {e}")
         return reset_names
 
+    async def _broadcast_box_event_embed(self, embed: discord.Embed) -> int:
+        """Broadcasts a Mystery Box event embed to the configured box channel and guild fallbacks."""
+        box_channel_id = get_setting("box_channel_id")
+        sent_count = 0
+        target_guild_id = None
+
+        if box_channel_id:
+            target = self.bot.get_channel(int(box_channel_id))
+            if target:
+                try:
+                    await target.send(embed=embed)
+                    sent_count += 1
+                    target_guild_id = target.guild.id
+                except Exception:
+                    pass
+
+        for guild in self.bot.guilds:
+            if guild.id == target_guild_id:
+                continue
+
+            target_channel = guild.system_channel
+            me = getattr(guild, "me", None)
+            if not target_channel or not me or not target_channel.permissions_for(me).send_messages:
+                for ch in guild.text_channels:
+                    if me and ch.permissions_for(me).send_messages:
+                        target_channel = ch
+                        break
+                else:
+                    continue
+
+            try:
+                await target_channel.send(embed=embed)
+                sent_count += 1
+            except Exception:
+                pass
+
+        return sent_count
+
     def _get_stability_ratio(self):
         """Calculates current vault-to-circulation ratio."""
         try:
@@ -1342,6 +1414,7 @@ class Economy(commands.Cog):
 
     def cog_unload(self):
         self.taxman_task.cancel()
+        self.box_event_task.cancel()
 
     @tasks.loop(hours=1) # Check more frequently than 24h to handle restarts better
     async def taxman_task(self):
@@ -1462,6 +1535,48 @@ class Economy(commands.Cog):
 
     @taxman_task.before_loop
     async def before_taxman_task(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def box_event_task(self):
+        """Posts a one-time announcement when a Mystery Box event expires."""
+        await self.bot.wait_until_ready()
+
+        plan = get_box_event_end_plan()
+        if not plan["should_announce"]:
+            return
+
+        embed = discord.Embed(
+            title="🎁 Mystery Box Event Ended",
+            description="The boosted Mystery Box event has ended. Standard loot rates are now active again.",
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="🎲 Active Rates",
+            value=(
+                f"🏆 Legendary: **{plan['legendary_pct']:.3f}%**\n"
+                f"💎 Epic: **{plan['epic_pct']:.2f}%**\n"
+                f"💙 Rare: **{plan['rare_pct']:.2f}%**\n"
+                f"⬜ Common: **{plan['common_pct']:.2f}%**"
+            ),
+            inline=True
+        )
+        embed.add_field(
+            name="⏱ Event Ended",
+            value=f"<t:{plan['expiry']}:R> (<t:{plan['expiry']}:T>)",
+            inline=True
+        )
+        embed.set_footer(text=f"Standard rates restored. Use {COMMAND_PREFIX}boxrates to confirm current odds.")
+
+        sent_count = await self._broadcast_box_event_embed(embed)
+        set_setting(BOX_EVENT_END_ANNOUNCED_KEY, str(plan["expiry"]))
+        set_setting('box_event_expiry', '0')
+
+        if sent_count == 0:
+            print("Mystery Box event ended, but no announcement channel was available.")
+
+    @box_event_task.before_loop
+    async def before_box_event_task(self):
         await self.bot.wait_until_ready()
 
     @commands.command(name='settaxchannel')
@@ -4169,6 +4284,7 @@ class Economy(commands.Cog):
         set_setting('box_epic_event', str(epic_dec))
         set_setting('box_rare_event', str(rare_dec))
         set_setting('box_event_expiry', str(expiry))
+        set_setting(BOX_EVENT_END_ANNOUNCED_KEY, '0')
         
         # Build announcement embed
         embed = discord.Embed(
@@ -4193,40 +4309,7 @@ class Economy(commands.Cog):
         )
         embed.set_footer(text="Open some boxes before the event ends! Use !buy box")
         
-        # Broadcast to specifically set channel or fall back to system channels
-        box_channel_id = get_setting("box_channel_id")
-        sent_count = 0
-        
-        target_guild_id = None
-        if box_channel_id:
-            target = self.bot.get_channel(int(box_channel_id))
-            if target:
-                try:
-                    await target.send(embed=embed)
-                    sent_count += 1
-                    target_guild_id = target.guild.id
-                except Exception: pass
-        
-        # Original broadcast logic for other guilds
-        for guild in self.bot.guilds:
-            if guild.id == target_guild_id:
-                continue # Already sent to this guild
-            
-            target_channel = guild.system_channel
-            if not target_channel or not target_channel.permissions_for(guild.me).send_messages:
-                # Fallback: find the first text channel we can send to
-                for ch in guild.text_channels:
-                    if ch.permissions_for(guild.me).send_messages:
-                        target_channel = ch
-                        break
-                else:
-                    continue
-            
-            try:
-                await target_channel.send(embed=embed)
-                sent_count += 1
-            except Exception:
-                pass
+        sent_count = await self._broadcast_box_event_embed(embed)
         
         await ctx.send(f"✅ **Mystery Box Event started!** Announced to **{sent_count}** server(s).\n"
                        f"🏆 Leg: {leg_pct}% | 💜 Epic: {epic_pct}% | 💙 Rare: {rare_pct}% | ⬜ Common: {common_pct:.2f}%\n"
