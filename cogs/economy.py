@@ -129,41 +129,107 @@ CODE_CRACKER_WIN_TX = "Win Code Cracker"
 CODE_CRACKER_LOSS_TX = "Code Cracker Loss"
 CODE_CRACKER_TIMEOUT_REFUND_TX = "Code Cracker Timeout Refund"
 
-AUDIT_ENTRY_RULES = {
-    SCRAMBLE_ENTRY_FEE_TX.lower(): {
-        "window": 900,
-        "results": [
-            ("prefix", SCRAMBLE_WIN_PREFIX.lower()),
-            ("exact", SCRAMBLE_TIMEOUT_TX.lower()),
-            ("exact", f"refund: {SCRAMBLE_ENTRY_FEE_TX.lower()}"),
-        ],
+def normalize_transaction_type(tx_type: str) -> str:
+    return tx_type.lower().strip()
+
+TRANSACTION_POLICY_REGISTRY = {
+    "exact": {
+        normalize_transaction_type("blackjack loss"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("blackjack tax"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("code cracker tax"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("crime fine (caught!)"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("flip loss"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("gold purchase fee"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("gold sale fee"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("mystery bounty tax"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("role fee"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("slots loss"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type("work tax"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type(SCRAMBLE_ENTRY_FEE_TX): {
+            "refund": {"vault_refund": "full", "cooldown_reset": "last_scramble"},
+            "audit_entry": {
+                "window": 900,
+                "results": [
+                    ("prefix", normalize_transaction_type(SCRAMBLE_WIN_PREFIX)),
+                    ("exact", normalize_transaction_type(SCRAMBLE_TIMEOUT_TX)),
+                    ("exact", normalize_transaction_type(f"Refund: {SCRAMBLE_ENTRY_FEE_TX}")),
+                ],
+            },
+        },
+        normalize_transaction_type(MYSTERY_ENTRY_FEE_TX): {
+            "refund": {"vault_refund": "full", "cooldown_reset": "last_mystery"},
+            "audit_entry": {
+                "window": 1800,
+                "results": [
+                    ("exact", normalize_transaction_type(MYSTERY_SOLVED_TX)),
+                    ("exact", normalize_transaction_type(MYSTERY_LOSS_TX)),
+                    ("exact", normalize_transaction_type(MYSTERY_EXPIRED_TX)),
+                    ("exact", normalize_transaction_type(f"Refund: {MYSTERY_ENTRY_FEE_TX}")),
+                ],
+            },
+        },
+        normalize_transaction_type(CODE_CRACKER_ENTRY_FEE_TX): {
+            "refund": {"vault_refund": "full", "cooldown_reset": "last_crack"},
+            "audit_entry": {
+                "window": 1800,
+                "results": [
+                    ("exact", normalize_transaction_type(CODE_CRACKER_WIN_TX)),
+                    ("exact", normalize_transaction_type(CODE_CRACKER_LOSS_TX)),
+                    ("exact", normalize_transaction_type(CODE_CRACKER_TIMEOUT_REFUND_TX)),
+                    ("exact", normalize_transaction_type(f"Refund: {CODE_CRACKER_ENTRY_FEE_TX}")),
+                ],
+            },
+        },
+        normalize_transaction_type(CRASH_ENTRY_FEE_TX): {
+            "refund": {"vault_refund": "full"},
+            "audit_entry": {
+                "window": 1800,
+                "results": [
+                    ("prefix", normalize_transaction_type("Crash Win (")),
+                    ("exact", normalize_transaction_type(CRASH_LOSS_TX)),
+                    ("exact", normalize_transaction_type(f"Refund: {CRASH_ENTRY_FEE_TX}")),
+                ],
+            },
+        },
+        normalize_transaction_type(CRASH_LOSS_TX): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type(CRASH_PROFIT_TAX_TX): {
+            "refund": {"vault_refund": "full"},
+        },
     },
-    MYSTERY_ENTRY_FEE_TX.lower(): {
-        "window": 1800,
-        "results": [
-            ("exact", MYSTERY_SOLVED_TX.lower()),
-            ("exact", MYSTERY_LOSS_TX.lower()),
-            ("exact", MYSTERY_EXPIRED_TX.lower()),
-            ("exact", f"refund: {MYSTERY_ENTRY_FEE_TX.lower()}"),
-        ],
-    },
-    CODE_CRACKER_ENTRY_FEE_TX.lower(): {
-        "window": 1800,
-        "results": [
-            ("exact", CODE_CRACKER_WIN_TX.lower()),
-            ("exact", CODE_CRACKER_LOSS_TX.lower()),
-            ("exact", CODE_CRACKER_TIMEOUT_REFUND_TX.lower()),
-            ("exact", f"refund: {CODE_CRACKER_ENTRY_FEE_TX.lower()}"),
-        ],
-    },
-    CRASH_ENTRY_FEE_TX.lower(): {
-        "window": 1800,
-        "results": [
-            ("prefix", "crash win ("),
-            ("exact", CRASH_LOSS_TX.lower()),
-            ("exact", f"refund: {CRASH_ENTRY_FEE_TX.lower()}"),
-        ],
-    },
+    "patterns": [
+        {
+            "pattern": r"the taxman \(\d+% tax\)",
+            "refund": {"vault_refund": "full"},
+        },
+        {
+            "pattern": r"crash game \(fee: (?P<entry_fee>\d+) jc\)",
+            "refund": {"vault_refund": "legacy_crash_entry_fee"},
+        },
+    ],
 }
 
 
@@ -473,57 +539,88 @@ def track_fee(amount: int):
         current = 0
     set_setting("fee_vault", str(current + int(amount)))
 
-def get_refund_side_effects(orig_type: str, amount: int) -> tuple[int, dict]:
-    """Returns vault adjustments and cooldown resets for a refund."""
-    tx_type = orig_type.lower().strip()
+def resolve_transaction_policy(tx_type: str) -> tuple[dict | None, re.Match | None]:
+    """Resolves exact or pattern-based policy metadata for a transaction type."""
+    policy, match, _ = resolve_transaction_policy_details(tx_type)
+    return policy, match
+
+def resolve_transaction_policy_details(tx_type: str) -> tuple[dict | None, re.Match | None, str | None]:
+    """Resolves policy metadata and indicates whether it came from an exact or pattern rule."""
+    normalized = normalize_transaction_type(tx_type)
+    exact_policy = TRANSACTION_POLICY_REGISTRY["exact"].get(normalized)
+    if exact_policy is not None:
+        return exact_policy, None, "exact"
+
+    for policy in TRANSACTION_POLICY_REGISTRY["patterns"]:
+        match = re.fullmatch(policy["pattern"], normalized)
+        if match:
+            return policy, match, "pattern"
+
+    return None, None, None
+
+def get_refund_plan(orig_type: str, amount: int, force_unsupported: bool = False) -> dict:
+    """Builds a structured refund plan for wallet, vault, and cooldown side effects."""
+    refund_amt = abs(amount) if amount < 0 else -amount
+    policy, match, policy_source = resolve_transaction_policy_details(orig_type)
     vault_delta = 0
     stats_updates = {}
+    supported = policy is not None
+    blocked_reason = None
 
-    vault_refund_types = {
-        "blackjack loss",
-        "blackjack tax",
-        CODE_CRACKER_ENTRY_FEE_TX.lower(),
-        "code cracker tax",
-        "crime fine (caught!)",
-        CRASH_ENTRY_FEE_TX.lower(),
-        CRASH_LOSS_TX.lower(),
-        CRASH_PROFIT_TAX_TX.lower(),
-        "flip loss",
-        "gold purchase fee",
-        "gold sale fee",
-        "mystery bounty tax",
-        MYSTERY_ENTRY_FEE_TX.lower(),
-        "role fee",
-        SCRAMBLE_ENTRY_FEE_TX.lower(),
-        "slots loss",
-        "work tax",
-    }
-    cooldown_reset_fields = {
-        CODE_CRACKER_ENTRY_FEE_TX.lower(): "last_crack",
-        MYSTERY_ENTRY_FEE_TX.lower(): "last_mystery",
-        SCRAMBLE_ENTRY_FEE_TX.lower(): "last_scramble",
-    }
+    if supported:
+        refund_policy = policy.get("refund", {})
+        vault_refund = refund_policy.get("vault_refund")
+        if vault_refund == "full":
+            vault_delta = -abs(amount)
+        elif vault_refund == "legacy_crash_entry_fee" and match:
+            vault_delta = -min(abs(amount), int(match.group("entry_fee")))
 
-    if tx_type in vault_refund_types or (
-        tx_type.startswith("the taxman (") and tx_type.endswith("% tax)")
-    ):
-        vault_delta = -abs(amount)
+        reset_field = refund_policy.get("cooldown_reset")
+        if reset_field:
+            stats_updates[reset_field] = 0
+    elif not force_unsupported:
+        blocked_reason = "No refund policy is defined for this transaction type."
+
+    if supported and policy_source == "exact":
+        policy_label = "Exact policy"
+    elif supported and policy_source == "pattern":
+        policy_label = "Pattern policy"
+    elif force_unsupported:
+        policy_label = "Forced wallet-only"
     else:
-        legacy_crash = re.fullmatch(r"crash game \(fee: (\d+) jc\)", tx_type)
-        if legacy_crash:
-            # Legacy crash logs mixed wallet stake and fee in a single row.
-            # Only the parsed entry fee is safe to reverse automatically.
-            vault_delta = -min(abs(amount), int(legacy_crash.group(1)))
+        policy_label = "Unsupported"
 
-    reset_field = cooldown_reset_fields.get(tx_type)
-    if reset_field:
-        stats_updates[reset_field] = 0
+    return {
+        "supported": supported,
+        "allowed": supported or force_unsupported,
+        "policy_source": policy_source,
+        "policy_label": policy_label,
+        "wallet_delta": refund_amt,
+        "vault_delta": vault_delta,
+        "stats_updates": stats_updates,
+        "blocked_reason": blocked_reason,
+        "force_unsupported": force_unsupported and not supported,
+    }
 
-    return vault_delta, stats_updates
+def get_refund_side_effects(orig_type: str, amount: int) -> tuple[int, dict]:
+    """Returns vault adjustments and cooldown resets for a refund."""
+    plan = get_refund_plan(orig_type, amount)
+    return plan["vault_delta"], plan["stats_updates"]
+
+def get_audit_entry_policies() -> dict[str, dict]:
+    """Returns the subset of transaction policies that define audit entry rules."""
+    return {
+        tx_type: policy["audit_entry"]
+        for tx_type, policy in TRANSACTION_POLICY_REGISTRY["exact"].items()
+        if "audit_entry" in policy
+    }
 
 def get_audit_entry_rule(tx_type: str) -> dict | None:
     """Returns the audit resolution rule for a transaction type, if it is an entry."""
-    return AUDIT_ENTRY_RULES.get(tx_type.lower().strip())
+    policy, _ = resolve_transaction_policy(tx_type)
+    if not policy:
+        return None
+    return policy.get("audit_entry")
 
 def transaction_matches_audit_result(tx_type: str, patterns: list[tuple[str, str]]) -> bool:
     """Checks whether a transaction type satisfies one of the audit result patterns."""
@@ -540,8 +637,9 @@ def get_broken_audit_entry_ids(transactions: list[dict], now_ts: int | None = No
     if now_ts is None:
         now_ts = int(time.time())
 
+    audit_entry_policies = get_audit_entry_policies()
     ordered = sorted(transactions, key=lambda tx: tx["id"])
-    pending: dict[str, list[dict]] = {entry_type: [] for entry_type in AUDIT_ENTRY_RULES}
+    pending: dict[str, list[dict]] = {entry_type: [] for entry_type in audit_entry_policies}
     broken_ids: set[int] = set()
 
     for tx in ordered:
@@ -549,16 +647,16 @@ def get_broken_audit_entry_ids(transactions: list[dict], now_ts: int | None = No
         tx_ts = tx["ts"]
 
         for entry_type, queue in pending.items():
-            window = AUDIT_ENTRY_RULES[entry_type]["window"]
+            window = audit_entry_policies[entry_type]["window"]
             while queue and tx_ts - queue[0]["ts"] > window:
                 broken_ids.add(queue.pop(0)["id"])
 
         entry_rule = get_audit_entry_rule(tx_type)
         if entry_rule:
-            pending[tx_type.lower().strip()].append(tx)
+            pending[normalize_transaction_type(tx_type)].append(tx)
             continue
 
-        for entry_type, rule in AUDIT_ENTRY_RULES.items():
+        for entry_type, rule in audit_entry_policies.items():
             if not transaction_matches_audit_result(tx_type, rule["results"]):
                 continue
 
@@ -571,7 +669,7 @@ def get_broken_audit_entry_ids(transactions: list[dict], now_ts: int | None = No
             break
 
     for entry_type, queue in pending.items():
-        window = AUDIT_ENTRY_RULES[entry_type]["window"]
+        window = audit_entry_policies[entry_type]["window"]
         for entry in queue:
             if now_ts - entry["ts"] > window:
                 broken_ids.add(entry["id"])
@@ -2541,13 +2639,34 @@ class Economy(commands.Cog):
             history_text = f"✅ No {filter_mode or ''} transactions found in recent history."
 
         embed.description = history_text
-        embed.set_footer(text="Use !refund <id> to reverse a transaction.")
+        embed.set_footer(text=f"Use {COMMAND_PREFIX}refund <id> [preview] [force] to reverse a transaction.")
         await ctx.send(embed=embed)
 
     @commands.command(name='refund', aliases=['ref'])
     @commands.is_owner()
-    async def refund_command(self, ctx: commands.Context, tx_id: int, *, reason: str = "Admin decision"):
-        """Bot Owner Only: Refund a transaction by ID and reset minigame cooldowns."""
+    async def refund_command(self, ctx: commands.Context, tx_id: int, action: str = None, *, reason: str = "Admin decision"):
+        """Bot Owner Only: Refund a transaction by ID. Supports 'preview' and 'force'."""
+        force_requested = False
+        preview_requested = False
+        if action:
+            normalized_action = action.lower().strip()
+            if normalized_action in {"force", "--force"}:
+                force_requested = True
+            elif normalized_action in {"preview", "--preview"}:
+                preview_requested = True
+            else:
+                reason = action if reason == "Admin decision" else f"{action} {reason}"
+
+        if reason != "Admin decision":
+            reason_parts = reason.split()
+            leading_flags = []
+            while reason_parts and reason_parts[0].lower() in {"force", "--force", "preview", "--preview"}:
+                leading_flags.append(reason_parts.pop(0).lower())
+            if leading_flags:
+                force_requested = force_requested or any(flag in {"force", "--force"} for flag in leading_flags)
+                preview_requested = preview_requested or any(flag in {"preview", "--preview"} for flag in leading_flags)
+                reason = " ".join(reason_parts) if reason_parts else "Admin decision"
+
         # 1. Fetch transaction
         row = db_query("SELECT user_id, amount, type FROM transactions WHERE id = ?", (tx_id,), fetchone=True)
         if not row:
@@ -2555,37 +2674,73 @@ class Economy(commands.Cog):
             return
 
         uid, amt, orig_type = row
-        
-        # 2. Process Refund
-        # We reverse the amount (e.g., if they paid 100, we add 100)
-        refund_amt = abs(amt) if amt < 0 else -amt
-        new_bal = add_balance(uid, refund_amt)
-        
-        # 3. Handle Vault/Minigame Logic
-        vault_delta, stats_updates = get_refund_side_effects(orig_type, amt)
-        if vault_delta:
-            track_fee(vault_delta)
-        if stats_updates:
-            update_user_stats(uid, **stats_updates)
-            
-        # 4. Log Refund
-        log_transaction(uid, refund_amt, f"Refund: {orig_type}", processed=1)
-        
-        # 5. Notify
-        member = self.bot.get_user(int(uid))
+
+        refund_plan = get_refund_plan(orig_type, amt, force_unsupported=force_requested)
+
+        try:
+            member = self.bot.get_user(int(uid))
+        except (TypeError, ValueError):
+            member = None
         member_name = member.display_name if member else f"User {uid}"
-        
+
+        if not refund_plan["allowed"]:
+            embed = discord.Embed(title="⚠️ Refund Blocked", color=discord.Color.orange())
+            embed.add_field(name="Target", value=member_name, inline=True)
+            embed.add_field(name="Original Type", value=orig_type, inline=True)
+            embed.add_field(name="Policy", value=refund_plan["policy_label"], inline=True)
+            embed.add_field(name="Requested Wallet Change", value=f"{refund_plan['wallet_delta']:,} JC", inline=True)
+            embed.add_field(name="Why Blocked", value=refund_plan["blocked_reason"], inline=False)
+            embed.add_field(name="Next Step", value=f"Use `{COMMAND_PREFIX}refund {tx_id} force [reason]` to apply a wallet-only reversal, or `preview` to inspect first.", inline=False)
+            await ctx.send(embed=embed)
+            return
+
+        vault_change = f"{refund_plan['vault_delta']:,} JC" if refund_plan["vault_delta"] else "No vault change"
+        cooldown_change = ", ".join(sorted(refund_plan["stats_updates"])) if refund_plan["stats_updates"] else "None"
+
+        if preview_requested:
+            embed = discord.Embed(title="🔎 Refund Preview", color=discord.Color.blue())
+            embed.add_field(name="Target", value=member_name, inline=True)
+            embed.add_field(name="Wallet Change", value=f"{refund_plan['wallet_delta']:,} JC", inline=True)
+            embed.add_field(name="Original Type", value=orig_type, inline=True)
+            embed.add_field(name="Policy", value=refund_plan["policy_label"], inline=True)
+            embed.add_field(name="Vault Change", value=vault_change, inline=True)
+            embed.add_field(name="Cooldown Reset", value=cooldown_change, inline=True)
+            embed.add_field(name="Reason", value=reason, inline=False)
+            if refund_plan["force_unsupported"]:
+                embed.add_field(name="Execution Mode", value="Previewing forced wallet-only reversal", inline=False)
+            embed.set_footer(text="No changes applied.")
+            await ctx.send(embed=embed)
+            return
+
+        # 2. Process Refund
+        new_bal = add_balance(uid, refund_plan["wallet_delta"])
+
+        # 3. Handle Vault/Minigame Logic
+        if refund_plan["vault_delta"]:
+            track_fee(refund_plan["vault_delta"])
+        if refund_plan["stats_updates"]:
+            update_user_stats(uid, **refund_plan["stats_updates"])
+
+        # 4. Log Refund
+        log_transaction(uid, refund_plan["wallet_delta"], f"Refund: {orig_type}", processed=1)
+
+        # 5. Notify
         embed = discord.Embed(title="✅ Transaction Refunded", color=discord.Color.green())
         embed.add_field(name="Target", value=member_name, inline=True)
-        embed.add_field(name="Amount", value=f"{refund_amt:,} JC", inline=True)
+        embed.add_field(name="Wallet Change", value=f"{refund_plan['wallet_delta']:,} JC", inline=True)
         embed.add_field(name="Original Type", value=orig_type, inline=True)
+        embed.add_field(name="Policy", value=refund_plan["policy_label"], inline=True)
+        embed.add_field(name="Vault Change", value=vault_change, inline=True)
+        embed.add_field(name="Cooldown Reset", value=cooldown_change, inline=True)
         embed.add_field(name="Reason", value=reason, inline=False)
+        if refund_plan["force_unsupported"]:
+            embed.add_field(name="Execution Mode", value="Forced wallet-only reversal", inline=False)
         embed.set_footer(text=f"New Balance: {new_bal:,} JC")
         
         await ctx.send(embed=embed)
         if member:
             try:
-                await member.send(f"💰 **Refund Issued!**\nYou have been refunded **{refund_amt:,} JC** for `{orig_type}`.\nReason: {reason}")
+                await member.send(f"💰 **Refund Issued!**\nYou have been refunded **{refund_plan['wallet_delta']:,} JC** for `{orig_type}`.\nReason: {reason}")
             except:
                 pass
 
