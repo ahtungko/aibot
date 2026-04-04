@@ -41,6 +41,21 @@ def get_db():
     conn.execute("CREATE TABLE IF NOT EXISTS inventory (user_id TEXT, item_name TEXT, item_type TEXT, item_data TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS investments (user_id TEXT PRIMARY KEY, gold_grams REAL DEFAULT 0.0)")
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS user_profiles (user_id TEXT PRIMARY KEY, equipped_title TEXT DEFAULT '')")
+    conn.execute("CREATE TABLE IF NOT EXISTS achievements (user_id TEXT, achievement_key TEXT, unlocked_at INTEGER DEFAULT 0, PRIMARY KEY (user_id, achievement_key))")
+    conn.execute("CREATE TABLE IF NOT EXISTS progress_counters (user_id TEXT, counter_key TEXT, value INTEGER DEFAULT 0, PRIMARY KEY (user_id, counter_key))")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS missions ("
+        "user_id TEXT, scope TEXT, cycle_key TEXT, slot INTEGER, mission_key TEXT, counter_key TEXT, "
+        "target INTEGER DEFAULT 0, progress INTEGER DEFAULT 0, reward INTEGER DEFAULT 0, "
+        "description TEXT DEFAULT '', claimed INTEGER DEFAULT 0, "
+        "PRIMARY KEY (user_id, scope, cycle_key, slot))"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS box_progress ("
+        "user_id TEXT PRIMARY KEY, epic_pity INTEGER DEFAULT 0, legendary_pity INTEGER DEFAULT 0, "
+        "boxes_opened INTEGER DEFAULT 0)"
+    )
     conn.execute("CREATE TABLE IF NOT EXISTS scramble_words ("
                  "id INTEGER PRIMARY KEY AUTOINCREMENT, original TEXT, "
                  "scrambled TEXT, category TEXT, status INTEGER DEFAULT 0)")
@@ -176,9 +191,581 @@ LINKED_ROBBERY_REFUND_LOG = "Admin Linked Refund: Robbery counterpart"
 BOX_EVENT_END_ANNOUNCED_KEY = "box_event_last_end_announcement"
 RC_DISCORD_BUCKET_COMMANDS = ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']
 UNJAIL_DISCORD_BUCKET_COMMANDS = ['crime']
+MISSION_RESET_TZ = timezone(timedelta(hours=8))
+DAILY_MISSION_SLOTS = 3
+WEEKLY_MISSION_SLOTS = 2
+BOX_EPIC_PITY_THRESHOLD = 10
+BOX_LEGENDARY_PITY_THRESHOLD = 50
+
+ACHIEVEMENT_DEFINITIONS = {
+    "first_stack": {
+        "name": "First Stack",
+        "description": "Reach 1,000 JC in wallet + bank.",
+        "metric": "net_worth_jc",
+        "target": 1_000,
+        "title": "Rising Spark",
+    },
+    "workhorse": {
+        "name": "Workhorse",
+        "description": "Complete 25 work shifts.",
+        "counter_key": "work_shifts",
+        "target": 25,
+        "title": "Workhorse",
+    },
+    "high_roller": {
+        "name": "High Roller",
+        "description": "Win 15 gambling games.",
+        "counter_key": "gambling_wins",
+        "target": 15,
+        "title": "High Roller",
+    },
+    "ocean_whisperer": {
+        "name": "Ocean Whisperer",
+        "description": "Catch your first legendary fish.",
+        "counter_key": "legendary_fish",
+        "target": 1,
+        "title": "Ocean Whisperer",
+    },
+    "outlaw": {
+        "name": "Outlaw",
+        "description": "Pull off 10 successful crimes.",
+        "counter_key": "crime_successes",
+        "target": 10,
+        "title": "Outlaw",
+    },
+    "treasure_seeker": {
+        "name": "Treasure Seeker",
+        "description": "Open 25 Mystery Boxes.",
+        "counter_key": "boxes_opened",
+        "target": 25,
+        "title": "Treasure Seeker",
+    },
+    "sleuth": {
+        "name": "Sleuth",
+        "description": "Solve 5 AI Mysteries.",
+        "counter_key": "mysteries_solved",
+        "target": 5,
+        "title": "Sleuth",
+    },
+    "cipher": {
+        "name": "Cipher",
+        "description": "Crack 5 code sessions.",
+        "counter_key": "crack_wins",
+        "target": 5,
+        "title": "Cipher",
+    },
+    "gold_baron": {
+        "name": "Gold Baron",
+        "description": "Hold 10g of gold.",
+        "metric": "gold_grams",
+        "target": 10,
+        "title": "Gold Baron",
+    },
+    "tycoon": {
+        "name": "Tycoon",
+        "description": "Reach 100,000 JC in wallet + bank.",
+        "metric": "net_worth_jc",
+        "target": 100_000,
+        "title": "Tycoon",
+    },
+}
+
+DAILY_MISSION_POOL = [
+    {"mission_key": "daily_work", "counter_key": "work_shifts", "target": 2, "reward": 400, "description": "Use `!work` 2 times."},
+    {"mission_key": "daily_fish", "counter_key": "fish_trips", "target": 3, "reward": 325, "description": "Go fishing 3 times."},
+    {"mission_key": "daily_scavenge", "counter_key": "scavenge_runs", "target": 4, "reward": 275, "description": "Scavenge 4 times."},
+    {"mission_key": "daily_flip", "counter_key": "flip_wins", "target": 1, "reward": 350, "description": "Win 1 coin flip."},
+    {"mission_key": "daily_beg", "counter_key": "beg_successes", "target": 3, "reward": 250, "description": "Beg successfully 3 times."},
+    {"mission_key": "daily_box", "counter_key": "boxes_opened", "target": 3, "reward": 450, "description": "Open 3 Mystery Boxes."},
+    {"mission_key": "daily_scramble", "counter_key": "scramble_solves", "target": 1, "reward": 350, "description": "Solve 1 scramble."},
+    {"mission_key": "daily_crime", "counter_key": "crime_successes", "target": 1, "reward": 500, "description": "Land 1 successful crime."},
+    {"mission_key": "daily_deposit", "counter_key": "bank_deposit_jc", "target": 3_000, "reward": 325, "description": "Deposit 3,000 JC into your bank."},
+]
+
+WEEKLY_MISSION_POOL = [
+    {"mission_key": "weekly_work", "counter_key": "work_shifts", "target": 10, "reward": 2_500, "description": "Use `!work` 10 times this week."},
+    {"mission_key": "weekly_fish", "counter_key": "fish_trips", "target": 15, "reward": 2_250, "description": "Go fishing 15 times this week."},
+    {"mission_key": "weekly_box", "counter_key": "boxes_opened", "target": 15, "reward": 3_000, "description": "Open 15 Mystery Boxes this week."},
+    {"mission_key": "weekly_gamble", "counter_key": "gambling_wins", "target": 8, "reward": 2_750, "description": "Win 8 gambling games this week."},
+    {"mission_key": "weekly_mystery", "counter_key": "mysteries_solved", "target": 2, "reward": 3_000, "description": "Solve 2 AI Mysteries this week."},
+    {"mission_key": "weekly_crack", "counter_key": "crack_wins", "target": 2, "reward": 3_000, "description": "Win 2 Code Cracker sessions this week."},
+    {"mission_key": "weekly_crime", "counter_key": "crime_successes", "target": 4, "reward": 3_250, "description": "Land 4 successful crimes this week."},
+    {"mission_key": "weekly_deposit", "counter_key": "bank_deposit_jc", "target": 20_000, "reward": 2_500, "description": "Deposit 20,000 JC this week."},
+]
+
+BOX_EVENT_MILESTONES = [
+    {"threshold": 25, "label": "Crowd Warmup", "description": "+1.00% Rare rate", "bonus": {"rare": 0.01}},
+    {"threshold": 75, "label": "Treasure Fever", "description": "+0.50% Epic rate", "bonus": {"epic": 0.005}},
+    {"threshold": 150, "label": "Golden Rush", "description": "+0.10% Legendary rate", "bonus": {"legendary": 0.001}},
+]
 
 def normalize_transaction_type(tx_type: str) -> str:
     return tx_type.lower().strip()
+
+def normalize_title_name(title_name: str) -> str:
+    return " ".join(title_name.lower().strip().split())
+
+def get_daily_mission_cycle_key(now_ts: int | None = None) -> str:
+    if now_ts is None:
+        now_ts = int(time.time())
+    dt = datetime.fromtimestamp(now_ts, tz=MISSION_RESET_TZ)
+    return dt.strftime("%Y-%m-%d")
+
+def get_weekly_mission_cycle_key(now_ts: int | None = None) -> str:
+    if now_ts is None:
+        now_ts = int(time.time())
+    dt = datetime.fromtimestamp(now_ts, tz=MISSION_RESET_TZ)
+    iso = dt.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+def ensure_user_profile(user_id: str, conn=None):
+    db_query("INSERT OR IGNORE INTO user_profiles (user_id) VALUES (?)", (user_id,), commit=True, conn=conn)
+
+def get_equipped_title(user_id: str, conn=None) -> str:
+    ensure_user_profile(user_id, conn=conn)
+    row = db_query("SELECT equipped_title FROM user_profiles WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
+    return row[0] if row and row[0] else ""
+
+def set_equipped_title(user_id: str, title_name: str, conn=None):
+    ensure_user_profile(user_id, conn=conn)
+    db_query("UPDATE user_profiles SET equipped_title = ? WHERE user_id = ?", (title_name or "", user_id), commit=True, conn=conn)
+
+def get_progress_counter(user_id: str, counter_key: str, conn=None) -> int:
+    row = db_query(
+        "SELECT value FROM progress_counters WHERE user_id = ? AND counter_key = ?",
+        (user_id, counter_key),
+        fetchone=True,
+        conn=conn,
+    )
+    return int(row[0]) if row else 0
+
+def get_progress_counters(user_id: str, conn=None) -> dict:
+    rows = db_query("SELECT counter_key, value FROM progress_counters WHERE user_id = ?", (user_id,), fetchall=True, conn=conn) or []
+    return {key: int(value) for key, value in rows}
+
+def increment_progress_counter(user_id: str, counter_key: str, amount: int = 1, conn=None) -> int:
+    amount = int(amount)
+    current = get_progress_counter(user_id, counter_key, conn=conn)
+    new_value = current + amount
+    db_query(
+        "INSERT INTO progress_counters (user_id, counter_key, value) VALUES (?, ?, ?) "
+        "ON CONFLICT(user_id, counter_key) DO UPDATE SET value = ?",
+        (user_id, counter_key, new_value, new_value),
+        commit=True,
+        conn=conn,
+    )
+    return new_value
+
+def get_achievement_progress_value(user_id: str, definition: dict, conn=None) -> int | float:
+    if "counter_key" in definition:
+        return get_progress_counter(user_id, definition["counter_key"], conn=conn)
+    metric = definition.get("metric")
+    if metric == "net_worth_jc":
+        return get_balance(user_id, conn=conn) + get_bank(user_id, conn=conn)
+    if metric == "gold_grams":
+        return get_gold_grams(user_id, conn=conn)
+    return 0
+
+def get_unlocked_achievement_keys(user_id: str, conn=None) -> set[str]:
+    rows = db_query("SELECT achievement_key FROM achievements WHERE user_id = ?", (user_id,), fetchall=True, conn=conn) or []
+    return {row[0] for row in rows}
+
+def refresh_achievements(user_id: str, conn=None) -> list[str]:
+    unlocked = get_unlocked_achievement_keys(user_id, conn=conn)
+    newly_unlocked = []
+    now_ts = int(time.time())
+
+    for key, definition in ACHIEVEMENT_DEFINITIONS.items():
+        if key in unlocked:
+            continue
+        progress_value = get_achievement_progress_value(user_id, definition, conn=conn)
+        if progress_value >= definition["target"]:
+            db_query(
+                "INSERT OR IGNORE INTO achievements (user_id, achievement_key, unlocked_at) VALUES (?, ?, ?)",
+                (user_id, key, now_ts),
+                commit=True,
+                conn=conn,
+            )
+            newly_unlocked.append(key)
+
+    return newly_unlocked
+
+def get_achievement_overview(user_id: str, conn=None) -> list[dict]:
+    refresh_achievements(user_id, conn=conn)
+    unlocked_rows = db_query(
+        "SELECT achievement_key, unlocked_at FROM achievements WHERE user_id = ?",
+        (user_id,),
+        fetchall=True,
+        conn=conn,
+    ) or []
+    unlocked_at = {key: int(ts) for key, ts in unlocked_rows}
+    overview = []
+    for key, definition in ACHIEVEMENT_DEFINITIONS.items():
+        progress = get_achievement_progress_value(user_id, definition, conn=conn)
+        overview.append({
+            "key": key,
+            "name": definition["name"],
+            "description": definition["description"],
+            "title": definition["title"],
+            "target": definition["target"],
+            "progress": progress,
+            "unlocked": key in unlocked_at,
+            "unlocked_at": unlocked_at.get(key, 0),
+        })
+    return overview
+
+def get_unlocked_titles(user_id: str, conn=None) -> list[str]:
+    overview = get_achievement_overview(user_id, conn=conn)
+    return [entry["title"] for entry in overview if entry["unlocked"]]
+
+def get_box_progress(user_id: str, conn=None) -> dict:
+    db_query("INSERT OR IGNORE INTO box_progress (user_id) VALUES (?)", (user_id,), commit=True, conn=conn)
+    row = db_query(
+        "SELECT epic_pity, legendary_pity, boxes_opened FROM box_progress WHERE user_id = ?",
+        (user_id,),
+        fetchone=True,
+        conn=conn,
+    )
+    return {
+        "epic_pity": int(row[0]) if row else 0,
+        "legendary_pity": int(row[1]) if row else 0,
+        "boxes_opened": int(row[2]) if row else 0,
+    }
+
+def set_box_progress(user_id: str, epic_pity: int, legendary_pity: int, boxes_opened: int, conn=None):
+    db_query(
+        "INSERT INTO box_progress (user_id, epic_pity, legendary_pity, boxes_opened) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET epic_pity = ?, legendary_pity = ?, boxes_opened = ?",
+        (user_id, epic_pity, legendary_pity, boxes_opened, epic_pity, legendary_pity, boxes_opened),
+        commit=True,
+        conn=conn,
+    )
+
+def get_box_event_bonus(boxes_opened: int) -> dict:
+    bonus = {"legendary": 0.0, "epic": 0.0, "rare": 0.0}
+    reached = []
+    next_milestone = None
+
+    for milestone in BOX_EVENT_MILESTONES:
+        if boxes_opened >= milestone["threshold"]:
+            reached.append(milestone)
+            for rarity, amount in milestone["bonus"].items():
+                bonus[rarity] += amount
+        elif next_milestone is None:
+            next_milestone = milestone
+
+    return {"bonus": bonus, "reached": reached, "next": next_milestone}
+
+def normalize_box_rates(legendary: float, epic: float, rare: float) -> dict:
+    total = max(0.0, legendary) + max(0.0, epic) + max(0.0, rare)
+    if total >= 0.999:
+        scale = 0.999 / total if total > 0 else 1.0
+        legendary *= scale
+        epic *= scale
+        rare *= scale
+    return {
+        "legendary": max(0.0, legendary),
+        "epic": max(0.0, epic),
+        "rare": max(0.0, rare),
+    }
+
+def get_box_event_progress(now_ts: int | None = None, conn=None) -> dict:
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    expiry = int(float(get_setting('box_event_expiry', '0', conn=conn)))
+    boxes_opened = int(float(get_setting('box_event_boxes_opened', '0', conn=conn)))
+    active = now_ts < expiry
+    milestone_info = get_box_event_bonus(boxes_opened if active else 0)
+
+    return {
+        "active": active,
+        "expiry": expiry,
+        "boxes_opened": boxes_opened if active else 0,
+        "bonus": milestone_info["bonus"] if active else {"legendary": 0.0, "epic": 0.0, "rare": 0.0},
+        "reached": milestone_info["reached"] if active else [],
+        "next": milestone_info["next"] if active else None,
+    }
+
+def get_box_rates(conn=None):
+    """Returns the currently active Mystery Box loot rates."""
+    now = int(time.time())
+    expiry = int(float(get_setting('box_event_expiry', '0', conn=conn)))
+    
+    if now < expiry:
+        leg = float(get_setting('box_legendary_event', '0.001', conn=conn))
+        epic = float(get_setting('box_epic_event', '0.01', conn=conn))
+        rare = float(get_setting('box_rare_event', '0.03', conn=conn))
+        is_event = True
+        milestone_progress = get_box_event_progress(now_ts=now, conn=conn)
+        leg += milestone_progress["bonus"]["legendary"]
+        epic += milestone_progress["bonus"]["epic"]
+        rare += milestone_progress["bonus"]["rare"]
+    else:
+        base_rates = get_box_base_rates(conn=conn)
+        leg = base_rates['legendary']
+        epic = base_rates['epic']
+        rare = base_rates['rare']
+        is_event = base_rates['is_event']
+
+    normalized = normalize_box_rates(leg, epic, rare)
+    return {
+        'legendary': normalized['legendary'],
+        'epic': normalized['epic'],
+        'rare': normalized['rare'],
+        'is_event': is_event,
+        'expiry': expiry
+    }
+
+def create_cycle_missions(user_id: str, scope: str, cycle_key: str, conn=None):
+    if scope == "daily":
+        pool = DAILY_MISSION_POOL
+        slot_count = DAILY_MISSION_SLOTS
+    else:
+        pool = WEEKLY_MISSION_POOL
+        slot_count = WEEKLY_MISSION_SLOTS
+
+    existing_count_row = db_query(
+        "SELECT COUNT(*) FROM missions WHERE user_id = ? AND scope = ? AND cycle_key = ?",
+        (user_id, scope, cycle_key),
+        fetchone=True,
+        conn=conn,
+    )
+    if existing_count_row and existing_count_row[0] >= slot_count:
+        return
+
+    rng = random.Random(f"{user_id}:{scope}:{cycle_key}")
+    selected = rng.sample(pool, slot_count)
+    for index, mission in enumerate(selected, start=1):
+        db_query(
+            "INSERT OR IGNORE INTO missions (user_id, scope, cycle_key, slot, mission_key, counter_key, target, progress, reward, description, claimed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0)",
+            (
+                user_id,
+                scope,
+                cycle_key,
+                index,
+                mission["mission_key"],
+                mission["counter_key"],
+                mission["target"],
+                mission["reward"],
+                mission["description"],
+            ),
+            commit=True,
+            conn=conn,
+        )
+
+def ensure_user_missions(user_id: str, conn=None):
+    create_cycle_missions(user_id, "daily", get_daily_mission_cycle_key(), conn=conn)
+    create_cycle_missions(user_id, "weekly", get_weekly_mission_cycle_key(), conn=conn)
+
+def get_user_missions(user_id: str, conn=None) -> dict:
+    ensure_user_missions(user_id, conn=conn)
+    daily_key = get_daily_mission_cycle_key()
+    weekly_key = get_weekly_mission_cycle_key()
+    rows = db_query(
+        "SELECT scope, slot, mission_key, counter_key, target, progress, reward, description, claimed "
+        "FROM missions WHERE user_id = ? AND ((scope = 'daily' AND cycle_key = ?) OR (scope = 'weekly' AND cycle_key = ?)) "
+        "ORDER BY scope, slot",
+        (user_id, daily_key, weekly_key),
+        fetchall=True,
+        conn=conn,
+    ) or []
+
+    grouped = {"daily": [], "weekly": []}
+    for scope, slot, mission_key, counter_key, target, progress, reward, description, claimed in rows:
+        grouped[scope].append({
+            "slot": int(slot),
+            "mission_key": mission_key,
+            "counter_key": counter_key,
+            "target": int(target),
+            "progress": int(progress),
+            "reward": int(reward),
+            "description": description,
+            "claimed": bool(claimed),
+        })
+    return grouped
+
+def record_mission_progress(user_id: str, counter_key: str, amount: int = 1, conn=None):
+    ensure_user_missions(user_id, conn=conn)
+    amount = max(0, int(amount))
+    if amount <= 0:
+        return
+
+    for scope, cycle_key in (("daily", get_daily_mission_cycle_key()), ("weekly", get_weekly_mission_cycle_key())):
+        rows = db_query(
+            "SELECT slot, progress, target FROM missions WHERE user_id = ? AND scope = ? AND cycle_key = ? AND counter_key = ?",
+            (user_id, scope, cycle_key, counter_key),
+            fetchall=True,
+            conn=conn,
+        ) or []
+        for slot, progress, target in rows:
+            new_progress = min(int(target), int(progress) + amount)
+            db_query(
+                "UPDATE missions SET progress = ? WHERE user_id = ? AND scope = ? AND cycle_key = ? AND slot = ?",
+                (new_progress, user_id, scope, cycle_key, int(slot)),
+                commit=True,
+                conn=conn,
+            )
+
+def claim_mission_rewards(user_id: str, scope: str | None = None, conn=None) -> dict:
+    ensure_user_missions(user_id, conn=conn)
+    scopes = [scope] if scope in {"daily", "weekly"} else ["daily", "weekly"]
+    claimable = []
+    for current_scope in scopes:
+        cycle_key = get_daily_mission_cycle_key() if current_scope == "daily" else get_weekly_mission_cycle_key()
+        rows = db_query(
+            "SELECT slot, reward, description FROM missions WHERE user_id = ? AND scope = ? AND cycle_key = ? AND claimed = 0 AND progress >= target",
+            (user_id, current_scope, cycle_key),
+            fetchall=True,
+            conn=conn,
+        ) or []
+        for slot, reward, description in rows:
+            claimable.append({
+                "scope": current_scope,
+                "cycle_key": cycle_key,
+                "slot": int(slot),
+                "reward": int(reward),
+                "description": description,
+            })
+
+    total_reward = 0
+    for mission in claimable:
+        total_reward += mission["reward"]
+        db_query(
+            "UPDATE missions SET claimed = 1 WHERE user_id = ? AND scope = ? AND cycle_key = ? AND slot = ?",
+            (user_id, mission["scope"], mission["cycle_key"], mission["slot"]),
+            commit=True,
+            conn=conn,
+        )
+        log_transaction(
+            user_id,
+            mission["reward"],
+            f"Mission Reward ({mission['scope'].capitalize()})",
+            processed=1,
+            conn=conn,
+        )
+
+    if total_reward > 0:
+        add_balance(user_id, total_reward, conn=conn)
+
+    return {"missions": claimable, "total_reward": total_reward}
+
+def get_mission_summary(user_id: str, conn=None) -> dict:
+    grouped = get_user_missions(user_id, conn=conn)
+    ready_to_claim = 0
+    total_missions = 0
+    completed_missions = 0
+
+    for missions in grouped.values():
+        total_missions += len(missions)
+        for mission in missions:
+            if mission["progress"] >= mission["target"]:
+                completed_missions += 1
+                if not mission["claimed"]:
+                    ready_to_claim += 1
+
+    return {
+        "total": total_missions,
+        "completed": completed_missions,
+        "ready_to_claim": ready_to_claim,
+        "daily": grouped["daily"],
+        "weekly": grouped["weekly"],
+    }
+
+def apply_progress_events(user_id: str, events: dict[str, int], conn=None) -> list[str]:
+    for counter_key, amount in events.items():
+        amount = int(amount)
+        if amount <= 0:
+            continue
+        increment_progress_counter(user_id, counter_key, amount, conn=conn)
+        record_mission_progress(user_id, counter_key, amount, conn=conn)
+    return refresh_achievements(user_id, conn=conn)
+
+def roll_mystery_boxes(user_id: str, count: int, conn=None) -> dict:
+    count = max(1, int(count))
+    progress = get_box_progress(user_id, conn=conn)
+    epic_pity = progress["epic_pity"]
+    legendary_pity = progress["legendary_pity"]
+    boxes_opened = progress["boxes_opened"]
+    items_found = []
+    outcomes = []
+    event_progress_before = get_box_event_progress(conn=conn)
+    event_count_before = event_progress_before["boxes_opened"]
+
+    for _ in range(count):
+        rates = get_box_rates(conn=conn)
+        roll = random.random()
+        forced = None
+
+        if legendary_pity >= (BOX_LEGENDARY_PITY_THRESHOLD - 1):
+            rarity = "LEGENDARY"
+            forced = "Legendary pity"
+        elif roll < rates["legendary"]:
+            rarity = "LEGENDARY"
+        elif roll < rates["legendary"] + rates["epic"]:
+            rarity = "EPIC"
+        elif roll < rates["legendary"] + rates["epic"] + rates["rare"]:
+            rarity = "RARE"
+        else:
+            rarity = "COMMON"
+
+        if rarity in {"COMMON", "RARE"} and epic_pity >= (BOX_EPIC_PITY_THRESHOLD - 1):
+            rarity = "EPIC"
+            forced = "Epic pity"
+
+        if rarity == "LEGENDARY":
+            win = 15000
+            item = "🏆 Golden JC"
+            epic_pity = 0
+            legendary_pity = 0
+        elif rarity == "EPIC":
+            win = 5000
+            item = "🥈 Silver Coin"
+            epic_pity = 0
+            legendary_pity += 1
+        elif rarity == "RARE":
+            win = random.randint(1500, 3000)
+            item = None
+            epic_pity += 1
+            legendary_pity += 1
+        else:
+            win = random.randint(200, 500)
+            item = None
+            epic_pity += 1
+            legendary_pity += 1
+
+        boxes_opened += 1
+        add_balance(user_id, win, conn=conn)
+        log_transaction(user_id, win, f"Box Reveal: {rarity}", conn=conn)
+        if item:
+            add_item(user_id, item, conn=conn)
+            items_found.append(item)
+
+        if rates["is_event"]:
+            current_opened = int(float(get_setting("box_event_boxes_opened", "0", conn=conn)))
+            set_setting("box_event_boxes_opened", str(current_opened + 1), conn=conn)
+
+        outcomes.append({"rarity": rarity, "win": win, "item": item, "forced": forced})
+
+    set_box_progress(user_id, epic_pity, legendary_pity, boxes_opened, conn=conn)
+    apply_progress_events(user_id, {"boxes_opened": count}, conn=conn)
+
+    event_progress_after = get_box_event_progress(conn=conn)
+    milestones_crossed = [
+        milestone for milestone in event_progress_after["reached"]
+        if milestone["threshold"] > event_count_before
+    ]
+
+    return {
+        "outcomes": outcomes,
+        "items_found": items_found,
+        "epic_pity": epic_pity,
+        "legendary_pity": legendary_pity,
+        "boxes_opened": boxes_opened,
+        "milestones_crossed": milestones_crossed,
+        "event_progress": event_progress_after,
+    }
 
 TRANSACTION_POLICY_REGISTRY = {
     "exact": {
@@ -1230,39 +1817,14 @@ def track_gold_fee(amount: float, conn=None):
     current = float(get_setting("gold_fee_vault", "0.0", conn=conn))
     set_setting("gold_fee_vault", str(current + amount), conn=conn)
 
-def get_box_base_rates() -> dict:
+def get_box_base_rates(conn=None) -> dict:
     """Returns the default Mystery Box loot rates outside of events."""
     return {
-        'legendary': float(get_setting('box_legendary_rate', '0.001')),
-        'epic': float(get_setting('box_epic_rate', '0.01')),
-        'rare': float(get_setting('box_rare_rate', '0.03')),
+        'legendary': float(get_setting('box_legendary_rate', '0.001', conn=conn)),
+        'epic': float(get_setting('box_epic_rate', '0.01', conn=conn)),
+        'rare': float(get_setting('box_rare_rate', '0.03', conn=conn)),
         'is_event': False,
         'expiry': 0,
-    }
-
-def get_box_rates():
-    """Returns the currently active Mystery Box loot rates."""
-    now = int(time.time())
-    expiry = int(float(get_setting('box_event_expiry', '0')))
-    
-    if now < expiry:
-        leg = float(get_setting('box_legendary_event', '0.001'))
-        epic = float(get_setting('box_epic_event', '0.01'))
-        rare = float(get_setting('box_rare_event', '0.03'))
-        is_event = True
-    else:
-        base_rates = get_box_base_rates()
-        leg = base_rates['legendary']
-        epic = base_rates['epic']
-        rare = base_rates['rare']
-        is_event = base_rates['is_event']
-        
-    return {
-        'legendary': leg,
-        'epic': epic,
-        'rare': rare,
-        'is_event': is_event,
-        'expiry': expiry
     }
 
 def get_box_event_end_plan(now_ts: int | None = None) -> dict:
@@ -1846,6 +2408,7 @@ class Economy(commands.Cog):
             add_balance(uid, -cost, conn=conn)
             update_user_stats(uid, conn=conn, last_fish=now + 15)
             log_transaction(uid, -cost, "Fishing Trip Fee", conn=conn)
+            apply_progress_events(uid, {"fish_trips": 1}, conn=conn)
         
         # --- RNG & Outcomes ---
         # 50% Trash (0 JC)
@@ -1966,6 +2529,8 @@ class Economy(commands.Cog):
             with db_transaction() as conn:
                 add_balance(uid, reward, conn=conn)
                 log_transaction(uid, reward, f"Fishing Reward ({rarity})", conn=conn)
+                if rarity == "Legendary":
+                    apply_progress_events(uid, {"legendary_fish": 1}, conn=conn)
             
 
             
@@ -2052,6 +2617,7 @@ class Economy(commands.Cog):
             add_balance(uid, -amount, conn=conn)
             new_bank = add_bank(uid, amount, conn=conn)
             log_transaction(uid, amount, "Bank Deposit", conn=conn)
+            apply_progress_events(uid, {"bank_deposit_jc": amount}, conn=conn)
         
         if is_capped:
             await ctx.send(f"🏦 **Bank Full!** {ctx.author.mention}, you deposited **{amount:,}** JC (filling the vault to its **{limit:,}** limit).\nNew Bank Balance: **{new_bank:,}** JC.")
@@ -2207,6 +2773,7 @@ class Economy(commands.Cog):
             track_fee(tax, conn=conn)
             log_transaction(uid, net_reward, log_msg, conn=conn)
             log_transaction(uid, -tax, "Work Tax", processed=1, conn=conn)
+            apply_progress_events(uid, {"work_shifts": 1}, conn=conn)
 
             # 5. Coin Shard (Iron Pickaxe Perk)
             if pick["name"] == "Iron Pickaxe" and random.random() < 0.05:
@@ -2304,6 +2871,7 @@ class Economy(commands.Cog):
             new_bal = add_balance(uid, reward, conn=conn)
             update_user_stats(uid, conn=conn, last_scavenge=now, scavenge_daily_total=new_daily_total)
             log_transaction(uid, reward, "Scavenge Reward", conn=conn)
+            apply_progress_events(uid, {"scavenge_runs": 1}, conn=conn)
         
         scavenge_locs = [
             "the back of an old sofa", "under a vending machine", "in a dusty corner of the server",
@@ -2396,6 +2964,7 @@ class Economy(commands.Cog):
         with db_transaction() as conn:
             new_bal = add_balance(uid, reward, conn=conn)
             log_transaction(uid, reward, "Begging Success", conn=conn)
+            apply_progress_events(uid, {"beg_successes": 1}, conn=conn)
         
         favors = [
             "A kind stranger dropped some change.",
@@ -2446,6 +3015,7 @@ class Economy(commands.Cog):
                 add_balance(uid, base_amt, conn=conn)
                 update_user_stats(uid, conn=conn, last_crime=now + 3600)
                 log_transaction(uid, base_amt, "Crime Success", conn=conn)
+                apply_progress_events(uid, {"crime_successes": 1}, conn=conn)
             
             crimes = [
                 "hacked a local vending machine", "pulled off a sophisticated bank heist",
@@ -2688,8 +3258,24 @@ class Economy(commands.Cog):
         if vip_active:
             expiry = get_vip_expiry(uid)
             vip_status = f"✅ Active (Expires <t:{expiry}:R>)"
+
+        with db_transaction() as conn:
+            refresh_achievements(uid, conn=conn)
+            equipped_title = get_equipped_title(uid, conn=conn) or "None"
+            achievement_overview = get_achievement_overview(uid, conn=conn)
+            mission_summary = get_mission_summary(uid, conn=conn)
+        unlocked_achievements = sum(1 for entry in achievement_overview if entry["unlocked"])
         
         embed.add_field(name="VIP Membership 👑", value=vip_status, inline=False)
+        embed.add_field(
+            name="Profile 🏷️",
+            value=(
+                f"Title: **{equipped_title}**\n"
+                f"Achievements: **{unlocked_achievements}/{len(achievement_overview)}**\n"
+                f"Mission Rewards Ready: **{mission_summary['ready_to_claim']}**"
+            ),
+            inline=False,
+        )
         embed.add_field(name="Balances 💵🏦", value=f"Wallet: **{wallet:,}** JC\nBank: **{bank:,}** / {limit_str} JC", inline=False)
         embed.add_field(name="Collectibles 🎒✨", value=coll_str, inline=False)
         
@@ -2720,6 +3306,139 @@ class Economy(commands.Cog):
             embed.add_field(name="Gold Holdings 🥇", value="0.0000g (*No investments yet*)", inline=False)
             embed.add_field(name="Total Net Worth", value=f"**{base_net_worth:,}** JC", inline=False)
             await ctx.send(embed=embed)
+
+    @commands.command(name='achievements', aliases=['ach', 'achs'])
+    async def achievements_command(self, ctx: commands.Context):
+        """View your achievement progress and unlocked titles."""
+        uid = str(ctx.author.id)
+        with db_transaction() as conn:
+            newly_unlocked = refresh_achievements(uid, conn=conn)
+            overview = get_achievement_overview(uid, conn=conn)
+            current_title = get_equipped_title(uid, conn=conn) or "None"
+
+        unlocked = [entry for entry in overview if entry["unlocked"]]
+        locked = [entry for entry in overview if not entry["unlocked"]]
+
+        def format_progress(entry: dict) -> str:
+            progress = entry["progress"]
+            target = entry["target"]
+            if isinstance(progress, float) or isinstance(target, float):
+                return f"{float(progress):.1f}/{float(target):.1f}"
+            return f"{int(progress):,}/{int(target):,}"
+
+        unlocked_text = "\n".join(
+            f"✅ **{entry['name']}** — {entry['title']}\n{entry['description']}"
+            for entry in unlocked
+        ) or "No achievements unlocked yet."
+        locked_text = "\n".join(
+            f"⬜ **{entry['name']}** ({format_progress(entry)})\n{entry['description']}"
+            for entry in locked[:5]
+        ) or "Everything is unlocked."
+
+        embed = discord.Embed(
+            title="🏆 Achievement Board",
+            description=f"Current Title: **{current_title}**",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Unlocked", value=unlocked_text[:1024], inline=False)
+        embed.add_field(name="In Progress", value=locked_text[:1024], inline=False)
+        if newly_unlocked:
+            unlocked_names = ", ".join(ACHIEVEMENT_DEFINITIONS[key]["name"] for key in newly_unlocked)
+            embed.set_footer(text=f"Newly unlocked this check: {unlocked_names}")
+        else:
+            embed.set_footer(text=f"{len(unlocked)}/{len(overview)} achievements unlocked.")
+        await ctx.send(embed=embed)
+
+    @commands.command(name='title', aliases=['titles'])
+    async def title_command(self, ctx: commands.Context, *, title_name: str = None):
+        """Show or equip one of your unlocked titles. Usage: !title [name|none]"""
+        uid = str(ctx.author.id)
+
+        with db_transaction() as conn:
+            refresh_achievements(uid, conn=conn)
+            unlocked_titles = get_unlocked_titles(uid, conn=conn)
+            current_title = get_equipped_title(uid, conn=conn) or "None"
+
+        if not title_name:
+            title_list = "\n".join(f"• {title}" for title in unlocked_titles) if unlocked_titles else "No titles unlocked yet."
+            embed = discord.Embed(
+                title="🏷️ Title Locker",
+                description=f"Current Title: **{current_title}**",
+                color=discord.Color.blurple(),
+            )
+            embed.add_field(name="Unlocked Titles", value=title_list[:1024], inline=False)
+            embed.set_footer(text=f"Use {COMMAND_PREFIX}title <name> to equip, or {COMMAND_PREFIX}title none to clear.")
+            await ctx.send(embed=embed)
+            return
+
+        normalized = normalize_title_name(title_name)
+        if normalized in {"none", "clear", "off", "remove"}:
+            with db_transaction() as conn:
+                set_equipped_title(uid, "", conn=conn)
+            await ctx.send(f"🏷️ {ctx.author.mention}, your title has been cleared.")
+            return
+
+        matched_title = None
+        for unlocked_title in unlocked_titles:
+            if normalize_title_name(unlocked_title) == normalized:
+                matched_title = unlocked_title
+                break
+
+        if not matched_title:
+            await ctx.send("❌ That title isn't unlocked yet. Use `!achievements` or `!title` to view your options.")
+            return
+
+        with db_transaction() as conn:
+            set_equipped_title(uid, matched_title, conn=conn)
+        await ctx.send(f"🏷️ {ctx.author.mention}, your active title is now **{matched_title}**.")
+
+    @commands.command(name='missions', aliases=['mission', 'quests'])
+    async def missions_command(self, ctx: commands.Context, action: str = None):
+        """View your daily and weekly missions. Use !missions claim to collect rewards."""
+        uid = str(ctx.author.id)
+
+        if action and action.lower().strip() in {"claim", "collect"}:
+            with db_transaction() as conn:
+                claim_result = claim_mission_rewards(uid, conn=conn)
+            if claim_result["total_reward"] <= 0:
+                await ctx.send("📋 No completed mission rewards are ready to claim right now.")
+                return
+
+            mission_lines = "\n".join(
+                f"• {mission['scope'].capitalize()}: {mission['description']} (+{mission['reward']:,} JC)"
+                for mission in claim_result["missions"]
+            )
+            embed = discord.Embed(title="✅ Mission Rewards Claimed", color=discord.Color.green())
+            embed.add_field(name="Collected", value=mission_lines[:1024], inline=False)
+            embed.add_field(name="Total Reward", value=f"**{claim_result['total_reward']:,}** JC", inline=False)
+            await ctx.send(embed=embed)
+            return
+
+        with db_transaction() as conn:
+            summary = get_mission_summary(uid, conn=conn)
+
+        def format_missions(missions: list[dict]) -> str:
+            if not missions:
+                return "No missions rolled for this cycle."
+            lines = []
+            for mission in missions:
+                status = "Claimed" if mission["claimed"] else ("Ready" if mission["progress"] >= mission["target"] else "In Progress")
+                lines.append(
+                    f"{'✅' if mission['progress'] >= mission['target'] else '⬜'} "
+                    f"{mission['description']} ({mission['progress']:,}/{mission['target']:,}) "
+                    f"[{status}] +{mission['reward']:,} JC"
+                )
+            return "\n".join(lines)
+
+        embed = discord.Embed(
+            title="🗂️ Mission Board",
+            description=f"Rewards ready to claim: **{summary['ready_to_claim']}**",
+            color=discord.Color.teal(),
+        )
+        embed.add_field(name="Daily Missions", value=format_missions(summary["daily"])[:1024], inline=False)
+        embed.add_field(name="Weekly Missions", value=format_missions(summary["weekly"])[:1024], inline=False)
+        embed.set_footer(text=f"Use {COMMAND_PREFIX}missions claim to collect completed rewards.")
+        await ctx.send(embed=embed)
 
     @commands.command(name='buygold', aliases=['bg'])
     async def buygold_command(self, ctx: commands.Context, amount: str = None):
@@ -3009,6 +3728,7 @@ class Economy(commands.Cog):
                 winnings = int(amount * 1.9)
                 new_bal = add_balance(uid, winnings, conn=conn)
                 log_transaction(uid, winnings, "Flip Win", conn=conn)
+                apply_progress_events(uid, {"flip_wins": 1, "gambling_wins": 1}, conn=conn)
                 color = discord.Color.green()
                 msg = f"🎉 You guessed right!\nYou won **{amount:,}** JC!"
             else:
@@ -3064,6 +3784,7 @@ class Economy(commands.Cog):
                 winnings = amount * multiplier
                 new_bal = add_balance(uid, winnings, conn=conn)
                 log_transaction(uid, winnings, f"Slots Win ({reels[0]})", conn=conn)
+                apply_progress_events(uid, {"slots_wins": 1, "gambling_wins": 1}, conn=conn)
                 title = "🎰 JACKPOT!!! 🎰" if reels[0] == "7️⃣" else "🎰 THREE OF A KIND!"
                 desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JC! (x{multiplier})"
                 color = discord.Color.gold()
@@ -3914,11 +4635,13 @@ class Economy(commands.Cog):
             
             cost_per = 1000
             total_cost = cost_per * count
-            
+
+            box_roll = None
             with db_transaction() as conn:
                 success, msg_text = pay_jc(uid, total_cost, conn=conn)
                 if success:
                     log_transaction(uid, -total_cost, f"Bought {count}x Mystery Box", conn=conn)
+                    box_roll = roll_mystery_boxes(uid, count, conn=conn)
             if not success:
                 await ctx.send(msg_text)
                 return
@@ -3926,69 +4649,38 @@ class Economy(commands.Cog):
             msg = await ctx.send(f"🎁 {ctx.author.mention} is opening **{count}** Mystery Box(es)... ({msg_text})")
             await asyncio.sleep(1.5)
             
-            # Open all boxes
             results = []
-            total_won = 0
-            items_found = []
             best_color = discord.Color.light_grey()
             rarity_order = {"COMMON": 0, "RARE": 1, "EPIC": 2, "LEGENDARY": 3}
             best_rarity_rank = -1
-            
-            box_outcomes = []
-            for _ in range(count):
-                res = random.random()
-                
-                # Dynamic loot rates (respects active events)
-                rates = get_box_rates()
-                rate_leg = rates['legendary']
-                rate_epic = rates['epic']
-                rate_rare = rates['rare']
-                
-                # Thresholds
-                thresh_leg = rate_leg
-                thresh_epic = thresh_leg + rate_epic
-                thresh_rare = thresh_epic + rate_rare
-                
-                if res < thresh_leg:  # Legendary
-                    win = 15000
-                    item = "🏆 Golden JC"
-                    rarity = "LEGENDARY"
-                    color = discord.Color.gold()
-                elif res < thresh_epic:  # Epic
-                    win = 5000
-                    item = "🥈 Silver Coin"
-                    rarity = "EPIC"
-                    color = discord.Color.purple()
-                elif res < thresh_rare:  # Rare
-                    win = random.randint(1500, 3000)
-                    item = None
-                    rarity = "RARE"
-                    color = discord.Color.blue()
-                else:  # Common
-                    win = random.randint(200, 500)
-                    item = None
-                    rarity = "COMMON"
-                    color = discord.Color.light_grey()
-                
+            total_won = 0
+            for outcome in box_roll["outcomes"]:
+                rarity = outcome["rarity"]
+                win = outcome["win"]
+                item = outcome["item"]
+                forced = outcome["forced"]
                 total_won += win
-                if item:
-                    items_found.append(item)
-                
-                # Track the best rarity for embed color
+
+                if rarity == "LEGENDARY":
+                    color = discord.Color.gold()
+                elif rarity == "EPIC":
+                    color = discord.Color.purple()
+                elif rarity == "RARE":
+                    color = discord.Color.blue()
+                else:
+                    color = discord.Color.light_grey()
+
                 rank = rarity_order.get(rarity, 0)
                 if rank > best_rarity_rank:
                     best_rarity_rank = rank
                     best_color = color
-                
-                box_outcomes.append((win, item, rarity))
-                results.append(f"📦 **{rarity}** — **{win:,}** JC" + (f" + {item}" if item else ""))
 
-            with db_transaction() as conn:
-                for win, item, rarity in box_outcomes:
-                    add_balance(uid, win, conn=conn)
-                    log_transaction(uid, win, f"Box Reveal: {rarity}", conn=conn)
-                    if item:
-                        add_item(uid, item, conn=conn)
+                line = f"📦 **{rarity}** — **{win:,}** JC"
+                if item:
+                    line += f" + {item}"
+                if forced:
+                    line += f" ({forced})"
+                results.append(line)
             
             # Build summary embed
             net = total_won - total_cost
@@ -4002,8 +4694,34 @@ class Economy(commands.Cog):
             embed.add_field(name="💰 Total Won", value=f"**{total_won:,}** JC", inline=True)
             embed.add_field(name="💸 Total Spent", value=f"**{total_cost:,}** JC", inline=True)
             embed.add_field(name="📊 Net P/L", value=f"**{net_str}** JC", inline=True)
-            if items_found:
-                embed.add_field(name="🎁 Items Found", value="\n".join(items_found), inline=False)
+            if box_roll["items_found"]:
+                embed.add_field(name="🎁 Items Found", value="\n".join(box_roll["items_found"]), inline=False)
+            embed.add_field(
+                name="🎯 Pity Tracker",
+                value=(
+                    f"Epic pity: **{box_roll['epic_pity']}/{BOX_EPIC_PITY_THRESHOLD}**\n"
+                    f"Legendary pity: **{box_roll['legendary_pity']}/{BOX_LEGENDARY_PITY_THRESHOLD}**"
+                ),
+                inline=False,
+            )
+            if box_roll["milestones_crossed"]:
+                milestone_text = "\n".join(
+                    f"• {milestone['label']} — {milestone['description']}"
+                    for milestone in box_roll["milestones_crossed"]
+                )
+                embed.add_field(name="🎉 Event Milestones Hit", value=milestone_text, inline=False)
+
+            event_progress = box_roll["event_progress"]
+            if event_progress["active"]:
+                if event_progress["next"]:
+                    next_milestone = event_progress["next"]
+                    milestone_text = (
+                        f"Opened: **{event_progress['boxes_opened']}** boxes\n"
+                        f"Next: **{next_milestone['threshold']}** boxes ({next_milestone['description']})"
+                    )
+                else:
+                    milestone_text = f"Opened: **{event_progress['boxes_opened']}** boxes\nAll event milestones unlocked."
+                embed.add_field(name="📈 Event Progress", value=milestone_text, inline=False)
             embed.set_footer(text=f"Balance: {get_balance(uid):,} JC")
             
             await msg.edit(content=None, embed=embed)
@@ -4494,6 +5212,7 @@ class Economy(commands.Cog):
         set_setting('box_epic_event', str(epic_dec))
         set_setting('box_rare_event', str(rare_dec))
         set_setting('box_event_expiry', str(expiry))
+        set_setting('box_event_boxes_opened', '0')
         set_setting(BOX_EVENT_END_ANNOUNCED_KEY, '0')
         
         # Build announcement embed
@@ -4528,7 +5247,11 @@ class Economy(commands.Cog):
     @commands.command(name='boxrates', aliases=['boxrate', 'br'])
     async def boxrates_command(self, ctx: commands.Context):
         """View the current Mystery Box loot rates."""
-        rates = get_box_rates()
+        uid = str(ctx.author.id)
+        with db_transaction() as conn:
+            rates = get_box_rates(conn=conn)
+            pity = get_box_progress(uid, conn=conn)
+            event_progress = get_box_event_progress(conn=conn)
         leg_pct = rates['legendary'] * 100
         epic_pct = rates['epic'] * 100
         rare_pct = rates['rare'] * 100
@@ -4558,6 +5281,31 @@ class Economy(commands.Cog):
             ),
             inline=False
         )
+        embed.add_field(
+            name="🎯 Your Pity",
+            value=(
+                f"Epic pity: **{pity['epic_pity']}/{BOX_EPIC_PITY_THRESHOLD}**\n"
+                f"Legendary pity: **{pity['legendary_pity']}/{BOX_LEGENDARY_PITY_THRESHOLD}**"
+            ),
+            inline=False,
+        )
+        if event_progress["active"]:
+            reached_text = ", ".join(milestone["label"] for milestone in event_progress["reached"]) or "None yet"
+            if event_progress["next"]:
+                next_text = f"{event_progress['next']['threshold']} boxes ({event_progress['next']['description']})"
+            else:
+                next_text = "All milestones unlocked"
+            bonus = event_progress["bonus"]
+            embed.add_field(
+                name="📈 Event Milestones",
+                value=(
+                    f"Opened: **{event_progress['boxes_opened']}** boxes\n"
+                    f"Unlocked: **{reached_text}**\n"
+                    f"Current Bonus: Rare **+{bonus['rare'] * 100:.2f}%**, Epic **+{bonus['epic'] * 100:.2f}%**, Legendary **+{bonus['legendary'] * 100:.2f}%**\n"
+                    f"Next: **{next_text}**"
+                ),
+                inline=False,
+            )
         embed.set_footer(text=f"Open boxes with {COMMAND_PREFIX}buy box")
         await ctx.send(embed=embed)
 
@@ -4791,6 +5539,7 @@ class BlackjackView(discord.ui.View):
                 new_bal = add_balance(uid, payout, conn=conn)
                 log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""), conn=conn)
                 log_transaction(uid, -tax_amount, "Blackjack Tax", processed=1, conn=conn)
+                apply_progress_events(uid, {"blackjack_wins": 1, "gambling_wins": 1}, conn=conn)
                 
                 color = discord.Color.green()
             elif win is False:

@@ -17,6 +17,7 @@ from cogs.economy import (
     SCRAMBLE_TIMEOUT_TX,
     SCRAMBLE_WIN_PREFIX,
     add_balance,
+    apply_progress_events,
     db_transaction,
     log_transaction,
     get_balance,
@@ -72,6 +73,7 @@ class MysteryView(discord.ui.View):
                     new_bal = add_balance(uid, net_bounty, conn=conn)
                     log_transaction(uid, net_bounty, MYSTERY_SOLVED_TX, conn=conn)
                     log_transaction(uid, -tax, "Mystery Bounty Tax", processed=1, conn=conn)
+                    apply_progress_events(uid, {"mysteries_solved": 1}, conn=conn)
                 
                 embed = discord.Embed(
                     title="🎉 MYSTERY SOLVED!",
@@ -218,6 +220,7 @@ class CodeCrackerView(discord.ui.View):
             new_bal = add_balance(uid, net_bounty, conn=conn)
             log_transaction(uid, net_bounty, CODE_CRACKER_WIN_TX, conn=conn)
             log_transaction(uid, -tax, "Code Cracker Tax", processed=1, conn=conn)
+            apply_progress_events(uid, {"crack_wins": 1}, conn=conn)
 
         embed = self.create_embed()
         embed.title = "🎊 CODE CRACKED!"
@@ -601,6 +604,7 @@ class Minigames(commands.Cog):
             with db_transaction() as conn:
                 new_bal = add_balance(uid, bounty, conn=conn)
                 log_transaction(uid, bounty, f"{SCRAMBLE_WIN_PREFIX}{original})", conn=conn)
+                apply_progress_events(uid, {"scramble_solves": 1}, conn=conn)
             await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
         except asyncio.TimeoutError:
             with db_transaction() as conn:
