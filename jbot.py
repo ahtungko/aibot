@@ -241,7 +241,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="Taxman System 🕵️", value=f"`{p}settaxmantoggle [on/off]` - Enable daily tax\n`{p}settaxmanpercent [%]` - Set tax rate\n`{p}taxstatus` - System status & timer\n`{p}settaxchannel [#ch]` - Set announcement channel", inline=False)
             embed.add_field(name="Rain & Notices", value=f"`{p}rainrate [%]` - Set rain chance\n`{p}setnoticechannel [#ch]` - Set notice channel\n`{p}setnotice [msg]` - Post announcement", inline=False)
             embed.add_field(name="Mystery Box", value=f"`{p}setbox [rates...]` - Start loot event\n`{p}setboxchannel [#ch]` - Set box channel", inline=False)
-            embed.add_field(name="System", value=f"`{p}audit @user [broken]` - Audit history\n`{p}refund <tx_id> [preview] [force]` - Reverse transaction\n`{p}rc @user` - Reset CD\n`{p}unjail @user` - Release from jail", inline=False)
+            embed.add_field(name="System", value=f"`{p}audit @user [broken]` - Audit history\n`{p}refund <tx_id> [preview] [force]` - Reverse transaction\n`{p}rc [@user] [preview]` - Reset CD\n`{p}unjail @user [preview]` - Release from jail", inline=False)
             
         embed.set_footer(text="Made with ❤️ by Jenny")
         await interaction.response.edit_message(embed=embed)

@@ -128,6 +128,22 @@ CODE_CRACKER_ENTRY_FEE_TX = "Code Cracker Entry Fee"
 CODE_CRACKER_WIN_TX = "Win Code Cracker"
 CODE_CRACKER_LOSS_TX = "Code Cracker Loss"
 CODE_CRACKER_TIMEOUT_REFUND_TX = "Code Cracker Timeout Refund"
+TRANSFER_TO_PREFIX = "Transfer to "
+TRANSFER_FROM_PREFIX = "Transfer from "
+TRANSFER_FEE_TX = "Transfer Fee"
+ROBBED_PREFIX = "Robbed "
+ROBBED_BY_PREFIX = "Robbed by "
+FAILED_ROBBERY_PREFIX = "Failed Robbery of "
+FAILED_ROBBERY_SHIELDED_SUFFIX = " (Shielded)"
+COMPENSATED_ATTEMPTED_ROBBERY_TX = "Compensated for Attempted Robbery"
+ROBBERY_GOLD_STOLEN_PREFIX = "Stole "
+ROBBERY_GOLD_STOLEN_BY_PREFIX = "Gold stolen by "
+ROBBERY_GOLD_FINE_PREFIX = "Robbery Fine: "
+ROBBERY_GOLD_RESTITUTION_PREFIX = "Restitution: Received "
+LINKED_TRANSFER_REFUND_LOG = "Admin Linked Refund: Transfer counterpart"
+LINKED_ROBBERY_REFUND_LOG = "Admin Linked Refund: Robbery counterpart"
+RC_DISCORD_BUCKET_COMMANDS = ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']
+UNJAIL_DISCORD_BUCKET_COMMANDS = ['crime']
 
 def normalize_transaction_type(tx_type: str) -> str:
     return tx_type.lower().strip()
@@ -219,6 +235,9 @@ TRANSACTION_POLICY_REGISTRY = {
         normalize_transaction_type(CRASH_PROFIT_TAX_TX): {
             "refund": {"vault_refund": "full"},
         },
+        normalize_transaction_type(COMPENSATED_ATTEMPTED_ROBBERY_TX): {
+            "refund": {"custom_builder": "failed_robbery"},
+        },
     },
     "patterns": [
         {
@@ -228,6 +247,26 @@ TRANSACTION_POLICY_REGISTRY = {
         {
             "pattern": r"crash game \(fee: (?P<entry_fee>\d+) jc\)",
             "refund": {"vault_refund": "legacy_crash_entry_fee"},
+        },
+        {
+            "pattern": r"transfer to .+",
+            "refund": {"custom_builder": "transfer"},
+        },
+        {
+            "pattern": r"transfer from .+",
+            "refund": {"custom_builder": "transfer"},
+        },
+        {
+            "pattern": r"robbed .+",
+            "refund": {"custom_builder": "successful_robbery"},
+        },
+        {
+            "pattern": r"robbed by .+",
+            "refund": {"custom_builder": "successful_robbery"},
+        },
+        {
+            "pattern": r"failed robbery of .+(?: \(shielded\))?",
+            "refund": {"custom_builder": "failed_robbery"},
         },
     ],
 }
@@ -389,6 +428,52 @@ def reset_persistent_economy_cooldowns(user_id: str):
         last_fish=0,
         last_crack=0,
     )
+
+def get_rc_reset_plan(user_id: str) -> dict:
+    """Summarizes which persistent cooldown markers exist and which buckets will be reset."""
+    stats = get_user_stats(user_id)
+    stored_markers = []
+
+    if get_last_work(user_id):
+        stored_markers.append("work")
+    if get_last_rob(user_id) > 0:
+        stored_markers.append("rob")
+    if stats["last_scavenge"] > 0:
+        stored_markers.append("scavenge")
+    if stats["last_scramble"] > 0:
+        stored_markers.append("scramble")
+    if stats["last_mystery"] > 0:
+        stored_markers.append("mystery")
+    if stats["last_beg"] > 0:
+        stored_markers.append("beg")
+    if stats["last_crime"] > 0:
+        stored_markers.append("crime")
+    if stats["last_fish"] > 0:
+        stored_markers.append("fish")
+    if stats["last_crack"] > 0:
+        stored_markers.append("crack")
+
+    return {
+        "stored_markers": stored_markers,
+        "bucket_commands": list(RC_DISCORD_BUCKET_COMMANDS),
+    }
+
+def get_unjail_plan(user_id: str, now_ts: int | None = None) -> dict:
+    """Summarizes the jail/crime cooldown state that unjail would clear."""
+    if now_ts is None:
+        now_ts = int(time.time())
+
+    stats = get_user_stats(user_id)
+    jail_until = stats["jail_until"] or 0
+    last_crime = stats["last_crime"] or 0
+
+    return {
+        "is_jailed": jail_until > now_ts,
+        "jail_until": jail_until,
+        "crime_cooldown_active": last_crime > now_ts,
+        "crime_cooldown_until": last_crime,
+        "bucket_commands": list(UNJAIL_DISCORD_BUCKET_COMMANDS),
+    }
 
 def get_top_balances(limit=10) -> list:
     """Returns Top users with their JC and Gold stats for Net Worth calculation."""
@@ -558,49 +643,416 @@ def resolve_transaction_policy_details(tx_type: str) -> tuple[dict | None, re.Ma
 
     return None, None, None
 
-def get_refund_plan(orig_type: str, amount: int, force_unsupported: bool = False) -> dict:
-    """Builds a structured refund plan for wallet, vault, and cooldown side effects."""
+def build_base_refund_plan(amount: int) -> dict:
+    """Returns the default wallet-only refund delta for a transaction amount."""
     refund_amt = abs(amount) if amount < 0 else -amount
-    policy, match, policy_source = resolve_transaction_policy_details(orig_type)
-    vault_delta = 0
-    stats_updates = {}
+    return {
+        "wallet_delta": refund_amt,
+        "vault_delta": 0,
+        "stats_updates": {},
+        "companion_adjustments": [],
+        "related_transaction_ids": [],
+        "notes": [],
+        "blocked_reason": None,
+    }
+
+def make_transaction_record(row: tuple | None) -> dict | None:
+    """Normalizes a transaction row into a dictionary."""
+    if not row:
+        return None
+
+    timestamp = row[4]
+    try:
+        timestamp = int(float(timestamp))
+    except (TypeError, ValueError):
+        timestamp = None
+
+    return {
+        "id": int(row[0]) if row[0] is not None else None,
+        "user_id": str(row[1]) if row[1] is not None else None,
+        "amount": int(row[2]),
+        "type": row[3],
+        "timestamp": timestamp,
+    }
+
+def get_nearby_transactions(tx_record: dict, *, window_seconds: int = 2, max_id_gap: int = 6) -> list[dict]:
+    """Fetches transactions that were logged close to the target transaction."""
+    if tx_record.get("timestamp") is None or tx_record.get("id") is None:
+        return []
+
+    rows = db_query(
+        "SELECT id, user_id, amount, type, timestamp "
+        "FROM transactions WHERE timestamp BETWEEN ? AND ? ORDER BY id",
+        (tx_record["timestamp"] - window_seconds, tx_record["timestamp"] + window_seconds),
+        fetchall=True,
+    ) or []
+
+    nearby = []
+    for row in rows:
+        candidate = make_transaction_record(row)
+        if not candidate or candidate["id"] == tx_record["id"]:
+            continue
+        if abs(candidate["id"] - tx_record["id"]) > max_id_gap:
+            continue
+        nearby.append(candidate)
+    return nearby
+
+def resolve_single_related_transaction(candidates: list[dict], label: str) -> tuple[dict | None, str | None]:
+    """Returns a single nearby related transaction or a safety-focused block reason."""
+    if not candidates:
+        return None, f"Couldn't find the linked {label} transaction nearby."
+    if len(candidates) > 1:
+        ids = ", ".join(f"#{tx['id']}" for tx in candidates)
+        return None, f"Found multiple possible {label} transactions nearby ({ids}); refusing to guess."
+    return candidates[0], None
+
+def build_transfer_refund_plan(tx_record: dict, _policy: dict, _match: re.Match | None) -> dict:
+    """Builds a safe multi-party refund plan for transfer transactions."""
+    plan = build_base_refund_plan(tx_record["amount"])
+    normalized_type = normalize_transaction_type(tx_record["type"])
+    nearby = get_nearby_transactions(tx_record)
+
+    if normalized_type.startswith(normalize_transaction_type(TRANSFER_TO_PREFIX)):
+        if tx_record["amount"] >= 0:
+            plan["blocked_reason"] = "Transfer sender rows must be negative amounts."
+            return plan
+        primary_role = "sender"
+        counterpart_candidates = [
+            tx for tx in nearby
+            if tx["user_id"] != tx_record["user_id"]
+            and tx["amount"] >= 0
+            and normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(TRANSFER_FROM_PREFIX))
+        ]
+    elif normalized_type.startswith(normalize_transaction_type(TRANSFER_FROM_PREFIX)):
+        if tx_record["amount"] <= 0:
+            plan["blocked_reason"] = "Transfer receiver rows must be positive amounts."
+            return plan
+        primary_role = "receiver"
+        counterpart_candidates = [
+            tx for tx in nearby
+            if tx["user_id"] != tx_record["user_id"]
+            and tx["amount"] <= 0
+            and normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(TRANSFER_TO_PREFIX))
+        ]
+    else:
+        plan["blocked_reason"] = "Transfer refund builder received an unexpected transaction type."
+        return plan
+
+    counterpart, blocked_reason = resolve_single_related_transaction(counterpart_candidates, "transfer counterpart")
+    if blocked_reason:
+        plan["blocked_reason"] = blocked_reason
+        return plan
+
+    plan["related_transaction_ids"] = [counterpart["id"]]
+
+    fee_rows = [
+        tx for tx in nearby
+        if normalize_transaction_type(tx["type"]) == normalize_transaction_type(TRANSFER_FEE_TX)
+    ]
+    if fee_rows:
+        plan["related_transaction_ids"].extend(tx["id"] for tx in fee_rows)
+        fee_ids = ", ".join(f"#{tx['id']}" for tx in fee_rows)
+        plan["blocked_reason"] = (
+            f"Nearby legacy `{TRANSFER_FEE_TX}` rows ({fee_ids}) make this transfer ambiguous; "
+            "wallet-only force is safer than guessing the vault reversal."
+        )
+        return plan
+
+    if primary_role == "sender":
+        gross_amount = abs(tx_record["amount"])
+        net_amount = counterpart["amount"]
+        companion_delta = -net_amount
+    else:
+        gross_amount = abs(counterpart["amount"])
+        net_amount = tx_record["amount"]
+        companion_delta = gross_amount
+
+    if gross_amount <= 0 or net_amount < 0:
+        plan["blocked_reason"] = "Transfer amounts are invalid for a linked reversal."
+        return plan
+
+    fee_amount = gross_amount - net_amount
+    if fee_amount < 0:
+        plan["blocked_reason"] = "Transfer fee math was inconsistent; refusing to guess the original fee."
+        return plan
+
+    plan["vault_delta"] = -fee_amount if fee_amount else 0
+    plan["companion_adjustments"] = [{
+        "user_id": counterpart["user_id"],
+        "amount": companion_delta,
+        "log_type": f"{LINKED_TRANSFER_REFUND_LOG} #{tx_record['id']}",
+        "related_tx_id": counterpart["id"],
+    }]
+    plan["notes"].append(f"Matched linked transfer row #{counterpart['id']}.")
+    return plan
+
+def build_successful_robbery_refund_plan(tx_record: dict, _policy: dict, _match: re.Match | None) -> dict:
+    """Builds a safe multi-party refund plan for successful robbery transactions."""
+    plan = build_base_refund_plan(tx_record["amount"])
+    normalized_type = normalize_transaction_type(tx_record["type"])
+    nearby = get_nearby_transactions(tx_record)
+
+    gold_side_effect_rows = [
+        tx for tx in nearby
+        if normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(ROBBERY_GOLD_STOLEN_PREFIX))
+        or normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(ROBBERY_GOLD_STOLEN_BY_PREFIX))
+    ]
+    if gold_side_effect_rows:
+        plan["related_transaction_ids"] = [tx["id"] for tx in gold_side_effect_rows]
+        gold_ids = ", ".join(f"#{tx['id']}" for tx in gold_side_effect_rows)
+        plan["blocked_reason"] = (
+            f"Nearby gold-theft side effects ({gold_ids}) mean this robbery touched both JC and Gold; "
+            "automatic reversal is blocked."
+        )
+        return plan
+
+    if normalized_type.startswith(normalize_transaction_type(ROBBED_PREFIX)):
+        if tx_record["amount"] < 0:
+            plan["blocked_reason"] = "Successful robber rows must be positive amounts."
+            return plan
+        primary_role = "thief"
+        counterpart_candidates = [
+            tx for tx in nearby
+            if tx["user_id"] != tx_record["user_id"]
+            and tx["amount"] <= 0
+            and normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(ROBBED_BY_PREFIX))
+        ]
+    elif normalized_type.startswith(normalize_transaction_type(ROBBED_BY_PREFIX)):
+        if tx_record["amount"] > 0:
+            plan["blocked_reason"] = "Robbery victim rows must be negative amounts."
+            return plan
+        primary_role = "victim"
+        counterpart_candidates = [
+            tx for tx in nearby
+            if tx["user_id"] != tx_record["user_id"]
+            and tx["amount"] >= 0
+            and normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(ROBBED_PREFIX))
+        ]
+    else:
+        plan["blocked_reason"] = "Robbery refund builder received an unexpected transaction type."
+        return plan
+
+    counterpart, blocked_reason = resolve_single_related_transaction(counterpart_candidates, "robbery counterpart")
+    if blocked_reason:
+        plan["blocked_reason"] = blocked_reason
+        return plan
+
+    plan["related_transaction_ids"] = [counterpart["id"]]
+
+    if primary_role == "thief":
+        stolen = abs(counterpart["amount"])
+        net_gain = tx_record["amount"]
+        companion_delta = stolen
+    else:
+        stolen = abs(tx_record["amount"])
+        net_gain = counterpart["amount"]
+        companion_delta = -net_gain
+
+    if stolen <= 0 or net_gain < 0:
+        plan["blocked_reason"] = "Robbery amounts are invalid for a linked reversal."
+        return plan
+
+    fee_amount = stolen - net_gain
+    if fee_amount < 0:
+        plan["blocked_reason"] = "Robbery tax math was inconsistent; refusing to guess the vault reversal."
+        return plan
+
+    plan["vault_delta"] = -fee_amount if fee_amount else 0
+    plan["companion_adjustments"] = [{
+        "user_id": counterpart["user_id"],
+        "amount": companion_delta,
+        "log_type": f"{LINKED_ROBBERY_REFUND_LOG} #{tx_record['id']}",
+        "related_tx_id": counterpart["id"],
+    }]
+    plan["notes"].append(f"Matched linked robbery row #{counterpart['id']}.")
+    return plan
+
+def build_failed_robbery_refund_plan(tx_record: dict, _policy: dict, _match: re.Match | None) -> dict:
+    """Builds a safe multi-party refund plan for failed robbery transactions."""
+    plan = build_base_refund_plan(tx_record["amount"])
+    normalized_type = normalize_transaction_type(tx_record["type"])
+    nearby = get_nearby_transactions(tx_record)
+
+    gold_side_effect_rows = [
+        tx for tx in nearby
+        if normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(ROBBERY_GOLD_FINE_PREFIX))
+        or normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(ROBBERY_GOLD_RESTITUTION_PREFIX))
+    ]
+    if gold_side_effect_rows:
+        plan["related_transaction_ids"] = [tx["id"] for tx in gold_side_effect_rows]
+        gold_ids = ", ".join(f"#{tx['id']}" for tx in gold_side_effect_rows)
+        plan["blocked_reason"] = (
+            f"Nearby failed-robbery gold penalties ({gold_ids}) mean this reversal would miss Gold side effects; "
+            "automatic reversal is blocked."
+        )
+        return plan
+
+    if normalized_type.startswith(normalize_transaction_type(FAILED_ROBBERY_PREFIX)):
+        if tx_record["amount"] >= 0:
+            plan["blocked_reason"] = "Failed robbery fine rows must be negative amounts."
+            return plan
+        primary_role = "thief"
+        counterpart_candidates = [
+            tx for tx in nearby
+            if tx["user_id"] != tx_record["user_id"]
+            and tx["amount"] >= 0
+            and normalize_transaction_type(tx["type"]) == normalize_transaction_type(COMPENSATED_ATTEMPTED_ROBBERY_TX)
+        ]
+    elif normalized_type == normalize_transaction_type(COMPENSATED_ATTEMPTED_ROBBERY_TX):
+        if tx_record["amount"] <= 0:
+            plan["blocked_reason"] = "Compensation rows must be positive amounts."
+            return plan
+        primary_role = "victim"
+        counterpart_candidates = [
+            tx for tx in nearby
+            if tx["user_id"] != tx_record["user_id"]
+            and tx["amount"] <= 0
+            and normalize_transaction_type(tx["type"]).startswith(normalize_transaction_type(FAILED_ROBBERY_PREFIX))
+        ]
+    else:
+        plan["blocked_reason"] = "Failed robbery refund builder received an unexpected transaction type."
+        return plan
+
+    counterpart, blocked_reason = resolve_single_related_transaction(counterpart_candidates, "failed robbery counterpart")
+    if blocked_reason:
+        plan["blocked_reason"] = blocked_reason
+        return plan
+
+    plan["related_transaction_ids"] = [counterpart["id"]]
+
+    if primary_role == "thief":
+        fine = abs(tx_record["amount"])
+        restitution = counterpart["amount"]
+        companion_delta = -restitution
+    else:
+        fine = abs(counterpart["amount"])
+        restitution = tx_record["amount"]
+        companion_delta = fine
+
+    if fine <= 0 or restitution < 0:
+        plan["blocked_reason"] = "Failed robbery amounts are invalid for a linked reversal."
+        return plan
+
+    legal_fee = fine - restitution
+    if legal_fee < 0:
+        plan["blocked_reason"] = "Failed robbery legal fee math was inconsistent; refusing to guess the vault reversal."
+        return plan
+
+    plan["vault_delta"] = -legal_fee if legal_fee else 0
+    plan["companion_adjustments"] = [{
+        "user_id": counterpart["user_id"],
+        "amount": companion_delta,
+        "log_type": f"{LINKED_ROBBERY_REFUND_LOG} #{tx_record['id']}",
+        "related_tx_id": counterpart["id"],
+    }]
+    plan["notes"].append(f"Matched linked failed-robbery row #{counterpart['id']}.")
+    return plan
+
+REFUND_PLAN_BUILDERS = {
+    "transfer": build_transfer_refund_plan,
+    "successful_robbery": build_successful_robbery_refund_plan,
+    "failed_robbery": build_failed_robbery_refund_plan,
+}
+
+def build_contextual_refund_plan(tx_record: dict, policy: dict, match: re.Match | None) -> dict:
+    """Builds a refund plan for policies that need related transaction context."""
+    builder_name = policy.get("refund", {}).get("custom_builder")
+    builder = REFUND_PLAN_BUILDERS.get(builder_name)
+    if not builder:
+        plan = build_base_refund_plan(tx_record["amount"])
+        plan["blocked_reason"] = f"Refund builder `{builder_name}` is not available."
+        return plan
+    return builder(tx_record, policy, match)
+
+def get_refund_plan_for_transaction(tx_record: dict, force_unsupported: bool = False) -> dict:
+    """Builds a structured refund plan for wallet, vault, cooldown, and linked side effects."""
+    plan = build_base_refund_plan(tx_record["amount"])
+    policy, match, policy_source = resolve_transaction_policy_details(tx_record["type"])
     supported = policy is not None
     blocked_reason = None
 
     if supported:
         refund_policy = policy.get("refund", {})
-        vault_refund = refund_policy.get("vault_refund")
-        if vault_refund == "full":
-            vault_delta = -abs(amount)
-        elif vault_refund == "legacy_crash_entry_fee" and match:
-            vault_delta = -min(abs(amount), int(match.group("entry_fee")))
+        if refund_policy.get("custom_builder"):
+            plan = build_contextual_refund_plan(tx_record, policy, match)
+            blocked_reason = plan.get("blocked_reason")
+        else:
+            vault_refund = refund_policy.get("vault_refund")
+            if vault_refund == "full":
+                plan["vault_delta"] = -abs(tx_record["amount"])
+            elif vault_refund == "legacy_crash_entry_fee" and match:
+                plan["vault_delta"] = -min(abs(tx_record["amount"]), int(match.group("entry_fee")))
 
-        reset_field = refund_policy.get("cooldown_reset")
-        if reset_field:
-            stats_updates[reset_field] = 0
-    elif not force_unsupported:
+            reset_field = refund_policy.get("cooldown_reset")
+            if reset_field:
+                plan["stats_updates"][reset_field] = 0
+    else:
         blocked_reason = "No refund policy is defined for this transaction type."
 
-    if supported and policy_source == "exact":
+    force_wallet_only = bool(force_unsupported and blocked_reason)
+    if force_wallet_only:
+        forced_plan = build_base_refund_plan(tx_record["amount"])
+        forced_plan["blocked_reason"] = blocked_reason
+        plan = forced_plan
+
+    if supported and policy_source == "exact" and not force_wallet_only:
         policy_label = "Exact policy"
-    elif supported and policy_source == "pattern":
+    elif supported and policy_source == "pattern" and not force_wallet_only:
         policy_label = "Pattern policy"
-    elif force_unsupported:
+    elif force_wallet_only:
         policy_label = "Forced wallet-only"
     else:
         policy_label = "Unsupported"
 
     return {
         "supported": supported,
-        "allowed": supported or force_unsupported,
+        "allowed": not blocked_reason or force_wallet_only,
         "policy_source": policy_source,
         "policy_label": policy_label,
-        "wallet_delta": refund_amt,
-        "vault_delta": vault_delta,
-        "stats_updates": stats_updates,
+        "wallet_delta": plan["wallet_delta"],
+        "vault_delta": plan["vault_delta"],
+        "stats_updates": plan["stats_updates"],
+        "companion_adjustments": plan["companion_adjustments"],
+        "related_transaction_ids": sorted(set(plan["related_transaction_ids"])),
+        "notes": list(plan["notes"]),
         "blocked_reason": blocked_reason,
-        "force_unsupported": force_unsupported and not supported,
+        "force_unsupported": force_wallet_only,
     }
+
+def get_refund_plan(orig_type: str, amount: int, force_unsupported: bool = False) -> dict:
+    """Backward-compatible wrapper for callers that only know the type and amount."""
+    tx_record = {
+        "id": None,
+        "user_id": None,
+        "amount": int(amount),
+        "type": orig_type,
+        "timestamp": None,
+    }
+    return get_refund_plan_for_transaction(tx_record, force_unsupported=force_unsupported)
+
+def get_refund_plan_related_ids(plan: dict) -> str:
+    """Formats related transaction ids for embeds."""
+    if not plan["related_transaction_ids"]:
+        return "None"
+    return ", ".join(f"#{tx_id}" for tx_id in plan["related_transaction_ids"])
+
+def get_refund_plan_linked_effects(bot, plan: dict) -> str:
+    """Formats companion adjustments for preview and execution embeds."""
+    if not plan["companion_adjustments"]:
+        return "None"
+
+    lines = []
+    for adjustment in plan["companion_adjustments"]:
+        try:
+            member = bot.get_user(int(adjustment["user_id"])) if bot else None
+        except (TypeError, ValueError):
+            member = None
+        display_name = member.display_name if member else f"User {adjustment['user_id']}"
+        sign = "+" if adjustment["amount"] > 0 else ""
+        related_tx_id = adjustment.get("related_tx_id")
+        related_suffix = f" (linked `#{related_tx_id}`)" if related_tx_id else ""
+        lines.append(f"{display_name}: {sign}{adjustment['amount']:,} JC{related_suffix}")
+    return "\n".join(lines)
 
 def get_refund_side_effects(orig_type: str, amount: int) -> tuple[int, dict]:
     """Returns vault adjustments and cooldown resets for a refund."""
@@ -825,6 +1277,53 @@ class Economy(commands.Cog):
         self.bot = bot
         self.taxman_task.start()
         self.passive_cache = {} # {uid: last_awarded_time}
+
+    async def _resolve_admin_member_preview_args(self, ctx: commands.Context, args: tuple[str, ...], *, member_required: bool, default_to_author: bool):
+        preview_requested = False
+        member = None
+        extras = []
+        converter = commands.MemberConverter()
+
+        for arg in args:
+            normalized = arg.lower().strip()
+            if normalized in {"preview", "--preview"}:
+                preview_requested = True
+                continue
+
+            if member is None:
+                try:
+                    member = await converter.convert(ctx, arg)
+                    continue
+                except commands.BadArgument:
+                    pass
+
+            extras.append(arg)
+
+        if extras:
+            raise commands.BadArgument(f"Unrecognized arguments: {' '.join(extras)}")
+
+        if member is None:
+            if default_to_author:
+                member = ctx.author
+            elif member_required:
+                raise commands.BadArgument("Please mention a valid member.")
+
+        return member, preview_requested
+
+    async def _reset_command_buckets_for_member(self, ctx: commands.Context, member: discord.Member, command_names: list[str]) -> list[str]:
+        reset_names = []
+        for cmd_name in command_names:
+            try:
+                cmd = self.bot.get_command(cmd_name)
+                if cmd:
+                    fake_msg = copy.copy(ctx.message)
+                    fake_msg.author = member
+                    fake_ctx = await self.bot.get_context(fake_msg)
+                    cmd.reset_cooldown(fake_ctx)
+                    reset_names.append(cmd_name)
+            except Exception as e:
+                print(f"Failed to reset cooldown bucket '{cmd_name}': {e}")
+        return reset_names
 
     def _get_stability_ratio(self):
         """Calculates current vault-to-circulation ratio."""
@@ -1806,54 +2305,74 @@ class Economy(commands.Cog):
 
     @commands.command(name='unjail')
     @commands.is_owner()
-    async def unjail_command(self, ctx: commands.Context, member: discord.Member):
-        """Owner Only: Release a user from jail immediately."""
+    async def unjail_command(self, ctx: commands.Context, *args: str):
+        """Owner Only: Release a user from jail immediately. Supports preview."""
+        member, preview_requested = await self._resolve_admin_member_preview_args(
+            ctx,
+            args,
+            member_required=True,
+            default_to_author=False,
+        )
         uid = str(member.id)
-        update_user_stats(uid, jail_until=0)
-        
-        # Reset the crime command cooldown for them if possible
-        update_user_stats(uid, last_crime=0)
-        
-        # Reset the crime command cooldown for them if possible
-        # We find the 'crime' command and reset its bucket
-        try:
-            cmd = self.bot.get_command('crime')
-            if cmd:
-                # To reset for someone else: we can manually use the bucket
-                # Or just use the reset_cooldown with a fake context
-                fake_msg = copy.copy(ctx.message)
-                fake_msg.author = member
-                fake_ctx = await self.bot.get_context(fake_msg)
-                cmd.reset_cooldown(fake_ctx)
-        except Exception as e:
-            print(f"Failed to reset crime cooldown on unjail: {e}")
+        plan = get_unjail_plan(uid)
+        jail_status = f"Active until <t:{plan['jail_until']}:R>" if plan["is_jailed"] else "Already clear"
+        crime_status = f"Active until <t:{plan['crime_cooldown_until']}:R>" if plan["crime_cooldown_active"] else "Already clear"
+        bucket_targets = ", ".join(plan["bucket_commands"])
 
-        await ctx.send(f"🔓 **{member.display_name}** has been released from jail early by the governor!")
+        if preview_requested:
+            embed = discord.Embed(title="🔎 Unjail Preview", color=discord.Color.blue())
+            embed.add_field(name="Target", value=member.display_name, inline=True)
+            embed.add_field(name="Jail Status", value=jail_status, inline=True)
+            embed.add_field(name="Crime Cooldown", value=crime_status, inline=True)
+            embed.add_field(name="Bucket Reset", value=bucket_targets, inline=False)
+            embed.set_footer(text="No changes applied.")
+            await ctx.send(embed=embed)
+            return
+
+        update_user_stats(uid, jail_until=0, last_crime=0)
+        reset_names = await self._reset_command_buckets_for_member(ctx, member, UNJAIL_DISCORD_BUCKET_COMMANDS)
+
+        embed = discord.Embed(title="🔓 Released From Jail", color=discord.Color.green())
+        embed.add_field(name="Target", value=member.display_name, inline=True)
+        embed.add_field(name="Previous Jail Status", value=jail_status, inline=True)
+        embed.add_field(name="Previous Crime Cooldown", value=crime_status, inline=True)
+        embed.add_field(name="Bucket Reset", value=", ".join(reset_names) if reset_names else "None", inline=False)
+        embed.set_footer(text="Jail status and crime cooldown cleared.")
+        await ctx.send(embed=embed)
 
     @commands.command(name='rc', aliases=['resetcooldown'])
     @commands.is_owner()
-    async def rc_command(self, ctx: commands.Context, member: discord.Member = None):
-        """Owner Only: Reset all economy-related cooldowns for a user."""
-        if not member:
-            member = ctx.author
-            
+    async def rc_command(self, ctx: commands.Context, *args: str):
+        """Owner Only: Reset all economy-related cooldowns for a user. Supports preview."""
+        member, preview_requested = await self._resolve_admin_member_preview_args(
+            ctx,
+            args,
+            member_required=False,
+            default_to_author=True,
+        )
+
         uid = str(member.id)
-        # Reset DB-based cooldowns
+        plan = get_rc_reset_plan(uid)
+        stored_markers = ", ".join(plan["stored_markers"]) if plan["stored_markers"] else "None stored"
+        bucket_targets = ", ".join(plan["bucket_commands"])
+
+        if preview_requested:
+            embed = discord.Embed(title="🔎 Cooldown Reset Preview", color=discord.Color.blue())
+            embed.add_field(name="Target", value=member.display_name, inline=True)
+            embed.add_field(name="Stored Cooldowns", value=stored_markers, inline=False)
+            embed.add_field(name="Bucket Reset", value=bucket_targets, inline=False)
+            embed.set_footer(text="No changes applied.")
+            await ctx.send(embed=embed)
+            return
+
         reset_persistent_economy_cooldowns(uid)
-        
-        # Reset Discord.py cooldowns for major commands
-        for cmd_name in ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']:
-            try:
-                cmd = self.bot.get_command(cmd_name)
-                if cmd:
-                    fake_msg = copy.copy(ctx.message)
-                    fake_msg.author = member
-                    fake_ctx = await self.bot.get_context(fake_msg)
-                    cmd.reset_cooldown(fake_ctx)
-            except:
-                pass
-                
-        await ctx.send(f"🔄 All cooldowns for **{member.display_name}** have been reset.")
+        reset_names = await self._reset_command_buckets_for_member(ctx, member, RC_DISCORD_BUCKET_COMMANDS)
+
+        embed = discord.Embed(title="🔄 Cooldowns Reset", color=discord.Color.green())
+        embed.add_field(name="Target", value=member.display_name, inline=True)
+        embed.add_field(name="Stored Cooldowns Cleared", value=stored_markers, inline=False)
+        embed.add_field(name="Bucket Reset", value=", ".join(reset_names) if reset_names else "None", inline=False)
+        await ctx.send(embed=embed)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Cog-wide error handler for economy commands."""
@@ -2668,20 +3187,24 @@ class Economy(commands.Cog):
                 reason = " ".join(reason_parts) if reason_parts else "Admin decision"
 
         # 1. Fetch transaction
-        row = db_query("SELECT user_id, amount, type FROM transactions WHERE id = ?", (tx_id,), fetchone=True)
+        row = db_query("SELECT id, user_id, amount, type, timestamp FROM transactions WHERE id = ?", (tx_id,), fetchone=True)
         if not row:
             await ctx.send(f"❌ Transaction `#{tx_id}` not found.")
             return
 
-        uid, amt, orig_type = row
+        tx_record = make_transaction_record(row)
+        uid = tx_record["user_id"]
+        orig_type = tx_record["type"]
 
-        refund_plan = get_refund_plan(orig_type, amt, force_unsupported=force_requested)
+        refund_plan = get_refund_plan_for_transaction(tx_record, force_unsupported=force_requested)
 
         try:
             member = self.bot.get_user(int(uid))
         except (TypeError, ValueError):
             member = None
         member_name = member.display_name if member else f"User {uid}"
+        linked_effects = get_refund_plan_linked_effects(self.bot, refund_plan)
+        related_ids = get_refund_plan_related_ids(refund_plan)
 
         if not refund_plan["allowed"]:
             embed = discord.Embed(title="⚠️ Refund Blocked", color=discord.Color.orange())
@@ -2689,6 +3212,8 @@ class Economy(commands.Cog):
             embed.add_field(name="Original Type", value=orig_type, inline=True)
             embed.add_field(name="Policy", value=refund_plan["policy_label"], inline=True)
             embed.add_field(name="Requested Wallet Change", value=f"{refund_plan['wallet_delta']:,} JC", inline=True)
+            if refund_plan["related_transaction_ids"]:
+                embed.add_field(name="Related Transactions", value=related_ids, inline=True)
             embed.add_field(name="Why Blocked", value=refund_plan["blocked_reason"], inline=False)
             embed.add_field(name="Next Step", value=f"Use `{COMMAND_PREFIX}refund {tx_id} force [reason]` to apply a wallet-only reversal, or `preview` to inspect first.", inline=False)
             await ctx.send(embed=embed)
@@ -2705,9 +3230,17 @@ class Economy(commands.Cog):
             embed.add_field(name="Policy", value=refund_plan["policy_label"], inline=True)
             embed.add_field(name="Vault Change", value=vault_change, inline=True)
             embed.add_field(name="Cooldown Reset", value=cooldown_change, inline=True)
+            if refund_plan["companion_adjustments"]:
+                embed.add_field(name="Linked Effects", value=linked_effects, inline=False)
+            if refund_plan["related_transaction_ids"]:
+                embed.add_field(name="Related Transactions", value=related_ids, inline=False)
+            if refund_plan["notes"]:
+                embed.add_field(name="Notes", value="\n".join(refund_plan["notes"]), inline=False)
             embed.add_field(name="Reason", value=reason, inline=False)
             if refund_plan["force_unsupported"]:
                 embed.add_field(name="Execution Mode", value="Previewing forced wallet-only reversal", inline=False)
+                if refund_plan["blocked_reason"]:
+                    embed.add_field(name="Safety Note", value=refund_plan["blocked_reason"], inline=False)
             embed.set_footer(text="No changes applied.")
             await ctx.send(embed=embed)
             return
@@ -2720,6 +3253,9 @@ class Economy(commands.Cog):
             track_fee(refund_plan["vault_delta"])
         if refund_plan["stats_updates"]:
             update_user_stats(uid, **refund_plan["stats_updates"])
+        for adjustment in refund_plan["companion_adjustments"]:
+            add_balance(adjustment["user_id"], adjustment["amount"])
+            log_transaction(adjustment["user_id"], adjustment["amount"], adjustment["log_type"], processed=1)
 
         # 4. Log Refund
         log_transaction(uid, refund_plan["wallet_delta"], f"Refund: {orig_type}", processed=1)
@@ -2732,9 +3268,17 @@ class Economy(commands.Cog):
         embed.add_field(name="Policy", value=refund_plan["policy_label"], inline=True)
         embed.add_field(name="Vault Change", value=vault_change, inline=True)
         embed.add_field(name="Cooldown Reset", value=cooldown_change, inline=True)
+        if refund_plan["companion_adjustments"]:
+            embed.add_field(name="Linked Effects", value=linked_effects, inline=False)
+        if refund_plan["related_transaction_ids"]:
+            embed.add_field(name="Related Transactions", value=related_ids, inline=False)
+        if refund_plan["notes"]:
+            embed.add_field(name="Notes", value="\n".join(refund_plan["notes"]), inline=False)
         embed.add_field(name="Reason", value=reason, inline=False)
         if refund_plan["force_unsupported"]:
             embed.add_field(name="Execution Mode", value="Forced wallet-only reversal", inline=False)
+            if refund_plan["blocked_reason"]:
+                embed.add_field(name="Safety Note", value=refund_plan["blocked_reason"], inline=False)
         embed.set_footer(text=f"New Balance: {new_bal:,} JC")
         
         await ctx.send(embed=embed)
