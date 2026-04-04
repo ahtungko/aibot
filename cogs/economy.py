@@ -194,8 +194,8 @@ UNJAIL_DISCORD_BUCKET_COMMANDS = ['crime']
 MISSION_RESET_TZ = timezone(timedelta(hours=8))
 DAILY_MISSION_SLOTS = 3
 WEEKLY_MISSION_SLOTS = 2
-BOX_EPIC_PITY_THRESHOLD = 10
-BOX_LEGENDARY_PITY_THRESHOLD = 50
+BOX_EPIC_PITY_THRESHOLD = 90
+BOX_LEGENDARY_PITY_THRESHOLD = 180
 
 ACHIEVEMENT_DEFINITIONS = {
     "first_stack": {
@@ -271,26 +271,26 @@ ACHIEVEMENT_DEFINITIONS = {
 }
 
 DAILY_MISSION_POOL = [
-    {"mission_key": "daily_work", "counter_key": "work_shifts", "target": 2, "reward": 400, "description": "Use `!work` 2 times."},
-    {"mission_key": "daily_fish", "counter_key": "fish_trips", "target": 3, "reward": 325, "description": "Go fishing 3 times."},
-    {"mission_key": "daily_scavenge", "counter_key": "scavenge_runs", "target": 4, "reward": 275, "description": "Scavenge 4 times."},
-    {"mission_key": "daily_flip", "counter_key": "flip_wins", "target": 1, "reward": 350, "description": "Win 1 coin flip."},
-    {"mission_key": "daily_beg", "counter_key": "beg_successes", "target": 3, "reward": 250, "description": "Beg successfully 3 times."},
-    {"mission_key": "daily_box", "counter_key": "boxes_opened", "target": 3, "reward": 450, "description": "Open 3 Mystery Boxes."},
-    {"mission_key": "daily_scramble", "counter_key": "scramble_solves", "target": 1, "reward": 350, "description": "Solve 1 scramble."},
-    {"mission_key": "daily_crime", "counter_key": "crime_successes", "target": 1, "reward": 500, "description": "Land 1 successful crime."},
-    {"mission_key": "daily_deposit", "counter_key": "bank_deposit_jc", "target": 3_000, "reward": 325, "description": "Deposit 3,000 JC into your bank."},
+    {"mission_key": "daily_work", "counter_key": "work_shifts", "target": 2, "reward": 80, "description": "Use `!work` 2 times."},
+    {"mission_key": "daily_fish", "counter_key": "fish_trips", "target": 3, "reward": 70, "description": "Go fishing 3 times."},
+    {"mission_key": "daily_scavenge", "counter_key": "scavenge_runs", "target": 4, "reward": 50, "description": "Scavenge 4 times."},
+    {"mission_key": "daily_flip", "counter_key": "flip_wins", "target": 1, "reward": 75, "description": "Win 1 coin flip."},
+    {"mission_key": "daily_beg", "counter_key": "beg_successes", "target": 3, "reward": 40, "description": "Beg successfully 3 times."},
+    {"mission_key": "daily_box", "counter_key": "boxes_opened", "target": 3, "reward": 110, "description": "Open 3 Mystery Boxes."},
+    {"mission_key": "daily_scramble", "counter_key": "scramble_solves", "target": 1, "reward": 85, "description": "Solve 1 scramble."},
+    {"mission_key": "daily_crime", "counter_key": "crime_successes", "target": 1, "reward": 130, "description": "Land 1 successful crime."},
+    {"mission_key": "daily_deposit", "counter_key": "bank_deposit_jc", "target": 3_000, "reward": 60, "description": "Deposit 3,000 JC into your bank."},
 ]
 
 WEEKLY_MISSION_POOL = [
-    {"mission_key": "weekly_work", "counter_key": "work_shifts", "target": 10, "reward": 2_500, "description": "Use `!work` 10 times this week."},
-    {"mission_key": "weekly_fish", "counter_key": "fish_trips", "target": 15, "reward": 2_250, "description": "Go fishing 15 times this week."},
-    {"mission_key": "weekly_box", "counter_key": "boxes_opened", "target": 15, "reward": 3_000, "description": "Open 15 Mystery Boxes this week."},
-    {"mission_key": "weekly_gamble", "counter_key": "gambling_wins", "target": 8, "reward": 2_750, "description": "Win 8 gambling games this week."},
-    {"mission_key": "weekly_mystery", "counter_key": "mysteries_solved", "target": 2, "reward": 3_000, "description": "Solve 2 AI Mysteries this week."},
-    {"mission_key": "weekly_crack", "counter_key": "crack_wins", "target": 2, "reward": 3_000, "description": "Win 2 Code Cracker sessions this week."},
-    {"mission_key": "weekly_crime", "counter_key": "crime_successes", "target": 4, "reward": 3_250, "description": "Land 4 successful crimes this week."},
-    {"mission_key": "weekly_deposit", "counter_key": "bank_deposit_jc", "target": 20_000, "reward": 2_500, "description": "Deposit 20,000 JC this week."},
+    {"mission_key": "weekly_work", "counter_key": "work_shifts", "target": 10, "reward": 450, "description": "Use `!work` 10 times this week."},
+    {"mission_key": "weekly_fish", "counter_key": "fish_trips", "target": 15, "reward": 400, "description": "Go fishing 15 times this week."},
+    {"mission_key": "weekly_box", "counter_key": "boxes_opened", "target": 15, "reward": 650, "description": "Open 15 Mystery Boxes this week."},
+    {"mission_key": "weekly_gamble", "counter_key": "gambling_wins", "target": 8, "reward": 500, "description": "Win 8 gambling games this week."},
+    {"mission_key": "weekly_mystery", "counter_key": "mysteries_solved", "target": 2, "reward": 700, "description": "Solve 2 AI Mysteries this week."},
+    {"mission_key": "weekly_crack", "counter_key": "crack_wins", "target": 2, "reward": 700, "description": "Win 2 Code Cracker sessions this week."},
+    {"mission_key": "weekly_crime", "counter_key": "crime_successes", "target": 4, "reward": 750, "description": "Land 4 successful crimes this week."},
+    {"mission_key": "weekly_deposit", "counter_key": "bank_deposit_jc", "target": 20_000, "reward": 450, "description": "Deposit 20,000 JC this week."},
 ]
 
 BOX_EVENT_MILESTONES = [
@@ -298,6 +298,11 @@ BOX_EVENT_MILESTONES = [
     {"threshold": 75, "label": "Treasure Fever", "description": "+0.50% Epic rate", "bonus": {"epic": 0.005}},
     {"threshold": 150, "label": "Golden Rush", "description": "+0.10% Legendary rate", "bonus": {"legendary": 0.001}},
 ]
+
+MISSION_DEFINITION_MAP = {
+    **{mission["mission_key"]: mission for mission in DAILY_MISSION_POOL},
+    **{mission["mission_key"]: mission for mission in WEEKLY_MISSION_POOL},
+}
 
 def normalize_transaction_type(tx_type: str) -> str:
     return tx_type.lower().strip()
@@ -558,6 +563,30 @@ def create_cycle_missions(user_id: str, scope: str, cycle_key: str, conn=None):
 def ensure_user_missions(user_id: str, conn=None):
     create_cycle_missions(user_id, "daily", get_daily_mission_cycle_key(), conn=conn)
     create_cycle_missions(user_id, "weekly", get_weekly_mission_cycle_key(), conn=conn)
+    sync_active_mission_rewards(user_id, conn=conn)
+
+def sync_active_mission_rewards(user_id: str, conn=None):
+    for scope, cycle_key in (("daily", get_daily_mission_cycle_key()), ("weekly", get_weekly_mission_cycle_key())):
+        rows = db_query(
+            "SELECT slot, mission_key, reward, description FROM missions WHERE user_id = ? AND scope = ? AND cycle_key = ?",
+            (user_id, scope, cycle_key),
+            fetchall=True,
+            conn=conn,
+        ) or []
+        for slot, mission_key, reward, description in rows:
+            definition = MISSION_DEFINITION_MAP.get(mission_key)
+            if not definition:
+                continue
+            new_reward = int(definition["reward"])
+            new_description = definition["description"]
+            if int(reward) == new_reward and description == new_description:
+                continue
+            db_query(
+                "UPDATE missions SET reward = ?, description = ? WHERE user_id = ? AND scope = ? AND cycle_key = ? AND slot = ?",
+                (new_reward, new_description, user_id, scope, cycle_key, int(slot)),
+                commit=True,
+                conn=conn,
+            )
 
 def get_user_missions(user_id: str, conn=None) -> dict:
     ensure_user_missions(user_id, conn=conn)
@@ -5795,4 +5824,3 @@ class RainView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(Economy(bot))
-
