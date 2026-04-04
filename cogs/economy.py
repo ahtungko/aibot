@@ -5,6 +5,7 @@ import time
 import asyncio
 import copy
 import re
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 import discord
 from discord.ext import commands, tasks
@@ -92,26 +93,56 @@ def get_db():
     conn.commit()
     return conn
 
-def get_setting(key: str, default: str = None) -> str:
-    row = db_query("SELECT value FROM settings WHERE key = ?", (key,), fetchone=True)
+@contextmanager
+def db_transaction():
+    """Provides an all-or-nothing SQLite transaction for multi-step economy mutations."""
+    conn = get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_setting(key: str, default: str = None, conn=None) -> str:
+    row = db_query("SELECT value FROM settings WHERE key = ?", (key,), fetchone=True, conn=conn)
     return row[0] if row else default
 
-def set_setting(key: str, value: str):
-    db_query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?", (key, value, value), commit=True)
+def set_setting(key: str, value: str, conn=None):
+    db_query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
+        (key, value, value),
+        commit=True,
+        conn=conn,
+    )
 
-def db_query(query, params=(), fetchone=False, fetchall=False, commit=False):
-    conn = get_db()
+def db_query(query, params=(), fetchone=False, fetchall=False, commit=False, conn=None):
+    own_conn = conn is None
+    if own_conn:
+        conn = get_db()
     cursor = conn.execute(query, params)
     result = None
-    if fetchone: result = cursor.fetchone()
-    if fetchall: result = cursor.fetchall()
-    if commit: conn.commit()
-    conn.close()
+    if fetchone:
+        result = cursor.fetchone()
+    if fetchall:
+        result = cursor.fetchall()
+    if commit and own_conn:
+        conn.commit()
+    if own_conn:
+        conn.close()
     return result
 
-def log_transaction(user_id, amount, tx_type, processed=0):
-    db_query("INSERT INTO transactions (user_id, amount, type, timestamp, vault_processed) VALUES (?, ?, ?, ?, ?)", 
-             (str(user_id), amount, tx_type, int(time.time()), processed), commit=True)
+def log_transaction(user_id, amount, tx_type, processed=0, conn=None):
+    db_query(
+        "INSERT INTO transactions (user_id, amount, type, timestamp, vault_processed) VALUES (?, ?, ?, ?, ?)",
+        (str(user_id), amount, tx_type, int(time.time()), processed),
+        commit=True,
+        conn=conn,
+    )
 
 
 CRASH_ENTRY_FEE_TX = "Crash Entry Fee"
@@ -273,50 +304,60 @@ TRANSACTION_POLICY_REGISTRY = {
 }
 
 
-def get_balance(user_id: str) -> int:
-    row = db_query("SELECT balance FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
+def get_balance(user_id: str, conn=None) -> int:
+    row = db_query("SELECT balance FROM wallets WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
     return row[0] if row else STARTING_BALANCE
 
-def set_balance(user_id: str, amount: int):
+def set_balance(user_id: str, amount: int, conn=None):
     amount = int(amount)
-    db_query("INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = ?", (user_id, amount, amount), commit=True)
+    db_query(
+        "INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = ?",
+        (user_id, amount, amount),
+        commit=True,
+        conn=conn,
+    )
 
-def add_balance(user_id: str, amount: int) -> int:
+def add_balance(user_id: str, amount: int, conn=None) -> int:
     amount = int(amount)
-    new_bal = max(0, get_balance(user_id) + amount)
-    set_balance(user_id, new_bal)
+    new_bal = max(0, get_balance(user_id, conn=conn) + amount)
+    set_balance(user_id, new_bal, conn=conn)
     return new_bal
 
-def get_bank(user_id: str) -> int:
-    row = db_query("SELECT bank FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
+def get_bank(user_id: str, conn=None) -> int:
+    row = db_query("SELECT bank FROM wallets WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
     return row[0] if row and row[0] is not None else 0
 
-def set_bank(user_id: str, amount: int):
+def set_bank(user_id: str, amount: int, conn=None):
     amount = int(amount)
-    db_query("INSERT INTO wallets (user_id, bank) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET bank = ?", (user_id, amount, amount), commit=True)
+    db_query(
+        "INSERT INTO wallets (user_id, bank) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET bank = ?",
+        (user_id, amount, amount),
+        commit=True,
+        conn=conn,
+    )
 
-def add_bank(user_id: str, amount: int) -> int:
+def add_bank(user_id: str, amount: int, conn=None) -> int:
     amount = int(amount)
-    new_bank = max(0, get_bank(user_id) + amount)
-    set_bank(user_id, new_bank)
+    new_bank = max(0, get_bank(user_id, conn=conn) + amount)
+    set_bank(user_id, new_bank, conn=conn)
     return new_bank
 
-def seize_jc(user_id: str, amount: int, include_bank: bool = False) -> dict:
+def seize_jc(user_id: str, amount: int, include_bank: bool = False, conn=None) -> dict:
     """Collect up to `amount` JC from wallet, and optionally bank, without going negative."""
     amount = max(0, int(amount))
-    wallet_before = get_balance(user_id)
-    bank_before = get_bank(user_id) if include_bank else 0
+    wallet_before = get_balance(user_id, conn=conn)
+    bank_before = get_bank(user_id, conn=conn) if include_bank else 0
 
     wallet_taken = min(wallet_before, amount)
     if wallet_taken:
-        add_balance(user_id, -wallet_taken)
+        add_balance(user_id, -wallet_taken, conn=conn)
 
     remaining = amount - wallet_taken
     bank_taken = 0
     if include_bank and remaining > 0:
         bank_taken = min(bank_before, remaining)
         if bank_taken:
-            add_bank(user_id, -bank_taken)
+            add_bank(user_id, -bank_taken, conn=conn)
 
     collected = wallet_taken + bank_taken
     return {
@@ -326,20 +367,20 @@ def seize_jc(user_id: str, amount: int, include_bank: bool = False) -> dict:
         "shortfall": amount - collected,
     }
 
-def pay_jc(user_id: str, amount: int) -> tuple[bool, str]:
+def pay_jc(user_id: str, amount: int, conn=None) -> tuple[bool, str]:
     """
     Attempts to deduct 'amount' from user's Wallet only.
     Returns (Success, Description)
     """
-    wallet = get_balance(user_id)
+    wallet = get_balance(user_id, conn=conn)
     
     if wallet < amount:
         return False, f"❌ You need **{amount:,} JC** in your Wallet, but you only have **{wallet:,} JC**! Withdraw some from your Bank first."
     
-    add_balance(user_id, -amount)
+    add_balance(user_id, -amount, conn=conn)
     return True, f"💸 Paid **{amount:,} JC** from your Wallet."
 
-def get_bank_limit(user_id: str) -> float:
+def get_bank_limit(user_id: str, conn=None) -> float:
     """
     Calculates the user's total bank storage limit (Base + Upgrades).
     Upgrades are stackable (+50k per Safe, +250k per Vault).
@@ -347,12 +388,12 @@ def get_bank_limit(user_id: str) -> float:
     base = 50000
     
     # Check for Unlimited Bunker
-    if get_inventory_item(user_id, "Titanium Bunker"):
+    if get_inventory_item(user_id, "Titanium Bunker", conn=conn):
         return float('inf')
         
     # Count instances of stackable upgrades
-    iron_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Iron Safe'", (user_id,), fetchone=True)
-    steel_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Steel Vault'", (user_id,), fetchone=True)
+    iron_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Iron Safe'", (user_id,), fetchone=True, conn=conn)
+    steel_count_row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = 'Steel Vault'", (user_id,), fetchone=True, conn=conn)
     
     iron_count = iron_count_row[0] if iron_count_row else 0
     steel_count = steel_count_row[0] if steel_count_row else 0
@@ -360,27 +401,37 @@ def get_bank_limit(user_id: str) -> float:
     extra = (iron_count * 50000) + (steel_count * 250000)
     return base + extra
 
-def get_last_daily(user_id: str) -> str:
-    row = db_query("SELECT last_daily FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
+def get_last_daily(user_id: str, conn=None) -> str:
+    row = db_query("SELECT last_daily FROM wallets WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
     return row[0] if row else ""
 
-def set_last_daily(user_id: str, date_str: str):
-    db_query("INSERT INTO wallets (user_id, last_daily) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_daily = ?", (user_id, date_str, date_str), commit=True)
+def set_last_daily(user_id: str, date_str: str, conn=None):
+    db_query(
+        "INSERT INTO wallets (user_id, last_daily) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_daily = ?",
+        (user_id, date_str, date_str),
+        commit=True,
+        conn=conn,
+    )
 
-def get_last_work(user_id: str) -> str:
-    row = db_query("SELECT last_work FROM wallets WHERE user_id = ?", (user_id,), fetchone=True)
+def get_last_work(user_id: str, conn=None) -> str:
+    row = db_query("SELECT last_work FROM wallets WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
     return row[0] if row else ""
 
-def set_last_work(user_id: str, ts_str: str):
-    db_query("INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?", (user_id, ts_str, ts_str), commit=True)
+def set_last_work(user_id: str, ts_str: str, conn=None):
+    db_query(
+        "INSERT INTO wallets (user_id, last_work) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_work = ?",
+        (user_id, ts_str, ts_str),
+        commit=True,
+        conn=conn,
+    )
 
-def get_user_stats(user_id: str) -> dict:
+def get_user_stats(user_id: str, conn=None) -> dict:
     row = db_query("SELECT overtime_uses, overtime_last_reset, overtime_active, last_passive_time, "
                    "passive_hourly_total, passive_hour_start, scavenge_daily_total, scavenge_last_reset, "
                    "last_scavenge, last_scramble, last_mystery, last_beg, last_crime, last_fish, last_crack, "
-                   "jail_until FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True)
+                   "jail_until FROM user_stats WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
     if not row:
-        db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
+        db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True, conn=conn)
         return {
             "overtime_uses": 0, "overtime_last_reset": 0, "overtime_active": 0, "last_passive_time": 0,
             "passive_hourly_total": 0, "passive_hour_start": 0, "scavenge_daily_total": 0, "scavenge_last_reset": 0,
@@ -401,10 +452,10 @@ def get_legendary_fish_count(user_id: str) -> int:
     row = db_query("SELECT COUNT(*) FROM transactions WHERE user_id = ? AND type = 'Fishing Reward (Legendary)'", (user_id,), fetchone=True)
     return row[0] if row else 0
 
-def update_user_stats(user_id: str, **kwargs):
+def update_user_stats(user_id: str, conn=None, **kwargs):
     if not kwargs: return
     # Ensure row exists first
-    db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True)
+    db_query("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,), commit=True, conn=conn)
     
     fields = []
     values = []
@@ -413,22 +464,24 @@ def update_user_stats(user_id: str, **kwargs):
         values.append(int(v) if isinstance(v, float) else v)
     values.append(user_id)
     query = f"UPDATE user_stats SET {', '.join(fields)} WHERE user_id = ?"
-    db_query(query, tuple(values), commit=True)
+    db_query(query, tuple(values), commit=True, conn=conn)
 
 def reset_persistent_economy_cooldowns(user_id: str):
     """Clears persistent cooldowns stored outside discord.py buckets."""
-    set_last_work(user_id, "")
-    set_last_rob(user_id, 0)
-    update_user_stats(
-        user_id,
-        last_scavenge=0,
-        last_scramble=0,
-        last_mystery=0,
-        last_beg=0,
-        last_crime=0,
-        last_fish=0,
-        last_crack=0,
-    )
+    with db_transaction() as conn:
+        set_last_work(user_id, "", conn=conn)
+        set_last_rob(user_id, 0, conn=conn)
+        update_user_stats(
+            user_id,
+            conn=conn,
+            last_scavenge=0,
+            last_scramble=0,
+            last_mystery=0,
+            last_beg=0,
+            last_crime=0,
+            last_fish=0,
+            last_crack=0,
+        )
 
 def get_rc_reset_plan(user_id: str) -> dict:
     """Summarizes which persistent cooldown markers exist and which buckets will be reset."""
@@ -486,24 +539,34 @@ def get_top_balances(limit=10) -> list:
         fetchall=True
     )
 
-def add_item(user_id, item_name, item_type="Collectible", item_data=""):
-    db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, ?, ?, ?)", (user_id, item_name, item_type, item_data), commit=True)
+def add_item(user_id, item_name, item_type="Collectible", item_data="", conn=None):
+    db_query(
+        "INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, ?, ?, ?)",
+        (user_id, item_name, item_type, item_data),
+        commit=True,
+        conn=conn,
+    )
 
-def get_inventory(user_id):
-    return db_query("SELECT item_name, item_type, item_data FROM inventory WHERE user_id = ?", (user_id,), fetchall=True)
+def get_inventory(user_id, conn=None):
+    return db_query("SELECT item_name, item_type, item_data FROM inventory WHERE user_id = ?", (user_id,), fetchall=True, conn=conn)
 
 # --- Investment Helpers ---
 
-def get_gold_grams(user_id: str) -> float:
-    row = db_query("SELECT gold_grams FROM investments WHERE user_id = ?", (user_id,), fetchone=True)
+def get_gold_grams(user_id: str, conn=None) -> float:
+    row = db_query("SELECT gold_grams FROM investments WHERE user_id = ?", (user_id,), fetchone=True, conn=conn)
     return row[0] if row else 0.0
 
-def add_gold_grams(user_id: str, amount: float):
-    current = get_gold_grams(user_id)
+def add_gold_grams(user_id: str, amount: float, conn=None):
+    current = get_gold_grams(user_id, conn=conn)
     new_amount = current + amount
     if new_amount < 0.000001:  # Floating point precision safe zero
         new_amount = 0.0
-    db_query("INSERT INTO investments (user_id, gold_grams) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET gold_grams = ?", (user_id, new_amount, new_amount), commit=True)
+    db_query(
+        "INSERT INTO investments (user_id, gold_grams) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET gold_grams = ?",
+        (user_id, new_amount, new_amount),
+        commit=True,
+        conn=conn,
+    )
 
 async def fetch_live_gold_price(bot) -> float:
     """Fetches the live gold price in USD/g"""
@@ -529,49 +592,59 @@ async def fetch_live_gold_price(bot) -> float:
 
 # --- VIP Helpers ---
 
-def get_vip_expiry(user_id: str) -> int:
-    row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'VIP'", (user_id,), fetchone=True)
+def get_vip_expiry(user_id: str, conn=None) -> int:
+    row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'VIP'", (user_id,), fetchone=True, conn=conn)
     try:
         return int(row[0]) if row else 0
     except (ValueError, TypeError):
         return 0
 
-def is_vip(user_id: str) -> bool:
-    expiry = get_vip_expiry(user_id)
+def is_vip(user_id: str, conn=None) -> bool:
+    expiry = get_vip_expiry(user_id, conn=conn)
     return expiry > int(time.time())
 
-def set_vip(user_id: str, days: int):
+def set_vip(user_id: str, days: int, conn=None):
     now = int(time.time())
-    current_expiry = get_vip_expiry(user_id)
+    current_expiry = get_vip_expiry(user_id, conn=conn)
     
     start_time = max(now, current_expiry)
     new_expiry = start_time + (days * 24 * 3600)
     
     if current_expiry > 0:
-        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'VIP'", (str(new_expiry), user_id), commit=True)
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'VIP'", (str(new_expiry), user_id), commit=True, conn=conn)
     else:
-        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True)
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'VIP', 'Subscription', ?)", (user_id, str(new_expiry)), commit=True, conn=conn)
 
-def get_inventory_item(user_id, item_name):
-    row = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True)
+def get_inventory_item(user_id, item_name, conn=None):
+    row = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True, conn=conn)
     return row is not None
 
-def get_item_count(user_id, item_name):
-    row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True)
+def get_item_count(user_id, item_name, conn=None):
+    row = db_query("SELECT COUNT(*) FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item_name), fetchone=True, conn=conn)
     return row[0] if row else 0
 
-def remove_item(user_id, item_name):
+def remove_item(user_id, item_name, conn=None):
     # Remove only ONE instance of the item
-    db_query("DELETE FROM inventory WHERE ROWID = (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT 1)", (user_id, item_name), commit=True)
+    db_query(
+        "DELETE FROM inventory WHERE ROWID = (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT 1)",
+        (user_id, item_name),
+        commit=True,
+        conn=conn,
+    )
 
-def remove_items(user_id, item_name, count=1):
+def remove_items(user_id, item_name, count=1, conn=None):
     # Remove multiple instances of the item
-    db_query("DELETE FROM inventory WHERE ROWID IN (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT ?)", (user_id, item_name, count), commit=True)
+    db_query(
+        "DELETE FROM inventory WHERE ROWID IN (SELECT ROWID FROM inventory WHERE user_id = ? AND item_name = ? LIMIT ?)",
+        (user_id, item_name, count),
+        commit=True,
+        conn=conn,
+    )
 
-def get_luck_bonus(user_id: str) -> float:
+def get_luck_bonus(user_id: str, conn=None) -> float:
     """Returns 0.05 if a Lucky Charm is active, else 0."""
     now = int(time.time())
-    row = db_query("SELECT MAX(item_data) FROM inventory WHERE user_id = ? AND item_name = 'Lucky Charm'", (user_id,), fetchone=True)
+    row = db_query("SELECT MAX(item_data) FROM inventory WHERE user_id = ? AND item_name = 'Lucky Charm'", (user_id,), fetchone=True, conn=conn)
     if row and row[0]:
         try:
             expiry = int(row[0])
@@ -580,7 +653,7 @@ def get_luck_bonus(user_id: str) -> float:
         except: pass
     return 0.0
 
-def get_best_pickaxe(user_id: str) -> dict:
+def get_best_pickaxe(user_id: str, conn=None) -> dict:
     """
     Returns data for the user's best mining tool.
     Returns: {name: str, bonus: int, cooldown_reduction: int, overtime_max: int, tax_reduction: float, tax_dodge: float, passive_active: bool}
@@ -596,34 +669,34 @@ def get_best_pickaxe(user_id: str) -> dict:
     ]
     
     for tool in tools:
-        if get_inventory_item(user_id, tool["name"]):
+        if get_inventory_item(user_id, tool["name"], conn=conn):
             return tool
             
     # Default Wooden Pickaxe (or no pickaxe) state
     return {"name": "Wooden Pickaxe", "bonus": 0, "cooldown_reduction": 0, "overtime_max": 0, "tax_reduction": 0.0, "tax_dodge": 0.0, "passive_active": False}
 
-def get_last_rob(user_id: str) -> int:
-    row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
+def get_last_rob(user_id: str, conn=None) -> int:
+    row = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True, conn=conn)
     try:
         return int(row[0]) if row and row[0] else 0
     except (ValueError, TypeError):
         return 0
 
-def set_last_rob(user_id: str, ts: int):
-    existing_rob_entry = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True)
+def set_last_rob(user_id: str, ts: int, conn=None):
+    existing_rob_entry = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = 'last_rob'", (user_id,), fetchone=True, conn=conn)
     
     if existing_rob_entry:
-        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'last_rob'", (str(ts), user_id), commit=True)
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'last_rob'", (str(ts), user_id), commit=True, conn=conn)
     else:
-        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'last_rob', 'Cooldown', ?)", (user_id, str(ts)), commit=True)
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'last_rob', 'Cooldown', ?)", (user_id, str(ts)), commit=True, conn=conn)
 
-def track_fee(amount: int):
+def track_fee(amount: int, conn=None):
     """Adds to the global fee vault."""
     try:
-        current = int(float(get_setting("fee_vault", "0")))
+        current = int(float(get_setting("fee_vault", "0", conn=conn)))
     except ValueError:
         current = 0
-    set_setting("fee_vault", str(current + int(amount)))
+    set_setting("fee_vault", str(current + int(amount)), conn=conn)
 
 def resolve_transaction_policy(tx_type: str) -> tuple[dict | None, re.Match | None]:
     """Resolves exact or pattern-based policy metadata for a transaction type."""
@@ -1129,33 +1202,33 @@ def get_broken_audit_entry_ids(transactions: list[dict], now_ts: int | None = No
 
     return broken_ids
 
-def record_crash_entry(user_id: str, entry_fee: int):
+def record_crash_entry(user_id: str, entry_fee: int, conn=None):
     """Logs the crash game's upfront fee that immediately enters the vault."""
     entry_fee = max(0, int(entry_fee))
     if entry_fee <= 0:
         return
-    track_fee(entry_fee)
-    log_transaction(user_id, -entry_fee, CRASH_ENTRY_FEE_TX, processed=1)
+    track_fee(entry_fee, conn=conn)
+    log_transaction(user_id, -entry_fee, CRASH_ENTRY_FEE_TX, processed=1, conn=conn)
 
-def record_crash_cashout(user_id: str, final_payout: int, tax_deducted: int, multiplier: float):
+def record_crash_cashout(user_id: str, final_payout: int, tax_deducted: int, multiplier: float, conn=None):
     """Logs crash cash-out results and any profit tax sent to the vault."""
     if tax_deducted > 0:
-        track_fee(tax_deducted)
-        log_transaction(user_id, -tax_deducted, CRASH_PROFIT_TAX_TX, processed=1)
-    log_transaction(user_id, final_payout, f"Crash Win ({multiplier}x)")
+        track_fee(tax_deducted, conn=conn)
+        log_transaction(user_id, -tax_deducted, CRASH_PROFIT_TAX_TX, processed=1, conn=conn)
+    log_transaction(user_id, final_payout, f"Crash Win ({multiplier}x)", conn=conn)
 
-def record_crash_loss(user_id: str, active_bet: int):
+def record_crash_loss(user_id: str, active_bet: int, conn=None):
     """Logs the active crash stake that was burned when the rocket crashed."""
     active_bet = max(0, int(active_bet))
     if active_bet <= 0:
         return
-    track_fee(active_bet)
-    log_transaction(user_id, -active_bet, CRASH_LOSS_TX, processed=1)
+    track_fee(active_bet, conn=conn)
+    log_transaction(user_id, -active_bet, CRASH_LOSS_TX, processed=1, conn=conn)
 
-def track_gold_fee(amount: float):
+def track_gold_fee(amount: float, conn=None):
     """Adds to the global gold fee vault."""
-    current = float(get_setting("gold_fee_vault", "0.0"))
-    set_setting("gold_fee_vault", str(current + amount))
+    current = float(get_setting("gold_fee_vault", "0.0", conn=conn))
+    set_setting("gold_fee_vault", str(current + amount), conn=conn)
 
 def get_box_base_rates() -> dict:
     """Returns the default Mystery Box loot rates outside of events."""
@@ -1213,35 +1286,35 @@ def get_box_event_end_plan(now_ts: int | None = None) -> dict:
         "common_pct": common_pct,
     }
 
-def get_last_gold_fee(user_id: str):
-    res = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True)
+def get_last_gold_fee(user_id: str, conn=None):
+    res = db_query("SELECT item_data FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True, conn=conn)
     return int(res[0]) if res else None
 
-def set_last_gold_fee(user_id: str, ts: int):
-    existing = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True)
+def set_last_gold_fee(user_id: str, ts: int, conn=None):
+    existing = db_query("SELECT 1 FROM inventory WHERE user_id = ? AND item_name = 'last_gold_fee'", (user_id,), fetchone=True, conn=conn)
     if existing:
-        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'last_gold_fee'", (str(ts), user_id), commit=True)
+        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'last_gold_fee'", (str(ts), user_id), commit=True, conn=conn)
     else:
-        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'last_gold_fee', 'System', ?)", (user_id, str(ts)), commit=True)
+        db_query("INSERT INTO inventory (user_id, item_name, item_type, item_data) VALUES (?, 'last_gold_fee', 'System', ?)", (user_id, str(ts)), commit=True, conn=conn)
 
-def apply_gold_fees(user_id: str):
+def _apply_gold_fees(user_id: str, conn) -> str | None:
     """
     Checks if 7 days have passed since the last gold fee.
     Deducts 10% (Normal) or 8% (VIP) and updates the vault.
     Returns a warning message if fees were paid, otherwise None.
     """
     now = int(time.time())
-    last_fee_ts = get_last_gold_fee(user_id)
-    gold = get_gold_grams(user_id)
+    last_fee_ts = get_last_gold_fee(user_id, conn=conn)
+    gold = get_gold_grams(user_id, conn=conn)
     
     if gold < 0.001:
         # No gold, just keep the timestamp updated
-        set_last_gold_fee(user_id, now)
+        set_last_gold_fee(user_id, now, conn=conn)
         return None
 
     if last_fee_ts is None:
         # First time initialization
-        set_last_gold_fee(user_id, now)
+        set_last_gold_fee(user_id, now, conn=conn)
         return None
     
     diff = now - last_fee_ts
@@ -1250,22 +1323,28 @@ def apply_gold_fees(user_id: str):
         return None
     
     periods = int(diff // week_seconds)
-    rate = 0.03 if is_vip(user_id) else 0.05
+    rate = 0.03 if is_vip(user_id, conn=conn) else 0.05
     
     # Calculate compounded fee
     new_gold = gold * ((1 - rate) ** periods)
     fee_amount = int((gold - new_gold) * 1000) / 1000.0
     
     if fee_amount > 0:
-        add_gold_grams(user_id, -fee_amount)
-        track_gold_fee(fee_amount)
+        add_gold_grams(user_id, -fee_amount, conn=conn)
+        track_gold_fee(fee_amount, conn=conn)
         # Advance the timestamp by full weeks to keep the schedule
-        set_last_gold_fee(user_id, last_fee_ts + (periods * week_seconds))
+        set_last_gold_fee(user_id, last_fee_ts + (periods * week_seconds), conn=conn)
         
-        log_transaction(user_id, 0, f"Paid {fee_amount}g Storage Fee ({periods} weeks)")
+        log_transaction(user_id, 0, f"Paid {fee_amount}g Storage Fee ({periods} weeks)", conn=conn)
         return f"⚖️ **Gold Storage Fee**: You paid **{fee_amount:.3g}g** in storage fees for the last **{periods}** week(s)."
     
     return None
+
+def apply_gold_fees(user_id: str, conn=None):
+    if conn is not None:
+        return _apply_gold_fees(user_id, conn)
+    with db_transaction() as tx_conn:
+        return _apply_gold_fees(user_id, tx_conn)
 
 # --- Helpers ---
 
@@ -1517,10 +1596,11 @@ class Economy(commands.Cog):
         wallet_tax = int(tax_amount * (v_bal / v_total)) if v_total > 0 else 0
         bank_tax = tax_amount - wallet_tax
         
-        add_balance(v_uid, -wallet_tax)
-        add_bank(v_uid, -bank_tax)
-        track_fee(tax_amount) # Track tax collection
-        log_transaction(v_uid, -tax_amount, f"The Taxman ({tax_pct}% Tax)")
+        with db_transaction() as conn:
+            add_balance(v_uid, -wallet_tax, conn=conn)
+            add_bank(v_uid, -bank_tax, conn=conn)
+            track_fee(tax_amount, conn=conn)
+            log_transaction(v_uid, -tax_amount, f"The Taxman ({tax_pct}% Tax)", conn=conn)
         
         if channel:
             member = await self.bot.fetch_user(int(v_uid))
@@ -1762,9 +1842,10 @@ class Economy(commands.Cog):
             return
             
         # Deduct cost
-        add_balance(uid, -cost)
-        update_user_stats(uid, last_fish=now + 15)
-        log_transaction(uid, -cost, "Fishing Trip Fee")
+        with db_transaction() as conn:
+            add_balance(uid, -cost, conn=conn)
+            update_user_stats(uid, conn=conn, last_fish=now + 15)
+            log_transaction(uid, -cost, "Fishing Trip Fee", conn=conn)
         
         # --- RNG & Outcomes ---
         # 50% Trash (0 JC)
@@ -1882,8 +1963,9 @@ class Economy(commands.Cog):
 
         # Apply reward
         if reward > 0:
-            add_balance(uid, reward)
-            log_transaction(uid, reward, f"Fishing Reward ({rarity})")
+            with db_transaction() as conn:
+                add_balance(uid, reward, conn=conn)
+                log_transaction(uid, reward, f"Fishing Reward ({rarity})", conn=conn)
             
 
             
@@ -1966,9 +2048,10 @@ class Economy(commands.Cog):
             amount = int(room_left)
             is_capped = True
             
-        add_balance(uid, -amount)
-        new_bank = add_bank(uid, amount)
-        log_transaction(uid, amount, "Bank Deposit")
+        with db_transaction() as conn:
+            add_balance(uid, -amount, conn=conn)
+            new_bank = add_bank(uid, amount, conn=conn)
+            log_transaction(uid, amount, "Bank Deposit", conn=conn)
         
         if is_capped:
             await ctx.send(f"🏦 **Bank Full!** {ctx.author.mention}, you deposited **{amount:,}** JC (filling the vault to its **{limit:,}** limit).\nNew Bank Balance: **{new_bank:,}** JC.")
@@ -2004,9 +2087,10 @@ class Economy(commands.Cog):
             await ctx.send(f"❌ You only have **{bank:,}** JC in your bank.")
             return
             
-        add_bank(uid, -amount)
-        new_bal = add_balance(uid, amount)
-        log_transaction(uid, amount, "Bank Withdrawal")
+        with db_transaction() as conn:
+            add_bank(uid, -amount, conn=conn)
+            new_bal = add_balance(uid, amount, conn=conn)
+            log_transaction(uid, amount, "Bank Withdrawal", conn=conn)
         
         await ctx.send(f"💵 {ctx.author.mention}, you withdrew **{amount:,}** JC from your bank.\nNew Wallet Balance: **{new_bal:,}** JC.")
 
@@ -2036,9 +2120,10 @@ class Economy(commands.Cog):
             bonus_msg += "\n🍀 **LUCKY DAY!** The universe smiles upon you today. Go do something great!"
             
         total = base_reward + bonus
-        new_bal = add_balance(uid, total)
-        set_last_daily(uid, today)
-        log_transaction(uid, total, "Daily Crate")
+        with db_transaction() as conn:
+            new_bal = add_balance(uid, total, conn=conn)
+            set_last_daily(uid, today, conn=conn)
+            log_transaction(uid, total, "Daily Crate", conn=conn)
 
         embed = discord.Embed(
             title="🎁 Daily Crate Opened!",
@@ -2084,7 +2169,6 @@ class Economy(commands.Cog):
         if stats["overtime_active"] == 1:
             reward *= 2
             is_overtime = True
-            update_user_stats(uid, overtime_active=0)
 
         # 3. Apply Taxes & Perks
         if reward < 100:
@@ -2109,22 +2193,27 @@ class Economy(commands.Cog):
         net_reward = reward - tax
         
         # 4. Process Payouts
-        new_bal = add_balance(uid, net_reward)
-        set_last_work(uid, str(now))
-        track_fee(tax)
-        
         log_msg = "Work Reward"
-        if is_overtime: log_msg += " (Overtime)"
-        log_transaction(uid, net_reward, log_msg)
-        log_transaction(uid, -tax, "Work Tax", processed=1)
-        
-        # 5. Coin Shard (Iron Pickaxe Perk)
+        if is_overtime:
+            log_msg += " (Overtime)"
+
         shard_msg = ""
-        if pick["name"] == "Iron Pickaxe" and random.random() < 0.05:
-            shard_reward = 25
-            new_bal = add_balance(uid, shard_reward)
-            log_transaction(uid, shard_reward, "Found Coin Shard")
-            shard_msg = f"\n💎 **Coin Shard Found!** (+{shard_reward} JC added to wallet)"
+        with db_transaction() as conn:
+            if is_overtime:
+                update_user_stats(uid, conn=conn, overtime_active=0)
+
+            new_bal = add_balance(uid, net_reward, conn=conn)
+            set_last_work(uid, str(now), conn=conn)
+            track_fee(tax, conn=conn)
+            log_transaction(uid, net_reward, log_msg, conn=conn)
+            log_transaction(uid, -tax, "Work Tax", processed=1, conn=conn)
+
+            # 5. Coin Shard (Iron Pickaxe Perk)
+            if pick["name"] == "Iron Pickaxe" and random.random() < 0.05:
+                shard_reward = 25
+                new_bal = add_balance(uid, shard_reward, conn=conn)
+                log_transaction(uid, shard_reward, "Found Coin Shard", conn=conn)
+                shard_msg = f"\n💎 **Coin Shard Found!** (+{shard_reward} JC added to wallet)"
 
         jobs = [
             "cleaned the server kitchen", "coded a new feature", "moderated a spicy channel",
@@ -2210,11 +2299,11 @@ class Economy(commands.Cog):
             return
 
         # 4. Process Payout
-        new_bal = add_balance(uid, reward)
         new_daily_total = stats["scavenge_daily_total"] + reward
-        update_user_stats(uid, last_scavenge=now, scavenge_daily_total=new_daily_total)
-        
-        log_transaction(uid, reward, "Scavenge Reward")
+        with db_transaction() as conn:
+            new_bal = add_balance(uid, reward, conn=conn)
+            update_user_stats(uid, conn=conn, last_scavenge=now, scavenge_daily_total=new_daily_total)
+            log_transaction(uid, reward, "Scavenge Reward", conn=conn)
         
         scavenge_locs = [
             "the back of an old sofa", "under a vending machine", "in a dusty corner of the server",
@@ -2269,7 +2358,8 @@ class Economy(commands.Cog):
             
         # Activate it
         uses = stats["overtime_uses"] + 1
-        update_user_stats(uid, overtime_active=1, overtime_uses=uses)
+        with db_transaction() as conn:
+            update_user_stats(uid, conn=conn, overtime_active=1, overtime_uses=uses)
         
         await ctx.send(f"🔥 **OVERTIME ACTIVATED!** ({uses}/{max_uses} uses today).\n{ctx.author.mention}, your VERY NEXT `!work` will yield **DOUBLE** JC!")
         
@@ -2303,8 +2393,9 @@ class Economy(commands.Cog):
             
         # 70% Success
         reward = random.randint(1, 15)
-        new_bal = add_balance(uid, reward)
-        log_transaction(uid, reward, "Begging Success")
+        with db_transaction() as conn:
+            new_bal = add_balance(uid, reward, conn=conn)
+            log_transaction(uid, reward, "Begging Success", conn=conn)
         
         favors = [
             "A kind stranger dropped some change.",
@@ -2351,9 +2442,10 @@ class Economy(commands.Cog):
         # Success Chance 40%
         if random.random() < 0.40:
             # Success
-            add_balance(uid, base_amt)
-            update_user_stats(uid, last_crime=now + 3600)
-            log_transaction(uid, base_amt, "Crime Success")
+            with db_transaction() as conn:
+                add_balance(uid, base_amt, conn=conn)
+                update_user_stats(uid, conn=conn, last_crime=now + 3600)
+                log_transaction(uid, base_amt, "Crime Success", conn=conn)
             
             crimes = [
                 "hacked a local vending machine", "pulled off a sophisticated bank heist",
@@ -2374,25 +2466,24 @@ class Economy(commands.Cog):
             fine = base_amt
             jail_time_seconds = 2 * 3600
             
-            collection = seize_jc(uid, fine, include_bank=True)
-            wallet_taken = collection["wallet_taken"]
-            bank_taken = collection["bank_taken"]
-            collected_fine = collection["collected"]
-            debt_amt = collection["shortfall"]
+            with db_transaction() as conn:
+                collection = seize_jc(uid, fine, include_bank=True, conn=conn)
+                wallet_taken = collection["wallet_taken"]
+                bank_taken = collection["bank_taken"]
+                collected_fine = collection["collected"]
+                debt_amt = collection["shortfall"]
 
-            if debt_amt > 0:
-                # Debt penalty: +10 mins per 10 JC missing
-                debt_penalty_secs = int(debt_amt / 10) * 600
-            else:
-                debt_penalty_secs = 0
-                    
-            jail_until = now + jail_time_seconds + debt_penalty_secs
-            
-            # Update user stats
-            update_user_stats(uid, jail_until=jail_until, last_crime=now + 3600)
-            track_fee(collected_fine)
-            
-            log_transaction(uid, -collected_fine, "Crime Fine (Caught!)")
+                if debt_amt > 0:
+                    # Debt penalty: +10 mins per 10 JC missing
+                    debt_penalty_secs = int(debt_amt / 10) * 600
+                else:
+                    debt_penalty_secs = 0
+
+                jail_until = now + jail_time_seconds + debt_penalty_secs
+
+                update_user_stats(uid, conn=conn, jail_until=jail_until, last_crime=now + 3600)
+                track_fee(collected_fine, conn=conn)
+                log_transaction(uid, -collected_fine, "Crime Fine (Caught!)", conn=conn)
             
             embed = discord.Embed(
                 title="🚨 BUSTED!",
@@ -2542,14 +2633,13 @@ class Economy(commands.Cog):
 
         tax = int(amount * 0.05)
         net_amount = amount - tax
-        
-        # Process the transfer
-        add_balance(str(ctx.author.id), -amount)     # Deduct full amount from sender
-        new_receiver = add_balance(str(member.id), net_amount) # Add net amount to receiver
-        
-        track_fee(tax)
-        log_transaction(str(ctx.author.id), -amount, f"Transfer to {member.display_name}")
-        log_transaction(str(member.id), net_amount, f"Transfer from {ctx.author.display_name}")
+
+        with db_transaction() as conn:
+            add_balance(str(ctx.author.id), -amount, conn=conn)
+            new_receiver = add_balance(str(member.id), net_amount, conn=conn)
+            track_fee(tax, conn=conn)
+            log_transaction(str(ctx.author.id), -amount, f"Transfer to {member.display_name}", conn=conn)
+            log_transaction(str(member.id), net_amount, f"Transfer from {ctx.author.display_name}", conn=conn)
 
         embed = discord.Embed(
             title="💸 Transfer Complete",
@@ -2652,21 +2742,29 @@ class Economy(commands.Cog):
             return
             
         # RE-CHECK balance after the await to prevent double-spend race conditions
-        success, pay_msg = pay_jc(uid, jc_amount)
-        if not success:
-            await msg.edit(content=f"❌ Transaction failed. {pay_msg}")
+        failure_message = None
+        pay_msg = ""
+        fee_rate = 0.0
+        fee = 0
+        grams_bought = 0.0
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, jc_amount, conn=conn)
+            if not success:
+                failure_message = pay_msg
+            else:
+                fee_rate = 0.02 if is_vip(uid, conn=conn) else 0.05
+                fee = max(1, int(jc_amount * fee_rate))
+                purchase_power = jc_amount - fee
+                grams_bought = purchase_power / live_price
+
+                add_gold_grams(uid, grams_bought, conn=conn)
+                track_fee(fee, conn=conn)
+                log_transaction(uid, -(jc_amount - fee), "Bought Gold", conn=conn)
+                log_transaction(uid, -fee, "Gold Purchase Fee", processed=1, conn=conn)
+
+        if failure_message:
+            await msg.edit(content=f"❌ Transaction failed. {failure_message}")
             return
-            
-        fee_rate = 0.02 if is_vip(uid) else 0.05
-        fee = max(1, int(jc_amount * fee_rate)) 
-        purchase_power = jc_amount - fee
-        
-        grams_bought = purchase_power / live_price
-        
-        add_gold_grams(uid, grams_bought)
-        track_fee(fee)
-        log_transaction(uid, -(jc_amount - fee), "Bought Gold")
-        log_transaction(uid, -fee, "Gold Purchase Fee", processed=1)
         
         embed = discord.Embed(title="🏦 Gold Purchase Receipt", color=discord.Color.green())
         embed.add_field(name="Spent", value=f"**{jc_amount:,}** JC\n*(Includes **{fee:,}** JC fee)*", inline=True)
@@ -2689,11 +2787,21 @@ class Economy(commands.Cog):
             await ctx.send(f"❌ VIP Membership costs **{cost:,}** JC. You only have **{bal:,}** JC.")
             return
             
-        success, pay_msg = pay_jc(uid, cost)
-        set_vip(uid, 30)
-        log_transaction(uid, -cost, "Purchased VIP")
-        
-        expiry = get_vip_expiry(uid)
+        failure_message = None
+        pay_msg = ""
+        expiry = 0
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, cost, conn=conn)
+            if not success:
+                failure_message = pay_msg
+            else:
+                set_vip(uid, 30, conn=conn)
+                log_transaction(uid, -cost, "Purchased VIP", conn=conn)
+                expiry = get_vip_expiry(uid, conn=conn)
+
+        if failure_message:
+            await ctx.send(f"❌ VIP purchase failed. {failure_message}")
+            return
         embed = discord.Embed(
             title="👑 VIP Membership Activated!",
             description=f"Congratulations {ctx.author.mention}! Your VIP status is now active.\n\n"
@@ -2750,24 +2858,32 @@ class Economy(commands.Cog):
             return
             
         # RE-CHECK gold balance to prevent double-sell race conditions
-        current_grams_now = get_gold_grams(uid)
-        if current_grams_now < sell_amount:
-            await msg.edit(content=f"❌ Transaction failed. You no longer have **{sell_amount:.4f}g** to sell (Current: {current_grams_now:.4f}g).")
+        failure_message = None
+        fee_rate = 0.0
+        fee = 0
+        net_payout = 0
+        with db_transaction() as conn:
+            current_grams_now = get_gold_grams(uid, conn=conn)
+            if current_grams_now < sell_amount:
+                failure_message = (
+                    f"❌ Transaction failed. You no longer have **{sell_amount:.4f}g** to sell "
+                    f"(Current: {current_grams_now:.4f}g)."
+                )
+            else:
+                gross_value = int(sell_amount * live_price)
+                fee_rate = 0.02 if is_vip(uid, conn=conn) else 0.05
+                fee = max(1, int(gross_value * fee_rate))
+                net_payout = gross_value - fee
+
+                add_gold_grams(uid, -sell_amount, conn=conn)
+                add_balance(uid, net_payout, conn=conn)
+                track_fee(fee, conn=conn)
+                log_transaction(uid, net_payout, "Sold Gold", conn=conn)
+                log_transaction(uid, -fee, "Gold Sale Fee", processed=1, conn=conn)
+
+        if failure_message:
+            await msg.edit(content=failure_message)
             return
-            
-        gross_value = int(sell_amount * live_price)
-        fee_rate = 0.02 if is_vip(uid) else 0.05
-        fee = max(1, int(gross_value * fee_rate)) 
-        net_payout = gross_value - fee
-        
-        # Deduct REAL amount safely
-        new_gold_bal = current_grams_now - sell_amount
-        db_query("UPDATE investments SET gold_grams = ? WHERE user_id = ?", (new_gold_bal, uid), commit=True)
-        
-        add_balance(uid, net_payout)
-        track_fee(fee)
-        log_transaction(uid, net_payout, "Sold Gold")
-        log_transaction(uid, -fee, "Gold Sale Fee", processed=1)
         
         embed = discord.Embed(title="🏦 Gold Sale Receipt", color=discord.Color.green())
         embed.add_field(name="Sold", value=f"**{sell_amount:.4f}g** Gold", inline=True)
@@ -2881,21 +2997,30 @@ class Economy(commands.Cog):
         outcome = user_choice if won else ("t" if user_choice == "h" else "h")
         outcome_full = "Heads" if outcome == 'h' else "Tails"
 
-        # Auto-deduct payment
-        _, pay_msg = pay_jc(uid, amount)
+        # Resolve payment and result atomically
+        failure_message = None
+        pay_msg = ""
+        new_bal = 0
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, amount, conn=conn)
+            if not success:
+                failure_message = pay_msg
+            elif won:
+                winnings = int(amount * 1.9)
+                new_bal = add_balance(uid, winnings, conn=conn)
+                log_transaction(uid, winnings, "Flip Win", conn=conn)
+                color = discord.Color.green()
+                msg = f"🎉 You guessed right!\nYou won **{amount:,}** JC!"
+            else:
+                new_bal = get_balance(uid, conn=conn)
+                track_fee(amount, conn=conn)
+                log_transaction(uid, -amount, "Flip Loss", processed=1, conn=conn)
+                color = discord.Color.red()
+                msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JC."
 
-        if won:
-            winnings = int(amount * 1.9)
-            new_bal = add_balance(uid, winnings)
-            log_transaction(uid, winnings, "Flip Win")
-            color = discord.Color.green()
-            msg = f"🎉 You guessed right!\nYou won **{amount:,}** JC!"
-        else:
-            new_bal = get_balance(uid)
-            track_fee(amount)
-            log_transaction(uid, -amount, "Flip Loss", processed=1)
-            color = discord.Color.red()
-            msg = f"😢 You guessed wrong.\nYou lost **{amount:,}** JC."
+        if failure_message:
+            await ctx.send(f"❌ Flip failed. {failure_message}")
+            return
 
         embed = discord.Embed(title=f"🪙 Coin Flip — {outcome_full}!", description=msg, color=color)
         embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC", inline=True)
@@ -2926,30 +3051,39 @@ class Economy(commands.Cog):
             
         reel_display = " | ".join(reels)
 
-        # Auto-deduct payment
-        _, pay_msg = pay_jc(uid, amount)
+        # Resolve payment and result atomically
+        failure_message = None
+        pay_msg = ""
+        new_bal = 0
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, amount, conn=conn)
+            if not success:
+                failure_message = pay_msg
+            elif reels[0] == reels[1] == reels[2]:
+                multiplier = SLOT_PAYOUTS.get(reels[0], 2)
+                winnings = amount * multiplier
+                new_bal = add_balance(uid, winnings, conn=conn)
+                log_transaction(uid, winnings, f"Slots Win ({reels[0]})", conn=conn)
+                title = "🎰 JACKPOT!!! 🎰" if reels[0] == "7️⃣" else "🎰 THREE OF A KIND!"
+                desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JC! (x{multiplier})"
+                color = discord.Color.gold()
+            elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
+                new_bal = add_balance(uid, amount, conn=conn)  # Bet back
+                log_transaction(uid, amount, "Slots Draw", conn=conn)
+                title = "🎰 Two of a Kind"
+                desc = f"**[ {reel_display} ]**\n\n😌 Two match! You got your bet back."
+                color = discord.Color.blue()
+            else:
+                new_bal = get_balance(uid, conn=conn)
+                track_fee(amount, conn=conn)
+                log_transaction(uid, -amount, "Slots Loss", conn=conn)
+                title = "🎰 No Match"
+                desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JC."
+                color = discord.Color.red()
 
-        if reels[0] == reels[1] == reels[2]:
-            multiplier = SLOT_PAYOUTS.get(reels[0], 2)
-            winnings = amount * multiplier
-            new_bal = add_balance(uid, winnings)
-            log_transaction(uid, winnings, f"Slots Win ({reels[0]})")
-            title = "🎰 JACKPOT!!! 🎰" if reels[0] == "7️⃣" else "🎰 THREE OF A KIND!"
-            desc = f"**[ {reel_display} ]**\n\n🎉 You won **{winnings:,}** JC! (x{multiplier})"
-            color = discord.Color.gold()
-        elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
-            new_bal = add_balance(uid, amount)  # Bet back
-            log_transaction(uid, amount, "Slots Draw")
-            title = "🎰 Two of a Kind"
-            desc = f"**[ {reel_display} ]**\n\n😌 Two match! You got your bet back."
-            color = discord.Color.blue()
-        else:
-            new_bal = get_balance(uid)
-            track_fee(amount) # Added track_fee for losses
-            log_transaction(uid, -amount, "Slots Loss")
-            title = "🎰 No Match"
-            desc = f"**[ {reel_display} ]**\n\n💨 No luck this time. You lost **{amount:,}** JC."
-            color = discord.Color.red()
+        if failure_message:
+            await ctx.send(f"❌ Slots failed. {failure_message}")
+            return
 
         embed = discord.Embed(title=title, description=desc, color=color)
         embed.add_field(name="Current Wallet", value=f"**{new_bal:,}** JC", inline=True)
@@ -2983,7 +3117,11 @@ class Economy(commands.Cog):
 
         # Take P1's bet upfront
         uid = str(ctx.author.id)
-        _, pay_msg = pay_jc(uid, amount)
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, amount, conn=conn)
+        if not success:
+            await ctx.send(pay_msg)
+            return
 
         view = DuelView(ctx, member, amount, pay_msg)
         embed = discord.Embed(
@@ -3014,9 +3152,19 @@ class Economy(commands.Cog):
         entry_fee = int(amount * entry_rate)
         active_bet = amount - entry_fee
         
-        # Deduct TOTAL bet upfront
-        _, pay_msg = pay_jc(uid, amount)
-        record_crash_entry(uid, entry_fee)
+        # Deduct TOTAL bet upfront and log the entry fee atomically
+        failure_message = None
+        pay_msg = ""
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, amount, conn=conn)
+            if not success:
+                failure_message = pay_msg
+            else:
+                record_crash_entry(uid, entry_fee, conn=conn)
+
+        if failure_message:
+            await ctx.send(f"❌ Crash entry failed. {failure_message}")
+            return
 
         view = CrashView(ctx, active_bet, amount, is_user_vip) # Pass VIP status
         embed = discord.Embed(
@@ -3085,34 +3233,57 @@ class Economy(commands.Cog):
         if is_vip(vid): success_rate -= 0.10 # Harder to rob VIPs
         
         # Sticky Gloves Bonus (+5%)
-        gloves_active = False
-        if get_inventory_item(uid, "Sticky Gloves"):
+        gloves_active = get_inventory_item(uid, "Sticky Gloves")
+        if gloves_active:
             success_rate += 0.05
-            remove_item(uid, "Sticky Gloves")
-            gloves_active = True
 
         # Result Calculation
         success_roll = random.random() < success_rate
-        set_last_rob(uid, now)
+        gold_steal_attempt = success_roll and random.random() < 0.50
         
         # --- GOLD THEFT CHECK (50% Chance, Bypasses JC Shield) ---
         gold_stolen = 0
         gold_msg = ""
-        if success_roll and random.random() < 0.50:
-            v_gold = get_gold_grams(vid)
-            if v_gold > 0.001:
-                gold_percent = random.uniform(0.20, 0.30)
-                gold_stolen = int(v_gold * gold_percent * 100) / 100.0
-                add_gold_grams(vid, -gold_stolen)
-                add_gold_grams(uid, gold_stolen)
-                log_transaction(uid, 0, f"Stole {gold_stolen}g Gold from {member.display_name}")
-                log_transaction(vid, 0, f"Gold stolen by {ctx.author.display_name}: {gold_stolen}g")
-                gold_msg = f"\n🔥 **BONUS**: You also made off with **{gold_stolen}g** of Gold!"
+        failure_message = None
 
         if success_roll:
-            # JC Robbery success (could be blocked by shield)
+            with db_transaction() as conn:
+                if gloves_active:
+                    remove_item(uid, "Sticky Gloves", conn=conn)
+                set_last_rob(uid, now, conn=conn)
+
+                if gold_steal_attempt:
+                    v_gold = get_gold_grams(vid, conn=conn)
+                    if v_gold > 0.001:
+                        gold_percent = random.uniform(0.20, 0.30)
+                        gold_stolen = int(v_gold * gold_percent * 100) / 100.0
+                        if gold_stolen > 0:
+                            add_gold_grams(vid, -gold_stolen, conn=conn)
+                            add_gold_grams(uid, gold_stolen, conn=conn)
+                            log_transaction(uid, 0, f"Stole {gold_stolen}g Gold from {member.display_name}", conn=conn)
+                            log_transaction(vid, 0, f"Gold stolen by {ctx.author.display_name}: {gold_stolen}g", conn=conn)
+                            gold_msg = f"\n🔥 **BONUS**: You also made off with **{gold_stolen}g** of Gold!"
+
+                # JC Robbery success (could be blocked by shield)
+                if has_shield:
+                    remove_item(vid, "Vault Shield", conn=conn)
+                else:
+                    # Standard JC theft
+                    current_v_bal = get_balance(vid, conn=conn)
+                    percent = random.uniform(0.10, 0.25)
+                    stolen = int(current_v_bal * percent)
+                    
+                    # Laundering Fee (5%)
+                    tax = int(stolen * 0.05)
+                    net_gain = stolen - tax
+                    track_fee(tax, conn=conn)
+                    
+                    add_balance(vid, -stolen, conn=conn)
+                    add_balance(uid, net_gain, conn=conn)
+                    log_transaction(uid, net_gain, f"Robbed {member.display_name}", conn=conn)
+                    log_transaction(vid, -stolen, f"Robbed by {ctx.author.display_name}", conn=conn)
+
             if has_shield:
-                remove_item(vid, "Vault Shield")
                 embed = discord.Embed(title="🛡️ Robbery Blocked!", color=discord.Color.orange())
                 msg = f"{member.mention}'s **Vault Shield** blocked your attempt to steal their JC!"
                 if gold_stolen > 0:
@@ -3122,20 +3293,6 @@ class Economy(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            # Standard JC theft
-            percent = random.uniform(0.10, 0.25)
-            stolen = int(v_bal * percent)
-            
-            # Laundering Fee (5%)
-            tax = int(stolen * 0.05)
-            net_gain = stolen - tax
-            track_fee(tax)
-            
-            add_balance(vid, -stolen)
-            add_balance(uid, net_gain)
-            log_transaction(uid, net_gain, f"Robbed {member.display_name}")
-            log_transaction(vid, -stolen, f"Robbed by {ctx.author.display_name}")
-            
             embed = discord.Embed(title="🥷 Successful Robbery!", color=discord.Color.green())
             embed.description = f"You managed to snatch **{stolen:,}** JC from {member.mention}!{gold_msg}"
             embed.add_field(name="Net Gain", value=f"**{net_gain:,}** JC", inline=True)
@@ -3148,38 +3305,59 @@ class Economy(commands.Cog):
             # Penalty: 15% of thief's wallet
             penalty_rate = 0.15
             if is_vip(uid): penalty_rate = 0.08 # VIPs pay reduced penalty
-            
-            fine = int(t_bal * penalty_rate)
-            
-            # Legal Fees (2%)
-            legal_fee = int(fine * 0.02)
-            restitution = fine - legal_fee
-            
-            success, pay_msg = pay_jc(uid, fine)
-            add_balance(vid, restitution)
-            track_fee(legal_fee)
-            
+
+            fine = 0
+            legal_fee = 0
+            restitution = 0
+            pay_msg = ""
             # --- GOLD PENALTY (10% of Thief's Gold) ---
-            t_gold = get_gold_grams(uid)
             gold_fine_victim = 0
             gold_fine_vault = 0
             gold_msg = ""
-            if t_gold > 0.001:
-                # 5% to victim, 5% to vault (10% total)
-                gold_fine_victim = round(t_gold * 0.05, 3)
-                gold_fine_vault = round(t_gold * 0.05, 3)
+            with db_transaction() as conn:
+                if gloves_active:
+                    remove_item(uid, "Sticky Gloves", conn=conn)
+                set_last_rob(uid, now, conn=conn)
+
+                fine = int(get_balance(uid, conn=conn) * penalty_rate)
                 
-                add_gold_grams(uid, -(gold_fine_victim + gold_fine_vault))
-                add_gold_grams(vid, gold_fine_victim)
-                track_gold_fee(gold_fine_vault)
+                # Legal Fees (2%)
+                legal_fee = int(fine * 0.02)
+                restitution = fine - legal_fee
                 
-                log_transaction(uid, 0, f"Robbery Fine: {gold_fine_victim}g to victim, {gold_fine_vault}g to vault")
-                log_transaction(vid, 0, f"Restitution: Received {gold_fine_victim}g from failed thief")
-                gold_msg = f"\n⚠️ **EXTRA**: You also paid **{gold_fine_victim}g** to {member.display_name} and **{gold_fine_vault}g** in legal fees!"
+                success, pay_msg = pay_jc(uid, fine, conn=conn)
+                if not success:
+                    failure_message = pay_msg
+                else:
+                    add_balance(vid, restitution, conn=conn)
+                    track_fee(legal_fee, conn=conn)
+
+                    t_gold = get_gold_grams(uid, conn=conn)
+                    if t_gold > 0.001:
+                        # 5% to victim, 5% to vault (10% total)
+                        gold_fine_victim = round(t_gold * 0.05, 3)
+                        gold_fine_vault = round(t_gold * 0.05, 3)
+                        
+                        add_gold_grams(uid, -(gold_fine_victim + gold_fine_vault), conn=conn)
+                        add_gold_grams(vid, gold_fine_victim, conn=conn)
+                        track_gold_fee(gold_fine_vault, conn=conn)
+                        
+                        log_transaction(uid, 0, f"Robbery Fine: {gold_fine_victim}g to victim, {gold_fine_vault}g to vault", conn=conn)
+                        log_transaction(vid, 0, f"Restitution: Received {gold_fine_victim}g from failed thief", conn=conn)
+                        gold_msg = f"\n⚠️ **EXTRA**: You also paid **{gold_fine_victim}g** to {member.display_name} and **{gold_fine_vault}g** in legal fees!"
+
+                    if has_shield:
+                        remove_item(vid, "Vault Shield", conn=conn)
+
+                    log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""), conn=conn)
+                    log_transaction(vid, restitution, f"Compensated for Attempted Robbery", conn=conn)
+
+            if failure_message:
+                await ctx.send(f"❌ Robbery failed to settle. {failure_message}")
+                return
 
             # Consolidate failure embed
             if has_shield:
-                remove_item(vid, "Vault Shield")
                 embed = discord.Embed(title="🛡️ SHIELD ACTIVATED!", color=discord.Color.blue())
                 embed.description = (f"{member.mention}'s **Vault Shield** blocked the robbery attempt!\n\n"
                                      f"🚔 {ctx.author.mention} was still caught and forced to pay a fine.{gold_msg}")
@@ -3196,8 +3374,6 @@ class Economy(commands.Cog):
                 
             embed.set_footer(text="The law always catches up... eventually.")
             await ctx.send(embed=embed)
-            log_transaction(uid, -fine, f"Failed Robbery of {member.display_name}" + (" (Shielded)" if has_shield else ""))
-            log_transaction(vid, restitution, f"Compensated for Attempted Robbery")
 
     @commands.command(name='history', aliases=['logs', 'stats'])
     async def history_command(self, ctx: commands.Context):
@@ -3361,19 +3537,27 @@ class Economy(commands.Cog):
             return
 
         # 2. Process Refund
-        new_bal = add_balance(uid, refund_plan["wallet_delta"])
+        new_bal = 0
+        with db_transaction() as conn:
+            new_bal = add_balance(uid, refund_plan["wallet_delta"], conn=conn)
 
-        # 3. Handle Vault/Minigame Logic
-        if refund_plan["vault_delta"]:
-            track_fee(refund_plan["vault_delta"])
-        if refund_plan["stats_updates"]:
-            update_user_stats(uid, **refund_plan["stats_updates"])
-        for adjustment in refund_plan["companion_adjustments"]:
-            add_balance(adjustment["user_id"], adjustment["amount"])
-            log_transaction(adjustment["user_id"], adjustment["amount"], adjustment["log_type"], processed=1)
+            # 3. Handle Vault/Minigame Logic
+            if refund_plan["vault_delta"]:
+                track_fee(refund_plan["vault_delta"], conn=conn)
+            if refund_plan["stats_updates"]:
+                update_user_stats(uid, conn=conn, **refund_plan["stats_updates"])
+            for adjustment in refund_plan["companion_adjustments"]:
+                add_balance(adjustment["user_id"], adjustment["amount"], conn=conn)
+                log_transaction(
+                    adjustment["user_id"],
+                    adjustment["amount"],
+                    adjustment["log_type"],
+                    processed=1,
+                    conn=conn,
+                )
 
-        # 4. Log Refund
-        log_transaction(uid, refund_plan["wallet_delta"], f"Refund: {orig_type}", processed=1)
+            # 4. Log Refund
+            log_transaction(uid, refund_plan["wallet_delta"], f"Refund: {orig_type}", processed=1, conn=conn)
 
         # 5. Notify
         embed = discord.Embed(title="✅ Transaction Refunded", color=discord.Color.green())
@@ -3439,13 +3623,16 @@ class Economy(commands.Cog):
                 
                 # Award if under 15 cap
                 if stats["passive_hourly_total"] < 15:
-                    add_balance(uid, 1)
                     new_total = stats["passive_hourly_total"] + 1
-                    update_user_stats(uid, 
-                        last_passive_time=now, 
-                        passive_hourly_total=new_total,
-                        passive_hour_start=stats["passive_hour_start"]
-                    )
+                    with db_transaction() as conn:
+                        add_balance(uid, 1, conn=conn)
+                        update_user_stats(
+                            uid,
+                            conn=conn,
+                            last_passive_time=now,
+                            passive_hourly_total=new_total,
+                            passive_hour_start=stats["passive_hour_start"],
+                        )
                     self.passive_cache[uid] = now
                     
         # Dynamic rain rate (default 0.1% if not set)
@@ -3696,17 +3883,18 @@ class Economy(commands.Cog):
                 await ctx.send(f"❌ You need to own a **{req}** before you can upgrade to a **{target_name}**!")
                 return
                 
-            success, pay_msg = pay_jc(uid, price)
+            with db_transaction() as conn:
+                success, pay_msg = pay_jc(uid, price, conn=conn)
+                if success:
+                    # Remove old tool and add new one
+                    if req:
+                        remove_item(uid, req, conn=conn)
+                    
+                    add_item(uid, target_name, conn=conn)
+                    log_transaction(uid, -price, f"Bought {target_name}", conn=conn)
             if not success:
                 await ctx.send(pay_msg)
                 return
-                
-            # Remove old tool and add new one
-            if req:
-                remove_item(uid, req)
-            
-            add_item(uid, target_name)
-            log_transaction(uid, -price, f"Bought {target_name}")
             await ctx.send(f"⛏️ {ctx.author.mention}, you upgraded to a **{target_name}**! {pay_msg}")
             return
 
@@ -3727,12 +3915,13 @@ class Economy(commands.Cog):
             cost_per = 1000
             total_cost = cost_per * count
             
-            success, msg_text = pay_jc(uid, total_cost)
+            with db_transaction() as conn:
+                success, msg_text = pay_jc(uid, total_cost, conn=conn)
+                if success:
+                    log_transaction(uid, -total_cost, f"Bought {count}x Mystery Box", conn=conn)
             if not success:
                 await ctx.send(msg_text)
                 return
-            
-            log_transaction(uid, -total_cost, f"Bought {count}x Mystery Box")
             
             msg = await ctx.send(f"🎁 {ctx.author.mention} is opening **{count}** Mystery Box(es)... ({msg_text})")
             await asyncio.sleep(1.5)
@@ -3745,6 +3934,7 @@ class Economy(commands.Cog):
             rarity_order = {"COMMON": 0, "RARE": 1, "EPIC": 2, "LEGENDARY": 3}
             best_rarity_rank = -1
             
+            box_outcomes = []
             for _ in range(count):
                 res = random.random()
                 
@@ -3781,10 +3971,7 @@ class Economy(commands.Cog):
                     color = discord.Color.light_grey()
                 
                 total_won += win
-                add_balance(uid, win)
-                log_transaction(uid, win, f"Box Reveal: {rarity}")
                 if item:
-                    add_item(uid, item)
                     items_found.append(item)
                 
                 # Track the best rarity for embed color
@@ -3793,7 +3980,15 @@ class Economy(commands.Cog):
                     best_rarity_rank = rank
                     best_color = color
                 
+                box_outcomes.append((win, item, rarity))
                 results.append(f"📦 **{rarity}** — **{win:,}** JC" + (f" + {item}" if item else ""))
+
+            with db_transaction() as conn:
+                for win, item, rarity in box_outcomes:
+                    add_balance(uid, win, conn=conn)
+                    log_transaction(uid, win, f"Box Reveal: {rarity}", conn=conn)
+                    if item:
+                        add_item(uid, item, conn=conn)
             
             # Build summary embed
             net = total_won - total_cost
@@ -3823,13 +4018,14 @@ class Economy(commands.Cog):
                 await ctx.send("🛡️ You already have the maximum of **3 Vault Shields**! You must use one before buying more.")
                 return
             
-            success, msg_text = pay_jc(uid, cost)
+            with db_transaction() as conn:
+                success, msg_text = pay_jc(uid, cost, conn=conn)
+                if success:
+                    add_item(uid, "Vault Shield", "Protection", conn=conn)
+                    log_transaction(uid, -cost, "Bought Vault Shield", conn=conn)
             if not success:
                 await ctx.send(msg_text)
                 return
-                
-            add_item(uid, "Vault Shield", "Protection")
-            log_transaction(uid, -cost, "Bought Vault Shield")
             
             await ctx.send(f"🛡️ {ctx.author.mention}, you purchased a **Vault Shield**! {msg_text} You now have **{shield_count+1}/3** active shields. (1 Use each)")
 
@@ -3842,15 +4038,16 @@ class Economy(commands.Cog):
                 await ctx.send("🎟️ You already own a **Custom Role Pass**! Use `!setrole <color>` to configure it.")
                 return
             
-            success, msg_text = pay_jc(uid, cost)
+            with db_transaction() as conn:
+                success, msg_text = pay_jc(uid, cost, conn=conn)
+                if success:
+                    track_fee(fee, conn=conn)
+                    add_item(uid, "Custom Role Pass", "Perk", "", conn=conn)
+                    log_transaction(uid, -cost, "Bought Custom Role Pass", conn=conn)
+                    log_transaction(uid, -fee, "Role Fee", processed=1, conn=conn)
             if not success:
                 await ctx.send(msg_text)
                 return
-                
-            track_fee(fee)
-            add_item(uid, "Custom Role Pass", "Perk", "")
-            log_transaction(uid, -cost, "Bought Custom Role Pass")
-            log_transaction(uid, -fee, "Role Fee", processed=1)
             
             embed = discord.Embed(title="✨ Custom Role Pass Purchased!", color=discord.Color.magenta())
             embed.description = (f"Congratulations {ctx.author.mention}! You can now create your own custom role.\n\n"
@@ -3861,14 +4058,15 @@ class Economy(commands.Cog):
 
         elif item_type == "iron":
             cost = shop["iron"]
-            success, pay_msg = pay_jc(uid, cost)
+            with db_transaction() as conn:
+                success, pay_msg = pay_jc(uid, cost, conn=conn)
+                if success:
+                    add_item(uid, "Iron Safe", "Upgrades", "", conn=conn)
+                    log_transaction(uid, -cost, "Bought Iron Safe", conn=conn)
+                    new_limit = get_bank_limit(uid, conn=conn)
             if not success:
                 await ctx.send(pay_msg)
                 return
-                
-            add_item(uid, "Iron Safe", "Upgrades", "")
-            log_transaction(uid, -cost, "Bought Iron Safe")
-            new_limit = get_bank_limit(uid)
             await ctx.send(f"📦 **{ctx.author.name}**, you purchased an **Iron Safe**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
 
@@ -3883,22 +4081,23 @@ class Economy(commands.Cog):
                 try:
                     existing_expiry = int(row[0])
                 except: pass
-            
-            # Purchase logic
-            success, pay_msg = pay_jc(uid, cost)
-            if not success:
-                await ctx.send(pay_msg)
-                return
-            
+
             start_time = max(now, existing_expiry)
             new_expiry = start_time + (7 * 24 * 3600)
             
-            if existing_expiry > 0:
-                db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Coin Insurance'", (str(new_expiry), uid), commit=True)
-            else:
-                add_item(uid, "Coin Insurance", "Protection", str(new_expiry))
-                
-            log_transaction(uid, -cost, "Bought Coin Insurance")
+            # Purchase logic
+            with db_transaction() as conn:
+                success, pay_msg = pay_jc(uid, cost, conn=conn)
+                if success:
+                    if existing_expiry > 0:
+                        db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Coin Insurance'", (str(new_expiry), uid), commit=True, conn=conn)
+                    else:
+                        add_item(uid, "Coin Insurance", "Protection", str(new_expiry), conn=conn)
+                    
+                    log_transaction(uid, -cost, "Bought Coin Insurance", conn=conn)
+            if not success:
+                await ctx.send(pay_msg)
+                return
             
             embed = discord.Embed(title="📜 Coin Insurance Policy Active!", color=discord.Color.blue())
             embed.description = (f"You are now protected from **The Taxman** until <t:{new_expiry}:F>!\n\n"
@@ -3909,14 +4108,15 @@ class Economy(commands.Cog):
             
         elif item_type == "steel":
             cost = shop["steel"]
-            success, pay_msg = pay_jc(uid, cost)
+            with db_transaction() as conn:
+                success, pay_msg = pay_jc(uid, cost, conn=conn)
+                if success:
+                    add_item(uid, "Steel Vault", "Upgrades", "", conn=conn)
+                    log_transaction(uid, -cost, "Bought Steel Vault", conn=conn)
+                    new_limit = get_bank_limit(uid, conn=conn)
             if not success:
                 await ctx.send(pay_msg)
                 return
-                
-            add_item(uid, "Steel Vault", "Upgrades", "")
-            log_transaction(uid, -cost, "Bought Steel Vault")
-            new_limit = get_bank_limit(uid)
             await ctx.send(f"🛡️ **{ctx.author.name}**, you purchased a **Steel Vault**! Your total bank capacity is now **{new_limit:,} JC**. ({pay_msg})")
             return
 
@@ -3925,12 +4125,7 @@ class Economy(commands.Cog):
             cost = 2000
             now = int(time.time())
             expiry = now + 3600 # 1 hour
-            
-            success, msg_text = pay_jc(uid, cost)
-            if not success:
-                await ctx.send(msg_text)
-                return
-                
+
             # Lucky Charms stack in duration
             existing_expiry = 0
             row = db_query("SELECT MAX(item_data) FROM inventory WHERE user_id = ? AND item_name = 'Lucky Charm'", (uid,), fetchone=True)
@@ -3940,20 +4135,28 @@ class Economy(commands.Cog):
                     if existing_expiry > now:
                         expiry = existing_expiry + 3600
                 except: pass
+
+            with db_transaction() as conn:
+                success, msg_text = pay_jc(uid, cost, conn=conn)
+                if success:
+                    add_item(uid, "Lucky Charm", "Charm", str(expiry), conn=conn)
+                    log_transaction(uid, -cost, "Bought Lucky Charm", conn=conn)
+            if not success:
+                await ctx.send(msg_text)
+                return
             
-            add_item(uid, "Lucky Charm", "Charm", str(expiry))
-            log_transaction(uid, -cost, "Bought Lucky Charm")
             await ctx.send(f"🍀 {ctx.author.mention}, you purchased a **Lucky Charm**! {msg_text} Your gambling luck is boosted until <t:{expiry}:t>.")
 
         elif item_type in ['gloves', 'sticky gloves']:
             cost = 5000
-            success, msg_text = pay_jc(uid, cost)
+            with db_transaction() as conn:
+                success, msg_text = pay_jc(uid, cost, conn=conn)
+                if success:
+                    add_item(uid, "Sticky Gloves", "Tool", conn=conn)
+                    log_transaction(uid, -cost, "Bought Sticky Gloves", conn=conn)
             if not success:
                 await ctx.send(msg_text)
                 return
-                
-            add_item(uid, "Sticky Gloves", "Tool")
-            log_transaction(uid, -cost, "Bought Sticky Gloves")
             await ctx.send(f"🧤 {ctx.author.mention}, you purchased **Sticky Gloves**! {msg_text} Your next robbery attempt will have a **+5% success rate**.")
 
         else:
@@ -4086,13 +4289,14 @@ class Economy(commands.Cog):
             if my_role:
                 # Edit existing role - Costs 450,000 JC
                 edit_cost = 450000
-                success, msg_text = pay_jc(uid, edit_cost)
+                with db_transaction() as conn:
+                    success, msg_text = pay_jc(uid, edit_cost, conn=conn)
+                    if success:
+                        log_transaction(uid, -edit_cost, "Edited Custom Role", conn=conn)
                 if not success:
                     await ctx.send(msg_text)
                     return
-                
-                log_transaction(uid, -edit_cost, "Edited Custom Role")
-                
+
                 await my_role.edit(name="JC", color=role_color, permissions=zero_perms, hoist=True, mentionable=False, position=target_pos, reason=f"Custom role edit by {ctx.author.name}")
                 await ctx.send(f"✨ Successfully updated color to `{color_display}` and moved it to the top! {msg_text} *(Cost: **{edit_cost:,} JC**)*")
             else:
@@ -4100,7 +4304,8 @@ class Economy(commands.Cog):
                 my_role = await ctx.guild.create_role(name="JC", color=role_color, permissions=zero_perms, hoist=True, mentionable=False, reason=f"Custom role creation by {ctx.author.name}")
                 await my_role.edit(position=target_pos)
                 await ctx.author.add_roles(my_role)
-                db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Custom Role Pass'", (str(my_role.id), uid), commit=True)
+                with db_transaction() as conn:
+                    db_query("UPDATE inventory SET item_data = ? WHERE user_id = ? AND item_name = 'Custom Role Pass'", (str(my_role.id), uid), commit=True, conn=conn)
                 await ctx.send(f"✨ Successfully created role **JC** with color `{color_display}`! (First time free - Auto-positioned to top)")
         except discord.Forbidden:
             await ctx.send("❌ **Permission Denied!** I don't have the **'Manage Roles'** permission, or I am trying to edit a role that is higher than mine. Please move my **JenBot** role to the top of the list in Server Settings!")
@@ -4156,9 +4361,10 @@ class Economy(commands.Cog):
             
         # Execute Sale
         total_price = price * quantity
-        remove_items(uid, exact_name, quantity)
-        new_bal = add_balance(uid, total_price)
-        log_transaction(uid, total_price, f"Sold {quantity}x {exact_name}")
+        with db_transaction() as conn:
+            remove_items(uid, exact_name, quantity, conn=conn)
+            new_bal = add_balance(uid, total_price, conn=conn)
+            log_transaction(uid, total_price, f"Sold {quantity}x {exact_name}", conn=conn)
         
         embed = discord.Embed(
             title="🤝 Items Sold!",
@@ -4178,8 +4384,9 @@ class Economy(commands.Cog):
             await ctx.send(f"Usage: `{COMMAND_PREFIX}addcoins @user [amount]`")
             return
         if not await validate_admin_amount(ctx, amount): return
-        new_bal = add_balance(str(member.id), amount)
-        log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})")
+        with db_transaction() as conn:
+            new_bal = add_balance(str(member.id), amount, conn=conn)
+            log_transaction(str(member.id), amount, f"Admin Add (by {ctx.author.display_name})", conn=conn)
         await ctx.send(f"✅ Added **{amount:,}** JC to {member.mention}. New balance: **{new_bal:,}**.")
 
     @commands.command(name='takecoins', aliases=['removejc', 'takejc'])
@@ -4190,8 +4397,9 @@ class Economy(commands.Cog):
             await ctx.send(f"Usage: `{COMMAND_PREFIX}takecoins @user [amount]`")
             return
         if not await validate_admin_amount(ctx, amount): return
-        new_bal = add_balance(str(member.id), -amount)
-        log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})")
+        with db_transaction() as conn:
+            new_bal = add_balance(str(member.id), -amount, conn=conn)
+            log_transaction(str(member.id), -amount, f"Admin Remove (by {ctx.author.display_name})", conn=conn)
         await ctx.send(f"✅ Removed **{amount:,}** JC from {member.mention}. New balance: **{new_bal:,}**.")
 
     @commands.command(name='grantvip', aliases=['givevip'])
@@ -4205,9 +4413,10 @@ class Economy(commands.Cog):
             await ctx.send("❌ Please provide a positive number of days.")
             return
         
-        set_vip(str(member.id), days)
-        expiry = get_vip_expiry(str(member.id))
-        log_transaction(str(member.id), 0, f"Admin VIP Grant ({days}d by {ctx.author.display_name})")
+        with db_transaction() as conn:
+            set_vip(str(member.id), days, conn=conn)
+            expiry = get_vip_expiry(str(member.id), conn=conn)
+            log_transaction(str(member.id), 0, f"Admin VIP Grant ({days}d by {ctx.author.display_name})", conn=conn)
         
         await ctx.send(f"👑 Granted **{days} days** of VIP to {member.mention}!\n📅 Expires: <t:{expiry}:F> (<t:{expiry}:R>)")
 
@@ -4221,21 +4430,22 @@ class Economy(commands.Cog):
         
         uid = str(member.id)
         
-        # 1. Wipe Wallet & Bank
-        set_balance(uid, 0)
-        set_bank(uid, 0)
-        
-        # 2. Wipe Gold
-        db_query("DELETE FROM investments WHERE user_id = ?", (uid,), commit=True)
-        
-        # 3. Wipe Inventory
-        db_query("DELETE FROM inventory WHERE user_id = ?", (uid,), commit=True)
-        
-        # 4. Wipe Stats
-        db_query("DELETE FROM user_stats WHERE user_id = ?", (uid,), commit=True)
-        
-        # 5. Log it
-        log_transaction(uid, 0, f"ADMIN NUKE (by {ctx.author.display_name})")
+        with db_transaction() as conn:
+            # 1. Wipe Wallet & Bank
+            set_balance(uid, 0, conn=conn)
+            set_bank(uid, 0, conn=conn)
+            
+            # 2. Wipe Gold
+            db_query("DELETE FROM investments WHERE user_id = ?", (uid,), commit=True, conn=conn)
+            
+            # 3. Wipe Inventory
+            db_query("DELETE FROM inventory WHERE user_id = ?", (uid,), commit=True, conn=conn)
+            
+            # 4. Wipe Stats
+            db_query("DELETE FROM user_stats WHERE user_id = ?", (uid,), commit=True, conn=conn)
+            
+            # 5. Log it
+            log_transaction(uid, 0, f"ADMIN NUKE (by {ctx.author.display_name})", conn=conn)
         
         await ctx.send(f"☢️ **TOTAL NUKE COMPLETE.** {member.mention} has been reset to level zero. All JC, Gold, and Items have been incinerated.")
 
@@ -4377,24 +4587,29 @@ class DuelView(discord.ui.View):
             await interaction.response.send_message("You don't have enough JC to accept this duel anymore!", ephemeral=True)
             return
 
-        self.resolved = True
-        self.stop()
-        
-        # Deduct from P2
-        _, pay_msg2 = pay_jc(uid2, self.bet)
-
         # Flip the coin
-        winner = random.choice([self.ctx.author, self.target])
-        
-        # Pot calculation (Total - 5% fee)
+        failure_message = None
+        winner = None
         total_pot = self.bet * 2
         fee = int(total_pot * 0.05)
         winnings = total_pot - fee
-        
-        track_fee(fee)
-        add_balance(str(winner.id), winnings)
-        log_transaction(str(winner.id), winnings, "Duel Win")
-        log_transaction(uid1 if winner.id != self.ctx.author.id else uid2, -self.bet, "Duel Loss")
+        with db_transaction() as conn:
+            success, pay_msg2 = pay_jc(uid2, self.bet, conn=conn)
+            if not success:
+                failure_message = pay_msg2
+            else:
+                winner = random.choice([self.ctx.author, self.target])
+                track_fee(fee, conn=conn)
+                add_balance(str(winner.id), winnings, conn=conn)
+                log_transaction(str(winner.id), winnings, "Duel Win", conn=conn)
+                log_transaction(uid1 if winner.id != self.ctx.author.id else uid2, -self.bet, "Duel Loss", conn=conn)
+
+        if failure_message:
+            await interaction.response.send_message(failure_message, ephemeral=True)
+            return
+
+        self.resolved = True
+        self.stop()
 
         embed = discord.Embed(
             title="⚔️ Duel Results!",
@@ -4412,21 +4627,23 @@ class DuelView(discord.ui.View):
             await interaction.response.send_message("You can't do that!", ephemeral=True)
             return
 
+        with db_transaction() as conn:
+            add_balance(str(self.ctx.author.id), self.bet, conn=conn)
+            log_transaction(str(self.ctx.author.id), self.bet, "Duel Cancelled (Refund)", conn=conn)
+
         self.resolved = True
         self.stop()
-        
-        # Refund P1
-        add_balance(str(self.ctx.author.id), self.bet)
-        log_transaction(str(self.ctx.author.id), self.bet, "Duel Cancelled (Refund)")
 
         msg = "declined the challenge." if interaction.user.id == self.target.id else "cancelled the challenge."
         await interaction.response.edit_message(content=f"❌ Duel {msg} (Refunded)", embed=None, view=None)
 
     async def on_timeout(self):
         if not self.resolved:
-            # Refund P1
-            add_balance(str(self.ctx.author.id), self.bet)
-            log_transaction(str(self.ctx.author.id), self.bet, "Duel Timed Out (Refund)")
+            with db_transaction() as conn:
+                add_balance(str(self.ctx.author.id), self.bet, conn=conn)
+                log_transaction(str(self.ctx.author.id), self.bet, "Duel Timed Out (Refund)", conn=conn)
+
+            self.resolved = True
             if self.message:
                 try:
                     await self.message.edit(content="⏰ Duel challenge timed out. (Refunded)", embed=None, view=None)
@@ -4444,10 +4661,7 @@ class BlackjackView(discord.ui.View):
         self.message = None
         self.is_natural = False
         self.game_over = False
-        
-        # Take bet upfront
-        uid = str(ctx.author.id)
-        _, self.pay_msg = pay_jc(uid, bet)
+        self.pay_msg = ""
 
     def create_deck(self):
         suits = ['♠️', '♥️', '♣️', '♦️']
@@ -4481,6 +4695,16 @@ class BlackjackView(discord.ui.View):
         return " | ".join(hand)
 
     async def start_game(self):
+        uid = str(self.ctx.author.id)
+        with db_transaction() as conn:
+            success, self.pay_msg = pay_jc(uid, self.bet, conn=conn)
+
+        if not success:
+            self.game_over = True
+            self.stop()
+            await self.ctx.send(self.pay_msg)
+            return
+
         player_val = self.calculate_value(self.player_hand)
         if player_val == 21:
             self.is_natural = True
@@ -4551,32 +4775,33 @@ class BlackjackView(discord.ui.View):
         self.stop()
         
         uid = str(self.ctx.author.id)
-        if win is True:
-            # Payout logic: Original bet back + winnings
-            # Standard: bet + (bet * 0.9) = 1.9x
-            # Natural: bet + (bet * 1.2) = 2.2x
-            # We redirect 10% of what should have been the winnings (bet * 0.1) to the vault
-            profit_multiplier = 1.2 if self.is_natural else 0.9
-            payout = int(self.bet + (self.bet * profit_multiplier))
-            
-            # Tax Logic: The 0.1x difference is the tax
-            tax_amount = int(self.bet * 0.1)
-            track_fee(tax_amount)
-            
-            new_bal = add_balance(uid, payout)
-            log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""))
-            log_transaction(uid, -tax_amount, "Blackjack Tax", processed=1)
-            
-            color = discord.Color.green()
-        elif win is False:
-            new_bal = get_balance(uid)
-            track_fee(self.bet)
-            log_transaction(uid, -self.bet, "Blackjack Loss", processed=1)
-            color = discord.Color.red()
-        else: # Tie (Push) - Get bet back
-            new_bal = add_balance(uid, self.bet)
-            log_transaction(uid, self.bet, "Blackjack Push")
-            color = discord.Color.blue()
+        with db_transaction() as conn:
+            if win is True:
+                # Payout logic: Original bet back + winnings
+                # Standard: bet + (bet * 0.9) = 1.9x
+                # Natural: bet + (bet * 1.2) = 2.2x
+                # We redirect 10% of what should have been the winnings (bet * 0.1) to the vault
+                profit_multiplier = 1.2 if self.is_natural else 0.9
+                payout = int(self.bet + (self.bet * profit_multiplier))
+                
+                # Tax Logic: The 0.1x difference is the tax
+                tax_amount = int(self.bet * 0.1)
+                track_fee(tax_amount, conn=conn)
+                
+                new_bal = add_balance(uid, payout, conn=conn)
+                log_transaction(uid, payout, "Blackjack Win" + (" (Natural)" if self.is_natural else ""), conn=conn)
+                log_transaction(uid, -tax_amount, "Blackjack Tax", processed=1, conn=conn)
+                
+                color = discord.Color.green()
+            elif win is False:
+                new_bal = get_balance(uid, conn=conn)
+                track_fee(self.bet, conn=conn)
+                log_transaction(uid, -self.bet, "Blackjack Loss", processed=1, conn=conn)
+                color = discord.Color.red()
+            else: # Tie (Push) - Get bet back
+                new_bal = add_balance(uid, self.bet, conn=conn)
+                log_transaction(uid, self.bet, "Blackjack Push", conn=conn)
+                color = discord.Color.blue()
 
         embed = self.make_embed(finished=True)
         embed.title = f"🃏 {result_text}"
@@ -4700,18 +4925,18 @@ class CrashView(discord.ui.View):
         if self.cashed_out or self.crashed:
             return
 
-        self.cashed_out = True
-        self.stop()
-        
         tax_rate = self.get_tax_rate()
         gross_payout = int(self.active_bet * self.multiplier)
         profit = max(0, gross_payout - self.active_bet)
         tax_deducted = int(profit * tax_rate)
         final_payout = gross_payout - tax_deducted
-        
-        new_bal = add_balance(str(self.ctx.author.id), final_payout)
-        
-        record_crash_cashout(str(self.ctx.author.id), final_payout, tax_deducted, self.multiplier)
+
+        with db_transaction() as conn:
+            new_bal = add_balance(str(self.ctx.author.id), final_payout, conn=conn)
+            record_crash_cashout(str(self.ctx.author.id), final_payout, tax_deducted, self.multiplier, conn=conn)
+
+        self.cashed_out = True
+        self.stop()
         
         embed = discord.Embed(title="🚀 CASHED OUT!", color=discord.Color.green())
         net_result = final_payout - self.original_bet
@@ -4731,8 +4956,10 @@ class CrashView(discord.ui.View):
 
     async def do_crash(self):
         """Handles the crash state."""
+        with db_transaction() as conn:
+            record_crash_loss(str(self.ctx.author.id), self.active_bet, conn=conn)
+
         self.stop()
-        record_crash_loss(str(self.ctx.author.id), self.active_bet)
         
         embed = discord.Embed(title="💥 CRASHED!!!", color=discord.Color.red())
         embed.description = (
@@ -4784,8 +5011,9 @@ class RainView(discord.ui.View):
             amount = self.pool
         
         self.pool -= amount
-        new_bal = add_balance(uid, amount)
-        log_transaction(uid, amount, "Caught Rain")
+        with db_transaction() as conn:
+            new_bal = add_balance(uid, amount, conn=conn)
+            log_transaction(uid, amount, "Caught Rain", conn=conn)
         
         self.winners.append({'id': uid, 'name': interaction.user.display_name, 'amount': amount})
         

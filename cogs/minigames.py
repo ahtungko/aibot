@@ -17,6 +17,7 @@ from cogs.economy import (
     SCRAMBLE_TIMEOUT_TX,
     SCRAMBLE_WIN_PREFIX,
     add_balance,
+    db_transaction,
     log_transaction,
     get_balance,
     track_fee,
@@ -66,11 +67,11 @@ class MysteryView(discord.ui.View):
                 # Tax 20% of bounty to vault
                 tax = int(self.bounty * 0.20)
                 net_bounty = self.bounty - tax
-                track_fee(tax)
-                
-                new_bal = add_balance(uid, net_bounty)
-                log_transaction(uid, net_bounty, MYSTERY_SOLVED_TX)
-                log_transaction(uid, -tax, "Mystery Bounty Tax", processed=1)
+                with db_transaction() as conn:
+                    track_fee(tax, conn=conn)
+                    new_bal = add_balance(uid, net_bounty, conn=conn)
+                    log_transaction(uid, net_bounty, MYSTERY_SOLVED_TX, conn=conn)
+                    log_transaction(uid, -tax, "Mystery Bounty Tax", processed=1, conn=conn)
                 
                 embed = discord.Embed(
                     title="🎉 MYSTERY SOLVED!",
@@ -212,10 +213,11 @@ class CodeCrackerView(discord.ui.View):
         uid = str(self.ctx.author.id)
         tax = int(self.bounty * 0.20)
         net_bounty = self.bounty - tax
-        track_fee(tax)
-        new_bal = add_balance(uid, net_bounty)
-        log_transaction(uid, net_bounty, CODE_CRACKER_WIN_TX)
-        log_transaction(uid, -tax, "Code Cracker Tax", processed=1)
+        with db_transaction() as conn:
+            track_fee(tax, conn=conn)
+            new_bal = add_balance(uid, net_bounty, conn=conn)
+            log_transaction(uid, net_bounty, CODE_CRACKER_WIN_TX, conn=conn)
+            log_transaction(uid, -tax, "Code Cracker Tax", processed=1, conn=conn)
 
         embed = self.create_embed()
         embed.title = "🎊 CODE CRACKED!"
@@ -248,9 +250,10 @@ class CodeCrackerView(discord.ui.View):
             
         uid = str(self.ctx.author.id)
         # Refund 100 JC and reset cooldown
-        add_balance(uid, 100)
-        update_user_stats(uid, last_crack=0)
-        log_transaction(uid, 100, CODE_CRACKER_TIMEOUT_REFUND_TX)
+        with db_transaction() as conn:
+            add_balance(uid, 100, conn=conn)
+            update_user_stats(uid, conn=conn, last_crack=0)
+            log_transaction(uid, 100, CODE_CRACKER_TIMEOUT_REFUND_TX, conn=conn)
 
         try:
             if self.message:
@@ -379,19 +382,22 @@ class Minigames(commands.Cog):
             total_bet_pool = sum(b['amount'] for b in race.bets.values())
             total_paid_out = 0
             winners_list = []
-            
-            for uid, bet in race.bets.items():
-                if bet['horse_index'] == winner_index:
-                    payout = int(bet['amount'] * 4.5)
-                    add_balance(uid, payout)
-                    log_transaction(uid, payout, f"Won Horse Race (Horse #{winner_index+1})")
-                    winners_list.append(f"<@{uid}> won **{payout:,}** JC!")
-                    total_paid_out += payout
 
-            # House Edge (Tax)
-            house_edge = total_bet_pool - total_paid_out
+            with db_transaction() as conn:
+                for uid, bet in race.bets.items():
+                    if bet['horse_index'] == winner_index:
+                        payout = int(bet['amount'] * 4.5)
+                        add_balance(uid, payout, conn=conn)
+                        log_transaction(uid, payout, f"Won Horse Race (Horse #{winner_index+1})", conn=conn)
+                        winners_list.append(f"<@{uid}> won **{payout:,}** JC!")
+                        total_paid_out += payout
+
+                # House Edge (Tax)
+                house_edge = total_bet_pool - total_paid_out
+                if house_edge > 0:
+                    track_fee(house_edge, conn=conn)
+
             if house_edge > 0:
-                track_fee(house_edge)
                 results_embed.set_footer(text=f"🏛️ {house_edge:,} JC contributed to the Global Vault.")
 
             if winners_list:
@@ -430,8 +436,9 @@ class Minigames(commands.Cog):
              await ctx.send("❌ Already bet on another horse.")
              return
 
-        add_balance(uid, -amt)
-        log_transaction(uid, -amt, f"Bet on Horse #{horse_num}")
+        with db_transaction() as conn:
+            add_balance(uid, -amt, conn=conn)
+            log_transaction(uid, -amt, f"Bet on Horse #{horse_num}", conn=conn)
         race.add_bet(uid, horse_num - 1, amt)
         await ctx.send(f"✅ {ctx.author.mention} bet **{amt:,}** JC on **Horse #{horse_num}**!")
 
@@ -567,16 +574,17 @@ class Minigames(commands.Cog):
 
         row_id, original, scrambled, category = row
         
-        # Mark as used immediately
-        db_query("UPDATE scramble_words SET status = 1 WHERE id = ?", (row_id,), commit=True)
+        with db_transaction() as conn:
+            # Mark as used immediately
+            db_query("UPDATE scramble_words SET status = 1 WHERE id = ?", (row_id,), commit=True, conn=conn)
 
-        # Apply Cooldown ONLY after we know we have a word
-        update_user_stats(uid, last_scramble=now + 3600)
+            # Apply Cooldown ONLY after we know we have a word
+            update_user_stats(uid, conn=conn, last_scramble=now + 3600)
 
-        # Deduct entry fee (Tax)
-        add_balance(uid, -5)
-        track_fee(5) # Sent to the Global Vault
-        log_transaction(uid, -5, SCRAMBLE_ENTRY_FEE_TX)
+            # Deduct entry fee (Tax)
+            add_balance(uid, -5, conn=conn)
+            track_fee(5, conn=conn) # Sent to the Global Vault
+            log_transaction(uid, -5, SCRAMBLE_ENTRY_FEE_TX, conn=conn)
 
         # Start game
         bounty = random.randint(10, 50)
@@ -590,11 +598,13 @@ class Minigames(commands.Cog):
 
         try:
             msg = await self.bot.wait_for('message', check=check, timeout=15.0)
-            new_bal = add_balance(uid, bounty)
-            log_transaction(uid, bounty, f"{SCRAMBLE_WIN_PREFIX}{original})")
+            with db_transaction() as conn:
+                new_bal = add_balance(uid, bounty, conn=conn)
+                log_transaction(uid, bounty, f"{SCRAMBLE_WIN_PREFIX}{original})", conn=conn)
             await ctx.send(f"🏆 {ctx.author.mention} solved it! The word was **{original}**. Won **{bounty:,} JC**!")
         except asyncio.TimeoutError:
-            log_transaction(uid, 0, SCRAMBLE_TIMEOUT_TX)
+            with db_transaction() as conn:
+                log_transaction(uid, 0, SCRAMBLE_TIMEOUT_TX, conn=conn)
             await ctx.send(f"⌛ **Time's up!** The word was **{original}**. Better luck next time!")
 
         # Check if we need to refill the bank
@@ -650,16 +660,17 @@ class Minigames(commands.Cog):
             db_query("UPDATE mystery_bank SET status = 2 WHERE id = ?", (row_id,), commit=True) # Status 2 for corrupt
             return
 
-        # Mark as used immediately
-        db_query("UPDATE mystery_bank SET status = 1 WHERE id = ?", (row_id,), commit=True)
+        with db_transaction() as conn:
+            # Mark as used immediately
+            db_query("UPDATE mystery_bank SET status = 1 WHERE id = ?", (row_id,), commit=True, conn=conn)
 
-        # Deduct entry fee AFTER all validation passes
-        add_balance(uid, -100)
-        track_fee(100)
-        log_transaction(uid, -100, MYSTERY_ENTRY_FEE_TX)
+            # Deduct entry fee AFTER all validation passes
+            add_balance(uid, -100, conn=conn)
+            track_fee(100, conn=conn)
+            log_transaction(uid, -100, MYSTERY_ENTRY_FEE_TX, conn=conn)
 
-        # Apply cooldown AFTER fee is taken
-        update_user_stats(uid, last_mystery=now + 3600)
+            # Apply cooldown AFTER fee is taken
+            update_user_stats(uid, conn=conn, last_mystery=now + 3600)
 
         try:
             bounty = random.randint(1000, 1500)
@@ -681,7 +692,8 @@ class Minigames(commands.Cog):
                 await asyncio.sleep(75)
                 if not view.solved and not view.failed:
                     view.stop()
-                    log_transaction(uid, 0, MYSTERY_EXPIRED_TX)
+                    with db_transaction() as conn:
+                        log_transaction(uid, 0, MYSTERY_EXPIRED_TX, conn=conn)
                     await msg.edit(embed=discord.Embed(title="⌛ EXPIRED", description=f"The culprit was **{culprit}**. No one solved it!", color=discord.Color.light_grey()), view=None)
             # Check if we need to refill the bank
             unused_count = db_query("SELECT COUNT(*) FROM mystery_bank WHERE status = 0", fetchone=True)[0]
@@ -718,11 +730,12 @@ class Minigames(commands.Cog):
             await ctx.send(f"❌ You need at least **100 JC** to play! (Balance: {bal:,} JC)")
             return
 
-        # Deduct entry fee
-        add_balance(uid, -100)
-        update_user_stats(uid, last_crack=now + 30)
-        track_fee(100)
-        log_transaction(uid, -100, CODE_CRACKER_ENTRY_FEE_TX)
+        with db_transaction() as conn:
+            # Deduct entry fee
+            add_balance(uid, -100, conn=conn)
+            update_user_stats(uid, conn=conn, last_crack=now + 30)
+            track_fee(100, conn=conn)
+            log_transaction(uid, -100, CODE_CRACKER_ENTRY_FEE_TX, conn=conn)
 
         # Generate unique 4-digit code
         secret = random.sample(range(10), 4)
