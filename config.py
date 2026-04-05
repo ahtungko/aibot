@@ -23,6 +23,9 @@ BASE_CURRENCY_API_URL = "https://api.frankfurter.dev/v1/latest"
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 OPENAI_BACKUP_BASE_URL = os.getenv("OPENAI_BACKUP_BASE_URL")
 OPENAI_BACKUP_API_KEY = os.getenv("OPENAI_BACKUP_API_KEY", OPENAI_API_KEY)
+NSFW_RESPONSES_URL = os.getenv("NSFW_RESPONSES_URL")
+NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY")
+NSFW_MODEL = os.getenv("NSFW_MODEL", "grok-4")
 DEFAULT_MODEL = "gpt-5.4-mini"
 FALLBACK_MODEL = "gpt-5.4"
 
@@ -65,6 +68,8 @@ if not WISE_SANDBOX_TOKEN:
     print("Warning: WISE_SANDBOX_TOKEN not found. The !liverate command will be disabled.")
 if not CHECKIN_WORKER_URL:
     print("Warning: CHECKIN_WORKER_URL not found. The !ck check-in command will be disabled.")
+if not NSFW_API_KEY:
+    print("Warning: NSFW_API_KEY/GROK2API_API_KEY not found. The !nsfw command will be disabled.")
 
 try:
     OWNER_ID = int(BOT_OWNER_ID_STR) if BOT_OWNER_ID_STR else None
