@@ -196,6 +196,7 @@ DAILY_MISSION_SLOTS = 3
 WEEKLY_MISSION_SLOTS = 2
 BOX_EPIC_PITY_THRESHOLD = 90
 BOX_LEGENDARY_PITY_THRESHOLD = 180
+MITHRIL_CHAT_PASSIVE_TX = "Mithril Chat Passive"
 
 ACHIEVEMENT_DEFINITIONS = {
     "first_stack": {
@@ -4361,11 +4362,12 @@ class Economy(commands.Cog):
         now = int(time.time())
         
         # --- Mithril Drill Chat Passive ---
-        last_time = self.passive_cache.get(uid, 0)
-        if now - last_time >= 60:
-            pick = get_best_pickaxe(uid)
-            if pick["passive_active"]:
-                stats = get_user_stats(uid)
+        pick = get_best_pickaxe(uid)
+        if pick["passive_active"]:
+            stats = get_user_stats(uid)
+            last_time = max(self.passive_cache.get(uid, 0), stats["last_passive_time"] or 0)
+
+            if now - last_time >= 60:
                 # Check Hourly Reset
                 if now - stats["passive_hour_start"] >= 3600:
                     stats["passive_hourly_total"] = 0
@@ -4376,6 +4378,7 @@ class Economy(commands.Cog):
                     new_total = stats["passive_hourly_total"] + 1
                     with db_transaction() as conn:
                         add_balance(uid, 1, conn=conn)
+                        log_transaction(uid, 1, MITHRIL_CHAT_PASSIVE_TX, conn=conn)
                         update_user_stats(
                             uid,
                             conn=conn,
@@ -4521,7 +4524,7 @@ class Economy(commands.Cog):
             "**Golden Pickaxe** — `3,500 JC` (+30 JC, -1% Tax) • *Req: Iron* — `!buy golden` \n"
             "**Diamond Pickaxe** — `8,000 JC` (+45 JC, 1x OT) • *Req: Golden* — `!buy diamond` \n"
             "**Netherite Pickaxe** — `20,000 JC` (+60 JC, 2x OT, 10% Dodge) • *Req: Diamond* — `!buy netherite` \n"
-            "**Mithril Drill** — `50,000 JC` (+80 JC, 3x OT, Chat Passive) • *Req: Netherite* — `!buy mithril`"
+            "**Mithril Drill** — `50,000 JC` (+80 JC, 3x OT, +1 JC/min chat passive, max 15/hour) • *Req: Netherite* — `!buy mithril`"
         )
         embed.add_field(name="⛏️ **Mining Tool Upgrades**", value=mining_tools, inline=False)
 
