@@ -9,7 +9,7 @@ A feature-rich Discord bot with AI chat, currency exchange, horoscopes, music do
 
 | Category | Commands |
 |---|---|
-| 🤖 **AI Chat & Utils** | `@JenBot [message]`, `!tldr [count]`, `!clear`, `!afk [reason]`, `!pin`, `!pins` |
+| 🤖 **AI Chat & Utils** | `@JenBot [message]`, `!tldr [count]`, `!clear`, `!nsfw [prompt]` (NSFW channels), `!afk [reason]`, `!pin`, `!pins` |
 | 💰 **Economy & Bank**   | `!bal`, `!daily`, `!work`, `!dep [amount]`, `!with [amount]`, `!pf`, `!vault` |
 | 🎲 **Gambling & Duels** | `!flip`, `!slots`, `!bj`, `!duel @user`, `!bjduel @user`, `!rob @user` |
 | 🏪 **Shop & Inventory** | `!shop`, `!buy [item]`, `!inv`, `!sell [item]`, `!setrole [color]` |
@@ -27,7 +27,7 @@ JenBot/
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Template for secrets
 ├── cogs/                # Modular command groups
-│   ├── ai.py            # AI chat, !tldr, !clear
+│   ├── ai.py            # AI chat, !tldr, !clear, !nsfw
 │   ├── checkin.py       # !ck, !streak, !lb
 │   ├── currency.py      # Currency exchange, !liverate
 │   ├── economy.py       # Economy, Bank, Casino, Duels, Shop, Market
@@ -98,6 +98,10 @@ Fill in your values:
 ```env
 DISCORD_BOT_TOKEN=your_bot_token_here
 OPENAI_API_KEY=your_openai_key_here
+OPENAI_BASE_URL=your_openai_compatible_base_url
+NSFW_RESPONSES_URL=https://g2p.tinalee.eu.org/v1/responses
+NSFW_API_KEY=your_nsfw_api_key_here
+NSFW_MODEL=grok-4
 BOT_OWNER_ID=your_discord_user_id
 WISE_SANDBOX_TOKEN=your_wise_token          # optional
 CHECKIN_WORKER_URL=your_worker_url          # optional

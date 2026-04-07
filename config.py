@@ -69,7 +69,7 @@ if not WISE_SANDBOX_TOKEN:
 if not CHECKIN_WORKER_URL:
     print("Warning: CHECKIN_WORKER_URL not found. The !ck check-in command will be disabled.")
 if not NSFW_API_KEY:
-    print("Warning: NSFW_API_KEY/GROK2API_API_KEY not found. The !nsfw command will be disabled.")
+    print("Warning: NSFW_API_KEY/GROK2API_API_KEY not found. The shared Responses endpoint for !nsfw will be disabled.")
 
 try:
     OWNER_ID = int(BOT_OWNER_ID_STR) if BOT_OWNER_ID_STR else None

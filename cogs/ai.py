@@ -1,6 +1,13 @@
-# cogs/ai.py - AI mention handler, !clear, !tldr, conversation memory, !nsfw
+# cogs/ai.py - AI mention handler, !clear, !tldr, conversation memory, !nsfw, !news
 import asyncio
+from datetime import timedelta, timezone
+from email.utils import parsedate_to_datetime
+import html
+import re
 import time
+import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
+from urllib.parse import urlencode
 
 import discord
 import httpx
@@ -23,6 +30,138 @@ from config import (
     OPENAI_BASE_URL,
 )
 class AI(commands.Cog):
+    INLINE_CITATION_PATTERN = re.compile(r"\[\[(\d+)\]\]\((https?://[^\s)]+)\)")
+    DEFAULT_NEWS_COUNTRY = "my"
+    DEFAULT_NEWS_LANGUAGE = "en"
+    NEWS_COUNTRY_ALIASES = {
+        "au": "au",
+        "australia": "au",
+        "cn": "cn",
+        "china": "cn",
+        "gb": "gb",
+        "uk": "gb",
+        "united kingdom": "gb",
+        "hk": "hk",
+        "hong kong": "hk",
+        "id": "id",
+        "indonesia": "id",
+        "in": "in",
+        "india": "in",
+        "jp": "jp",
+        "japan": "jp",
+        "kr": "kr",
+        "korea": "kr",
+        "south korea": "kr",
+        "malaysia": "my",
+        "my": "my",
+        "ph": "ph",
+        "philippines": "ph",
+        "sg": "sg",
+        "singapore": "sg",
+        "th": "th",
+        "thailand": "th",
+        "tw": "tw",
+        "taiwan": "tw",
+        "us": "us",
+        "usa": "us",
+        "united states": "us",
+        "vn": "vn",
+        "vietnam": "vn",
+    }
+    NEWS_COUNTRY_LABELS = {
+        "au": "Australia",
+        "cn": "China",
+        "gb": "United Kingdom",
+        "hk": "Hong Kong",
+        "id": "Indonesia",
+        "in": "India",
+        "jp": "Japan",
+        "kr": "South Korea",
+        "malaysia": "Malaysia",
+        "my": "Malaysia",
+        "ph": "Philippines",
+        "sg": "Singapore",
+        "th": "Thailand",
+        "tw": "Taiwan",
+        "us": "United States",
+        "vn": "Vietnam",
+    }
+    NEWS_LANGUAGE_ALIASES = {
+        "chinese": "zh",
+        "en": "en",
+        "english": "en",
+        "id": "id",
+        "indonesian": "id",
+        "ja": "ja",
+        "japanese": "ja",
+        "ko": "ko",
+        "korean": "ko",
+        "ms": "ms",
+        "malay": "ms",
+        "ta": "ta",
+        "tamil": "ta",
+        "th": "th",
+        "thai": "th",
+        "vi": "vi",
+        "vietnamese": "vi",
+        "zh": "zh",
+    }
+    NEWS_LANGUAGE_LABELS = {
+        "en": "English",
+        "id": "Indonesian",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "ms": "Malay",
+        "ta": "Tamil",
+        "th": "Thai",
+        "vi": "Vietnamese",
+        "zh": "Chinese",
+    }
+    NEWS_RSS_LANGUAGE_CODES = {
+        "en": "en",
+        "id": "id",
+        "ja": "ja",
+        "ko": "ko",
+        "ms": "ms",
+        "ta": "ta",
+        "th": "th",
+        "vi": "vi",
+        "zh": "zh-CN",
+    }
+    NEWS_COUNTRY_TIMEZONES = {
+        "au": "Australia/Sydney",
+        "cn": "Asia/Shanghai",
+        "gb": "Europe/London",
+        "hk": "Asia/Hong_Kong",
+        "id": "Asia/Jakarta",
+        "in": "Asia/Kolkata",
+        "jp": "Asia/Tokyo",
+        "kr": "Asia/Seoul",
+        "my": "Asia/Kuala_Lumpur",
+        "ph": "Asia/Manila",
+        "sg": "Asia/Singapore",
+        "th": "Asia/Bangkok",
+        "tw": "Asia/Taipei",
+        "us": "America/New_York",
+        "vn": "Asia/Ho_Chi_Minh",
+    }
+    NEWS_COUNTRY_FIXED_OFFSETS = {
+        "au": (600, "AEST"),
+        "cn": (480, "CST"),
+        "gb": (0, "GMT"),
+        "hk": (480, "HKT"),
+        "id": (420, "WIB"),
+        "in": (330, "IST"),
+        "jp": (540, "JST"),
+        "kr": (540, "KST"),
+        "my": (480, "MYT"),
+        "ph": (480, "PHT"),
+        "sg": (480, "SGT"),
+        "th": (420, "ICT"),
+        "tw": (480, "CST"),
+        "us": (-300, "EST"),
+        "vn": (420, "ICT"),
+    }
 
     def __init__(self, bot):
         self.bot = bot
@@ -39,6 +178,44 @@ class AI(commands.Cog):
         return [text[i:i + max_length] for i in range(0, len(text), max_length)]
 
     @staticmethod
+    def _is_retryable_discord_error(error):
+        if isinstance(error, discord.DiscordServerError):
+            return True
+        if isinstance(error, discord.HTTPException):
+            return getattr(error, "status", None) in {500, 502, 503, 504}
+        return False
+
+    async def _retry_discord_call(self, operation, *, label, attempts=3):
+        last_error = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await operation()
+            except Exception as error:
+                if not self._is_retryable_discord_error(error):
+                    raise
+
+                last_error = error
+                print(f"Discord {label} failed (attempt {attempt}/{attempts}): {error}")
+
+                if attempt < attempts:
+                    await asyncio.sleep(attempt)
+
+        raise last_error
+
+    async def _safe_send(self, destination, *args, **kwargs):
+        return await self._retry_discord_call(
+            lambda: destination.send(*args, **kwargs),
+            label="send",
+        )
+
+    async def _safe_reply(self, message, *args, **kwargs):
+        return await self._retry_discord_call(
+            lambda: message.reply(*args, **kwargs),
+            label="reply",
+        )
+
+    @staticmethod
     def _channel_is_nsfw(channel):
         if channel is None:
             return False
@@ -51,6 +228,173 @@ class AI(commands.Cog):
                 return False
 
         return bool(getattr(channel, "nsfw", False))
+
+    @classmethod
+    def _resolve_news_country(cls, country_code):
+        raw_value = (country_code or cls.DEFAULT_NEWS_COUNTRY).strip().lower()
+        if not raw_value:
+            raw_value = cls.DEFAULT_NEWS_COUNTRY
+
+        value = cls.NEWS_COUNTRY_ALIASES.get(raw_value, raw_value)
+        label = cls.NEWS_COUNTRY_LABELS.get(value)
+        if label:
+            return value, label
+
+        fallback = raw_value.upper() if len(raw_value) <= 3 else raw_value.title()
+        return value, fallback
+
+    @classmethod
+    def _resolve_news_language(cls, language_code):
+        raw_value = (language_code or cls.DEFAULT_NEWS_LANGUAGE).strip().lower()
+        if not raw_value:
+            raw_value = cls.DEFAULT_NEWS_LANGUAGE
+
+        value = cls.NEWS_LANGUAGE_ALIASES.get(raw_value, raw_value)
+        label = cls.NEWS_LANGUAGE_LABELS.get(value)
+        if label:
+            return value, label
+
+        fallback = raw_value.upper() if len(raw_value) <= 3 else raw_value.title()
+        return value, fallback
+
+    @classmethod
+    def _build_google_news_rss_url(cls, country_code, language_code):
+        country = country_code.upper()
+        rss_language = cls.NEWS_RSS_LANGUAGE_CODES.get(language_code, language_code)
+        ceid_language = rss_language.split("-", 1)[0]
+        hl = rss_language if "-" in rss_language else f"{rss_language}-{country}"
+        return f"https://news.google.com/rss?hl={hl}&gl={country}&ceid={country}:{ceid_language}"
+
+    @classmethod
+    def _build_google_news_search_rss_url(cls, query, country_code, language_code):
+        country = country_code.upper()
+        rss_language = cls.NEWS_RSS_LANGUAGE_CODES.get(language_code, language_code)
+        ceid_language = rss_language.split("-", 1)[0]
+        hl = rss_language if "-" in rss_language else f"{rss_language}-{country}"
+        query_string = urlencode({"q": query})
+        return f"https://news.google.com/rss/search?{query_string}&hl={hl}&gl={country}&ceid={country}:{ceid_language}"
+
+    @classmethod
+    def _get_news_timezone(cls, country_code):
+        tz_name = cls.NEWS_COUNTRY_TIMEZONES.get(country_code)
+        if tz_name:
+            try:
+                return ZoneInfo(tz_name)
+            except Exception:
+                pass
+
+        fallback = cls.NEWS_COUNTRY_FIXED_OFFSETS.get(country_code)
+        if not fallback:
+            return None
+
+        offset_minutes, label = fallback
+        return timezone(timedelta(minutes=offset_minutes), name=label)
+
+    @classmethod
+    def _format_news_timestamp(cls, pub_date, country_code):
+        if not pub_date:
+            return None
+
+        try:
+            dt = parsedate_to_datetime(pub_date)
+        except Exception:
+            return None
+
+        timezone = cls._get_news_timezone(country_code)
+        if timezone is not None:
+            dt = dt.astimezone(timezone)
+
+        return dt.strftime("%Y-%m-%d %I:%M %p %Z")
+
+    async def _fetch_google_news(self, country_code, language_code, limit=5):
+        url = self._build_google_news_rss_url(country_code, language_code)
+        return await self._fetch_google_news_feed(url, country_code, limit=limit)
+
+    async def _fetch_google_news_search(self, query, country_code, language_code, limit=5):
+        url = self._build_google_news_search_rss_url(query, country_code, language_code)
+        return await self._fetch_google_news_feed(url, country_code, limit=limit)
+
+    async def _fetch_google_news_feed(self, url, country_code, limit=5):
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=15.0,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/123.0.0.0 Safari/537.36"
+                    )
+                },
+            ) as client:
+                response = await client.get(url)
+        except Exception as e:
+            print(f"Google News RSS request error: {e}")
+            return []
+
+        if response.status_code != 200:
+            print(f"Google News RSS error ({response.status_code}): {response.text[:300]}")
+            return []
+
+        try:
+            root = ET.fromstring(response.text)
+        except ET.ParseError as e:
+            print(f"Google News RSS parse error: {e}")
+            return []
+
+        items = []
+        seen_links = set()
+
+        for item in root.findall("./channel/item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub_date = (item.findtext("pubDate") or "").strip()
+            source_elem = item.find("source")
+            source_name = source_elem.text.strip() if source_elem is not None and source_elem.text else "Google News"
+
+            if not title or not link or link in seen_links:
+                continue
+
+            headline = html.unescape(title)
+            if source_name and headline.endswith(f" - {source_name}"):
+                headline = headline[: -(len(source_name) + 3)].strip()
+
+            items.append({
+                "title": headline,
+                "source": html.unescape(source_name),
+                "link": link,
+                "published_at": self._format_news_timestamp(pub_date, country_code),
+            })
+            seen_links.add(link)
+
+            if len(items) >= limit:
+                break
+
+        return items
+
+    @staticmethod
+    def _build_news_embed(title, language_label, items, *, footer_source="Google News RSS"):
+        lines = []
+        for index, item in enumerate(items, start=1):
+            source_link = f"[{item['source']}]({item['link']})"
+            published_line = (
+                f"\nPublished: {item['published_at']}"
+                if item.get("published_at")
+                else ""
+            )
+            lines.append(
+                f"**{index}. {item['title']}**\n"
+                f"Source: {source_link}{published_line}"
+            )
+
+        embed = discord.Embed(
+            title=title[:256],
+            description="\n\n".join(lines)[:4096],
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text=f"Language: {language_label} • Source: {footer_source}")
+        return embed
 
     @staticmethod
     def _extract_response_text(payload):
@@ -106,13 +450,89 @@ class AI(commands.Cog):
 
         return None
 
+    @staticmethod
+    def _extract_response_citations(payload):
+        if not isinstance(payload, dict):
+            return []
+
+        urls = []
+        seen = set()
+
+        def add_url(value):
+            url = None
+            if isinstance(value, str):
+                url = value.strip()
+            elif isinstance(value, dict):
+                for key in ("url", "webpage_url", "uri"):
+                    candidate = value.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        url = candidate.strip()
+                        break
+
+            if not url or url in seen:
+                return
+
+            seen.add(url)
+            urls.append(url)
+
+        for citation in payload.get("citations", []):
+            add_url(citation)
+
+        for item in payload.get("output", []):
+            if not isinstance(item, dict):
+                continue
+
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                for annotation in block.get("annotations", []):
+                    add_url(annotation)
+
+        return urls
+
+    @classmethod
+    def _format_response_for_discord(cls, payload):
+        text = cls._extract_response_text(payload)
+        if not text:
+            return None
+
+        inline_citations = {}
+
+        def replace_inline_citation(match):
+            index = int(match.group(1))
+            inline_citations[index] = match.group(2)
+            return f" [{index}]"
+
+        formatted_text = cls.INLINE_CITATION_PATTERN.sub(replace_inline_citation, text).strip()
+
+        if inline_citations:
+            sources = "\n".join(
+                f"[{index}]({inline_citations[index]})"
+                for index in sorted(inline_citations)
+            )
+            return f"{formatted_text}\n\nSources:\n{sources}"
+
+        citation_urls = cls._extract_response_citations(payload)
+        if citation_urls:
+            sources = "\n".join(
+                f"[{index}]({url})"
+                for index, url in enumerate(citation_urls, start=1)
+            )
+            return f"{formatted_text}\n\nSources:\n{sources}"
+
+        return formatted_text
+
     async def _send_text_chunks(self, destination, text, *, reply_to=None):
         chunks = self._chunk_text(text)
         for index, chunk in enumerate(chunks):
             if index == 0 and reply_to is not None:
-                await reply_to.reply(chunk)
+                await self._safe_reply(reply_to, chunk)
             else:
-                await destination.send(chunk)
+                await self._safe_send(destination, chunk)
             if index < len(chunks) - 1:
                 await asyncio.sleep(1)
 
@@ -162,9 +582,9 @@ class AI(commands.Cog):
                     verify=False,
                     timeout=30.0,
                 )
-                print(f"Successfully initialized NSFW AI HTTP client: model={NSFW_MODEL}, url={NSFW_RESPONSES_URL}")
+                print(f"Successfully initialized shared Responses AI HTTP client: model={NSFW_MODEL}, url={NSFW_RESPONSES_URL}")
             except Exception as e:
-                print(f"CRITICAL: Error initializing NSFW AI HTTP client: {e}")
+                print(f"CRITICAL: Error initializing shared Responses AI HTTP client: {e}")
                 self.nsfw_client = None
 
         if not any((self.http_client, self.backup_client, self.nsfw_client)):
@@ -243,7 +663,7 @@ class AI(commands.Cog):
 
         return (None, None) if return_node else None
 
-    async def call_nsfw_ai(self, prompt, instructions=None):
+    async def call_responses_ai(self, prompt, instructions=None, tools=None):
         if self.nsfw_client is None:
             return None
 
@@ -255,43 +675,45 @@ class AI(commands.Cog):
         }
         if instructions:
             payload["instructions"] = instructions
+        if tools:
+            payload["tools"] = tools
 
         try:
             response = await self.nsfw_client.post(NSFW_RESPONSES_URL, json=payload)
         except Exception as e:
-            print(f"NSFW API call error: {e}")
+            print(f"Responses API call error: {e}")
             return None
 
         try:
             resp_json = response.json()
             import json
 
-            print(f"--- NSFW RESPONSE JSON ({NSFW_MODEL}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+            print(f"--- RESPONSES API JSON ({NSFW_MODEL}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
         except Exception as log_err:
-            print(f"NSFW Log Error: Could not parse response: {log_err}")
+            print(f"Responses Log Error: Could not parse response: {log_err}")
             print(f"Raw Response: {response.text}")
             return None
 
         if response.status_code != 200:
-            print(f"NSFW API Error ({response.status_code}): {response.text}")
+            print(f"Responses API Error ({response.status_code}): {response.text}")
             return None
 
-        return self._extract_response_text(resp_json)
+        return self._format_response_for_discord(resp_json)
 
     async def handle_ai_mention(self, message):
         if self.http_client is None and self.backup_client is None:
-            await message.reply("My AI brain is currently offline.")
+            await self._safe_reply(message, "My AI brain is currently offline.")
             return
 
         user_message = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
         if not user_message:
-            await message.reply("Hello! Mention me with a question to get an AI response.")
+            await self._safe_reply(message, "Hello! Mention me with a question to get an AI response.")
             return
 
         current_time = time.time()
         if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
             remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - self.last_ai_call_time)
-            await message.reply(f"I'm thinking... please wait {remaining_time:.1f}s.")
+            await self._safe_reply(message, f"I'm thinking... please wait {remaining_time:.1f}s.")
             return
 
         uid = str(message.author.id)
@@ -314,7 +736,7 @@ class AI(commands.Cog):
                 ai_response_text, client_name = result if result != (None, None) else (None, None)
 
                 if not ai_response_text:
-                    await message.reply("I'm sorry, I couldn't generate a response right now.")
+                    await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
 
                 history["messages"].append({"role": "assistant", "content": ai_response_text})
@@ -326,31 +748,34 @@ class AI(commands.Cog):
                 await self._send_text_chunks(message.channel, display_text, reply_to=message)
         except Exception as e:
             print(f"Error processing OpenAI prompt: {e}")
-            await message.reply("I'm sorry, I encountered an error while trying to generate a response.")
+            try:
+                await self._safe_reply(message, "I'm sorry, I encountered an error while trying to generate a response.")
+            except Exception as send_error:
+                print(f"Failed to deliver AI error message: {send_error}")
 
     @commands.command(name="nsfw")
     async def nsfw_command(self, ctx: commands.Context, *, prompt: str = None):
         if not prompt:
-            await ctx.send(f"Usage: `{COMMAND_PREFIX}nsfw [prompt]`")
+            await self._safe_send(ctx, f"Usage: `{COMMAND_PREFIX}nsfw [prompt]`")
             return
 
         if self.nsfw_client is None:
-            await ctx.send("NSFW AI is currently offline. Ask the bot owner to configure the endpoint first.")
+            await self._safe_send(ctx, "NSFW AI is currently offline. Ask the bot owner to configure the endpoint first.")
             return
 
         if not self._channel_is_nsfw(ctx.channel):
-            await ctx.send("This command only works in channels marked NSFW.")
+            await self._safe_send(ctx, "This command only works in channels marked NSFW.")
             return
 
         current_time = time.time()
         if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
             remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - self.last_ai_call_time)
-            await ctx.send(f"I'm thinking... please wait {remaining_time:.1f}s.")
+            await self._safe_send(ctx, f"I'm thinking... please wait {remaining_time:.1f}s.")
             return
 
         try:
             async with ctx.typing():
-                ai_response_text = await self.call_nsfw_ai(
+                ai_response_text = await self.call_responses_ai(
                     prompt,
                     instructions=(
                         "Respond in the same language as the user's prompt. "
@@ -359,14 +784,57 @@ class AI(commands.Cog):
                 )
 
                 if not ai_response_text:
-                    await ctx.send("I'm sorry, I couldn't generate a response right now.")
+                    await self._safe_send(ctx, "I'm sorry, I couldn't generate a response right now.")
                     return
 
                 self.last_ai_call_time = time.time()
                 await self._send_text_chunks(ctx, ai_response_text)
         except Exception as e:
             print(f"Error in !nsfw command: {e}")
-            await ctx.send("Failed to generate a response. Something went wrong.")
+            try:
+                await self._safe_send(ctx, "Failed to generate a response. Something went wrong.")
+            except Exception as send_error:
+                print(f"Failed to deliver !nsfw error message: {send_error}")
+
+    @commands.command(name="news")
+    async def news_command(
+        self,
+        ctx: commands.Context,
+        country_code: str = DEFAULT_NEWS_COUNTRY,
+        language_code: str = DEFAULT_NEWS_LANGUAGE,
+    ):
+        current_time = time.time()
+        if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
+            remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - self.last_ai_call_time)
+            await self._safe_send(ctx, f"I'm thinking... please wait {remaining_time:.1f}s.")
+            return
+
+        country_code, country_label = self._resolve_news_country(country_code)
+        language_code, language_label = self._resolve_news_language(language_code)
+
+        try:
+            async with ctx.typing():
+                news_items = await self._fetch_google_news(country_code, language_code)
+
+                if not news_items:
+                    await self._safe_send(ctx, "I'm sorry, I couldn't fetch the news right now.")
+                    return
+
+                self.last_ai_call_time = time.time()
+                await self._safe_send(
+                    ctx,
+                    embed=self._build_news_embed(
+                        f"{country_label} Latest News",
+                        language_label,
+                        news_items,
+                    )
+                )
+        except Exception as e:
+            print(f"Error in !news command: {e}")
+            try:
+                await self._safe_send(ctx, "Failed to fetch the news. Something went wrong.")
+            except Exception as send_error:
+                print(f"Failed to deliver !news error message: {send_error}")
 
     @commands.command(name="clear")
     async def clear_command(self, ctx: commands.Context):
