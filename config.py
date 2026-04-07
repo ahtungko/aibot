@@ -4,9 +4,44 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _normalize_ai_base_url(raw_url):
+    value = (raw_url or "").strip().rstrip("/")
+    if not value:
+        return None
+
+    if value.endswith("/responses"):
+        value = value[: -len("/responses")]
+
+    if value.endswith("/v1"):
+        return value
+
+    return f"{value}/v1"
+
+
+def _build_responses_url(raw_url):
+    value = (raw_url or "").strip().rstrip("/")
+    if not value:
+        return None
+
+    if value.endswith("/responses"):
+        return value
+
+    normalized_base = _normalize_ai_base_url(value)
+    if not normalized_base:
+        return None
+
+    return f"{normalized_base}/responses"
+
+
 # Bot and API Credentials
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+XAI_API_KEY = (
+    os.getenv("XAI_API_KEY")
+    or os.getenv("NSFW_API_KEY")
+    or os.getenv("GROK2API_API_KEY")
+)
 BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
 WISE_SANDBOX_TOKEN = os.getenv("WISE_SANDBOX_TOKEN")
 CHECKIN_WORKER_URL = os.getenv("CHECKIN_WORKER_URL")
@@ -20,14 +55,24 @@ PINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pins.json"
 
 # API URLs
 BASE_CURRENCY_API_URL = "https://api.frankfurter.dev/v1/latest"
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
-OPENAI_BACKUP_BASE_URL = os.getenv("OPENAI_BACKUP_BASE_URL")
-OPENAI_BACKUP_API_KEY = os.getenv("OPENAI_BACKUP_API_KEY", OPENAI_API_KEY)
-NSFW_RESPONSES_URL = os.getenv("NSFW_RESPONSES_URL")
-NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY")
-NSFW_MODEL = os.getenv("NSFW_MODEL", "grok-4")
-DEFAULT_MODEL = "gpt-5.4-mini"
-FALLBACK_MODEL = "gpt-5.4"
+# NSFW_RESPONSES_URL = os.getenv("NSFW_RESPONSES_URL")
+GROK_RESPONSES_URL = _build_responses_url(
+    os.getenv("GROK_RESPONSES_URL")
+    or os.getenv("XAI_RESPONSES_URL")
+    or os.getenv("NSFW_RESPONSES_URL")
+    or "https://g2p.tinalee.eu.org/v1/responses"
+)
+# OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+XAI_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BASE_URL") or GROK_RESPONSES_URL)
+# OPENAI_BACKUP_BASE_URL = os.getenv("OPENAI_BACKUP_BASE_URL")
+XAI_BACKUP_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BACKUP_BASE_URL"))
+# OPENAI_BACKUP_API_KEY = os.getenv("OPENAI_BACKUP_API_KEY", OPENAI_API_KEY)
+XAI_BACKUP_API_KEY = os.getenv("XAI_BACKUP_API_KEY") or XAI_API_KEY
+NSFW_RESPONSES_URL = GROK_RESPONSES_URL
+NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY") or XAI_API_KEY
+NSFW_MODEL = os.getenv("NSFW_MODEL", os.getenv("XAI_MODEL", "grok-4"))
+DEFAULT_MODEL = os.getenv("XAI_MODEL", "grok-4")
+FALLBACK_MODEL = os.getenv("XAI_FALLBACK_MODEL", "grok-4-fast-reasoning")
 
 # AI Settings
 MAX_HISTORY_MESSAGES = 10
@@ -60,8 +105,8 @@ TROY_OUNCE_TO_GRAMS = 31.1034768
 if not DISCORD_BOT_TOKEN:
     print("FATAL ERROR: DISCORD_BOT_TOKEN not found in .env file.")
     exit(1)
-if not OPENAI_API_KEY:
-    print("Warning: OPENAI_API_KEY not found. AI features will be disabled.")
+if not XAI_API_KEY:
+    print("Warning: XAI_API_KEY/NSFW_API_KEY/GROK2API_API_KEY not found. Grok AI features will be disabled.")
 if not BOT_OWNER_ID_STR:
     print("Warning: BOT_OWNER_ID not found. Owner-only commands will be disabled.")
 if not WISE_SANDBOX_TOKEN:
@@ -69,7 +114,7 @@ if not WISE_SANDBOX_TOKEN:
 if not CHECKIN_WORKER_URL:
     print("Warning: CHECKIN_WORKER_URL not found. The !ck check-in command will be disabled.")
 if not NSFW_API_KEY:
-    print("Warning: NSFW_API_KEY/GROK2API_API_KEY not found. The shared Responses endpoint for !nsfw will be disabled.")
+    print("Warning: NSFW_API_KEY/GROK2API_API_KEY/XAI_API_KEY not found. The Grok Responses endpoint for !nsfw will be disabled.")
 
 try:
     OWNER_ID = int(BOT_OWNER_ID_STR) if BOT_OWNER_ID_STR else None

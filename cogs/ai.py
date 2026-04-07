@@ -24,10 +24,14 @@ from config import (
     NSFW_API_KEY,
     NSFW_MODEL,
     NSFW_RESPONSES_URL,
-    OPENAI_API_KEY,
-    OPENAI_BACKUP_API_KEY,
-    OPENAI_BACKUP_BASE_URL,
-    OPENAI_BASE_URL,
+    # OPENAI_API_KEY,
+    # OPENAI_BACKUP_API_KEY,
+    # OPENAI_BACKUP_BASE_URL,
+    # OPENAI_BASE_URL,
+    XAI_API_KEY,
+    XAI_BACKUP_API_KEY,
+    XAI_BACKUP_BASE_URL,
+    XAI_BASE_URL,
 )
 class AI(commands.Cog):
     INLINE_CITATION_PATTERN = re.compile(r"\[\[(\d+)\]\]\((https?://[^\s)]+)\)")
@@ -537,39 +541,52 @@ class AI(commands.Cog):
                 await asyncio.sleep(1)
 
     async def cog_load(self):
-        if OPENAI_API_KEY and OPENAI_BASE_URL:
+        # if OPENAI_API_KEY and OPENAI_BASE_URL:
+        if XAI_API_KEY and XAI_BASE_URL:
             try:
                 self.http_client = httpx.AsyncClient(
-                    base_url=OPENAI_BASE_URL,
+                    # base_url=OPENAI_BASE_URL,
+                    base_url=XAI_BASE_URL,
                     headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        # "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Authorization": f"Bearer {XAI_API_KEY}",
                         "Content-Type": "application/json",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                     },
                     verify=False,
                     timeout=15.0,
                 )
-                print(f"Successfully initialized AI HTTP client: model={DEFAULT_MODEL}, base_url={OPENAI_BASE_URL}")
+                # print(f"Successfully initialized AI HTTP client: model={DEFAULT_MODEL}, base_url={OPENAI_BASE_URL}")
+                print(f"Successfully initialized Grok AI HTTP client: model={DEFAULT_MODEL}, base_url={XAI_BASE_URL}")
             except Exception as e:
-                print(f"CRITICAL: Error initializing primary AI HTTP client: {e}")
+                # print(f"CRITICAL: Error initializing primary AI HTTP client: {e}")
+                print(f"CRITICAL: Error initializing primary Grok AI HTTP client: {e}")
                 self.http_client = None
 
-        if OPENAI_BACKUP_BASE_URL:
-            try:
-                self.backup_client = httpx.AsyncClient(
-                    base_url=OPENAI_BACKUP_BASE_URL,
-                    headers={
-                        "Authorization": f"Bearer {OPENAI_BACKUP_API_KEY}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                    },
-                    verify=False,
-                    timeout=15.0,
-                )
-                print(f"Successfully initialized Backup AI HTTP client: base_url={OPENAI_BACKUP_BASE_URL}")
-            except Exception as e:
-                print(f"CRITICAL: Error initializing backup AI HTTP client: {e}")
-                self.backup_client = None
+        # if OPENAI_BACKUP_BASE_URL:
+        if XAI_BACKUP_BASE_URL:
+            if XAI_BACKUP_BASE_URL == XAI_BASE_URL and XAI_BACKUP_API_KEY == XAI_API_KEY:
+                print("Skipping backup Grok AI HTTP client because it matches the primary endpoint.")
+            else:
+                try:
+                    self.backup_client = httpx.AsyncClient(
+                        # base_url=OPENAI_BACKUP_BASE_URL,
+                        base_url=XAI_BACKUP_BASE_URL,
+                        headers={
+                            # "Authorization": f"Bearer {OPENAI_BACKUP_API_KEY}",
+                            "Authorization": f"Bearer {XAI_BACKUP_API_KEY}",
+                            "Content-Type": "application/json",
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                        },
+                        verify=False,
+                        timeout=15.0,
+                    )
+                    # print(f"Successfully initialized Backup AI HTTP client: base_url={OPENAI_BACKUP_BASE_URL}")
+                    print(f"Successfully initialized backup Grok AI HTTP client: base_url={XAI_BACKUP_BASE_URL}")
+                except Exception as e:
+                    # print(f"CRITICAL: Error initializing backup AI HTTP client: {e}")
+                    print(f"CRITICAL: Error initializing backup Grok AI HTTP client: {e}")
+                    self.backup_client = None
 
         if NSFW_API_KEY and NSFW_RESPONSES_URL:
             try:
@@ -582,13 +599,13 @@ class AI(commands.Cog):
                     verify=False,
                     timeout=30.0,
                 )
-                print(f"Successfully initialized shared Responses AI HTTP client: model={NSFW_MODEL}, url={NSFW_RESPONSES_URL}")
+                print(f"Successfully initialized Grok Responses AI HTTP client: model={NSFW_MODEL}, url={NSFW_RESPONSES_URL}")
             except Exception as e:
-                print(f"CRITICAL: Error initializing shared Responses AI HTTP client: {e}")
+                print(f"CRITICAL: Error initializing Grok Responses AI HTTP client: {e}")
                 self.nsfw_client = None
 
         if not any((self.http_client, self.backup_client, self.nsfw_client)):
-            print("AI API configuration not found. AI functionality is disabled.")
+            print("Grok API configuration not found. AI functionality is disabled.")
 
     async def cog_unload(self):
         if self.http_client:
@@ -597,6 +614,45 @@ class AI(commands.Cog):
             await self.backup_client.aclose()
         if self.nsfw_client:
             await self.nsfw_client.aclose()
+
+    @staticmethod
+    def _build_responses_input(messages):
+        response_input = []
+
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+
+            role = message.get("role") or "user"
+            if role not in {"user", "assistant", "system", "developer"}:
+                role = "user"
+
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content.strip()
+                if not text:
+                    continue
+                response_input.append({
+                    "role": role,
+                    "content": [{"type": "input_text", "text": text}],
+                })
+                continue
+
+            if not isinstance(content, list):
+                continue
+
+            blocks = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    blocks.append({"type": "input_text", "text": text.strip()})
+
+            if blocks:
+                response_input.append({"role": role, "content": blocks})
+
+        return response_input
 
     async def call_ai(self, messages, instructions=AI_PERSONALITY, return_node=False):
         clients = []
@@ -610,7 +666,7 @@ class AI(commands.Cog):
 
         ai_response_text = None
         models_to_try = [DEFAULT_MODEL, FALLBACK_MODEL]
-        full_messages = [{"role": "system", "content": instructions}] + messages
+        response_input = self._build_responses_input(messages)
 
         for model_name in models_to_try:
             for client, client_name in clients:
@@ -618,11 +674,14 @@ class AI(commands.Cog):
                     try:
                         payload = {
                             "model": model_name,
-                            "messages": full_messages,
-                            "temperature": 0.7,
+                            "input": response_input,
+                            "instructions": instructions,
+                            "stream": False,
+                            "store": False,
                         }
 
-                        response = await client.post("/chat/completions", json=payload)
+                        # response = await client.post("/chat/completions", json=payload)
+                        response = await client.post("/responses", json=payload)
 
                         try:
                             resp_json = response.json()
@@ -631,8 +690,12 @@ class AI(commands.Cog):
                             print(f"--- AI RESPONSE JSON ({model_name}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
 
                             if response.status_code == 200:
-                                ai_response_text = resp_json["choices"][0]["message"]["content"]
-                                return (ai_response_text, client_name) if return_node else ai_response_text
+                                # ai_response_text = resp_json["choices"][0]["message"]["content"]
+                                ai_response_text = self._format_response_for_discord(resp_json)
+                                if ai_response_text:
+                                    return (ai_response_text, client_name) if return_node else ai_response_text
+                                print(f"Grok API returned 200 without extractable text for model={model_name}.")
+                                break
 
                             print(f"API Error ({response.status_code}): {response.text}")
                             if response.status_code in [400, 401, 403, 404]:
@@ -747,7 +810,8 @@ class AI(commands.Cog):
                 display_text = f"{ai_response_text}\n\n*[{client_name}]*"
                 await self._send_text_chunks(message.channel, display_text, reply_to=message)
         except Exception as e:
-            print(f"Error processing OpenAI prompt: {e}")
+            # print(f"Error processing OpenAI prompt: {e}")
+            print(f"Error processing Grok prompt: {e}")
             try:
                 await self._safe_reply(message, "I'm sorry, I encountered an error while trying to generate a response.")
             except Exception as send_error:

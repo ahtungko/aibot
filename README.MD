@@ -97,8 +97,12 @@ Fill in your values:
 
 ```env
 DISCORD_BOT_TOKEN=your_bot_token_here
-OPENAI_API_KEY=your_openai_key_here
-OPENAI_BASE_URL=your_openai_compatible_base_url
+# OPENAI_API_KEY=your_openai_key_here
+XAI_API_KEY=your_xai_or_grok_key_here
+# OPENAI_BASE_URL=your_openai_compatible_base_url
+XAI_BASE_URL=https://g2p.tinalee.eu.org/v1
+XAI_MODEL=grok-4
+XAI_FALLBACK_MODEL=grok-4-fast-reasoning
 NSFW_RESPONSES_URL=https://g2p.tinalee.eu.org/v1/responses
 NSFW_API_KEY=your_nsfw_api_key_here
 NSFW_MODEL=grok-4
