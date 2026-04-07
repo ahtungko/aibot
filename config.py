@@ -64,15 +64,10 @@ GROK_RESPONSES_URL = _build_responses_url(
 )
 # OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 XAI_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BASE_URL") or GROK_RESPONSES_URL)
-# OPENAI_BACKUP_BASE_URL = os.getenv("OPENAI_BACKUP_BASE_URL")
-XAI_BACKUP_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BACKUP_BASE_URL"))
-# OPENAI_BACKUP_API_KEY = os.getenv("OPENAI_BACKUP_API_KEY", OPENAI_API_KEY)
-XAI_BACKUP_API_KEY = os.getenv("XAI_BACKUP_API_KEY") or XAI_API_KEY
 NSFW_RESPONSES_URL = GROK_RESPONSES_URL
 NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY") or XAI_API_KEY
 NSFW_MODEL = os.getenv("NSFW_MODEL", os.getenv("XAI_MODEL", "grok-4"))
 DEFAULT_MODEL = os.getenv("XAI_MODEL", "grok-4")
-FALLBACK_MODEL = os.getenv("XAI_FALLBACK_MODEL", "grok-4-fast-reasoning")
 
 # AI Settings
 MAX_HISTORY_MESSAGES = 10

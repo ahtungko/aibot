@@ -17,7 +17,6 @@ from config import (
     AI_PERSONALITY,
     COMMAND_PREFIX,
     DEFAULT_MODEL,
-    FALLBACK_MODEL,
     HISTORY_EXPIRY_SECONDS,
     MAX_HISTORY_MESSAGES,
     MIN_DELAY_BETWEEN_CALLS,
@@ -29,8 +28,6 @@ from config import (
     # OPENAI_BACKUP_BASE_URL,
     # OPENAI_BASE_URL,
     XAI_API_KEY,
-    XAI_BACKUP_API_KEY,
-    XAI_BACKUP_BASE_URL,
     XAI_BASE_URL,
 )
 class AI(commands.Cog):
@@ -170,7 +167,6 @@ class AI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.http_client = None
-        self.backup_client = None
         self.nsfw_client = None
         self.last_ai_call_time = 0
         self.conversation_history = {}
@@ -563,31 +559,6 @@ class AI(commands.Cog):
                 print(f"CRITICAL: Error initializing primary Grok AI HTTP client: {e}")
                 self.http_client = None
 
-        # if OPENAI_BACKUP_BASE_URL:
-        if XAI_BACKUP_BASE_URL:
-            if XAI_BACKUP_BASE_URL == XAI_BASE_URL and XAI_BACKUP_API_KEY == XAI_API_KEY:
-                print("Skipping backup Grok AI HTTP client because it matches the primary endpoint.")
-            else:
-                try:
-                    self.backup_client = httpx.AsyncClient(
-                        # base_url=OPENAI_BACKUP_BASE_URL,
-                        base_url=XAI_BACKUP_BASE_URL,
-                        headers={
-                            # "Authorization": f"Bearer {OPENAI_BACKUP_API_KEY}",
-                            "Authorization": f"Bearer {XAI_BACKUP_API_KEY}",
-                            "Content-Type": "application/json",
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                        },
-                        verify=False,
-                        timeout=15.0,
-                    )
-                    # print(f"Successfully initialized Backup AI HTTP client: base_url={OPENAI_BACKUP_BASE_URL}")
-                    print(f"Successfully initialized backup Grok AI HTTP client: base_url={XAI_BACKUP_BASE_URL}")
-                except Exception as e:
-                    # print(f"CRITICAL: Error initializing backup AI HTTP client: {e}")
-                    print(f"CRITICAL: Error initializing backup Grok AI HTTP client: {e}")
-                    self.backup_client = None
-
         if NSFW_API_KEY and NSFW_RESPONSES_URL:
             try:
                 self.nsfw_client = httpx.AsyncClient(
@@ -604,14 +575,12 @@ class AI(commands.Cog):
                 print(f"CRITICAL: Error initializing Grok Responses AI HTTP client: {e}")
                 self.nsfw_client = None
 
-        if not any((self.http_client, self.backup_client, self.nsfw_client)):
+        if not any((self.http_client, self.nsfw_client)):
             print("Grok API configuration not found. AI functionality is disabled.")
 
     async def cog_unload(self):
         if self.http_client:
             await self.http_client.aclose()
-        if self.backup_client:
-            await self.backup_client.aclose()
         if self.nsfw_client:
             await self.nsfw_client.aclose()
 
@@ -654,77 +623,61 @@ class AI(commands.Cog):
 
         return response_input
 
-    async def call_ai(self, messages, instructions=AI_PERSONALITY, return_node=False):
-        clients = []
-        if self.http_client:
-            clients.append((self.http_client, "Primary"))
-        if self.backup_client:
-            clients.append((self.backup_client, "Backup"))
+    async def call_ai(self, messages, instructions=AI_PERSONALITY):
+        if self.http_client is None:
+            return None
 
-        if not clients:
-            return (None, None) if return_node else None
-
-        ai_response_text = None
-        models_to_try = [DEFAULT_MODEL, FALLBACK_MODEL]
         response_input = self._build_responses_input(messages)
 
-        for model_name in models_to_try:
-            for client, client_name in clients:
-                for _attempt in range(2):
-                    try:
-                        payload = {
-                            "model": model_name,
-                            "input": response_input,
-                            "instructions": instructions,
-                            "stream": False,
-                            "store": False,
-                        }
+        for _attempt in range(2):
+            try:
+                payload = {
+                    "model": DEFAULT_MODEL,
+                    "input": response_input,
+                    "instructions": instructions,
+                    "stream": False,
+                    "store": False,
+                }
 
-                        # response = await client.post("/chat/completions", json=payload)
-                        response = await client.post("/responses", json=payload)
+                # response = await self.http_client.post("/chat/completions", json=payload)
+                response = await self.http_client.post("/responses", json=payload)
 
-                        try:
-                            resp_json = response.json()
-                            import json
+                try:
+                    resp_json = response.json()
+                    import json
 
-                            print(f"--- AI RESPONSE JSON ({model_name}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+                    print(f"--- AI RESPONSE JSON ({DEFAULT_MODEL}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
 
-                            if response.status_code == 200:
-                                # ai_response_text = resp_json["choices"][0]["message"]["content"]
-                                ai_response_text = self._format_response_for_discord(resp_json)
-                                if ai_response_text:
-                                    return (ai_response_text, client_name) if return_node else ai_response_text
-                                print(f"Grok API returned 200 without extractable text for model={model_name}.")
-                                break
+                    if response.status_code == 200:
+                        ai_response_text = self._format_response_for_discord(resp_json)
+                        if ai_response_text:
+                            return ai_response_text
+                        print(f"Grok API returned 200 without extractable text for model={DEFAULT_MODEL}.")
+                        break
 
-                            print(f"API Error ({response.status_code}): {response.text}")
-                            if response.status_code in [400, 401, 403, 404]:
-                                break
-                            if response.status_code in [429, 500, 502, 503, 504]:
-                                print(f"Server overloaded ({response.status_code}), instantly shifting to next node.")
-                                break
-                        except Exception as log_err:
-                            print(f"Log Error: Could not parse response: {log_err}")
-                            print(f"Raw Response: {response.text}")
+                    print(f"API Error ({response.status_code}): {response.text}")
+                    if response.status_code in [400, 401, 403, 404]:
+                        break
+                    if response.status_code in [429, 500, 502, 503, 504]:
+                        print(f"Server overloaded ({response.status_code}) on primary Grok endpoint.")
+                        break
+                except Exception as log_err:
+                    print(f"Log Error: Could not parse response: {log_err}")
+                    print(f"Raw Response: {response.text}")
 
-                    except Exception as e:
-                        err_str = str(e).lower()
-                        if "503" in err_str or "502" in err_str or "529" in err_str:
-                            print(f"AI Call overloaded [{client_name}]: {e}")
-                            break
-                        if "timeout" in err_str or "closed" in err_str:
-                            print(f"AI Call early-break [{client_name}] (connection dead): {e}")
-                            break
-
-                        print(f"AI Call error [{client_name}]: {e}")
-                        await asyncio.sleep(1)
-
-                if ai_response_text:
+            except Exception as e:
+                err_str = str(e).lower()
+                if "503" in err_str or "502" in err_str or "529" in err_str:
+                    print(f"AI Call overloaded [Primary]: {e}")
                     break
-            if ai_response_text:
-                break
+                if "timeout" in err_str or "closed" in err_str:
+                    print(f"AI Call early-break [Primary] (connection dead): {e}")
+                    break
 
-        return (None, None) if return_node else None
+                print(f"AI Call error [Primary]: {e}")
+                await asyncio.sleep(1)
+
+        return None
 
     async def call_responses_ai(self, prompt, instructions=None, tools=None):
         if self.nsfw_client is None:
@@ -764,7 +717,7 @@ class AI(commands.Cog):
         return self._format_response_for_discord(resp_json)
 
     async def handle_ai_mention(self, message):
-        if self.http_client is None and self.backup_client is None:
+        if self.http_client is None:
             await self._safe_reply(message, "My AI brain is currently offline.")
             return
 
@@ -795,9 +748,7 @@ class AI(commands.Cog):
 
         try:
             async with message.channel.typing():
-                result = await self.call_ai(history["messages"], return_node=True)
-                ai_response_text, client_name = result if result != (None, None) else (None, None)
-
+                ai_response_text = await self.call_ai(history["messages"])
                 if not ai_response_text:
                     await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
@@ -807,8 +758,7 @@ class AI(commands.Cog):
                     history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
                 self.last_ai_call_time = time.time()
-                display_text = f"{ai_response_text}\n\n*[{client_name}]*"
-                await self._send_text_chunks(message.channel, display_text, reply_to=message)
+                await self._send_text_chunks(message.channel, ai_response_text, reply_to=message)
         except Exception as e:
             # print(f"Error processing OpenAI prompt: {e}")
             print(f"Error processing Grok prompt: {e}")
@@ -911,7 +861,7 @@ class AI(commands.Cog):
 
     @commands.command(name="tldr", aliases=["summarize"])
     async def tldr_command(self, ctx: commands.Context, count: int = 50):
-        if self.http_client is None and self.backup_client is None:
+        if self.http_client is None:
             await ctx.send("❌ AI is currently offline. Can't summarize.")
             return
 
@@ -947,12 +897,10 @@ class AI(commands.Cog):
                     f"--- CHAT LOG ({len(messages)} messages) ---\n{conversation_log}\n--- END ---"
                 )
 
-                result = await self.call_ai(
+                ai_response_text = await self.call_ai(
                     [{"role": "user", "content": prompt}],
                     instructions="You are a concise summarizer. Output only the summary, no preamble.",
-                    return_node=True,
                 )
-                ai_response_text, client_name = result if result != (None, None) else (None, None)
 
                 if not ai_response_text:
                     await ctx.send("❌ AI couldn't generate a summary. Try again later.")
@@ -963,7 +911,7 @@ class AI(commands.Cog):
                     description=ai_response_text[:4000],
                     color=discord.Color.blue(),
                 )
-                embed.set_footer(text=f"Requested by {ctx.author.display_name} • Node: [{client_name}]")
+                embed.set_footer(text=f"Requested by {ctx.author.display_name}")
                 await ctx.send(embed=embed)
         except Exception as e:
             print(f"Error in !tldr command: {e}")
