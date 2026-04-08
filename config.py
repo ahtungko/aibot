@@ -36,12 +36,13 @@ def _build_responses_url(raw_url):
 
 # Bot and API Credentials
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-XAI_API_KEY = (
+RAW_XAI_API_KEY = (
     os.getenv("XAI_API_KEY")
-    or os.getenv("NSFW_API_KEY")
     or os.getenv("GROK2API_API_KEY")
+    or os.getenv("NSFW_API_KEY")
 )
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+XAI_API_KEY = RAW_XAI_API_KEY
 BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
 WISE_SANDBOX_TOKEN = os.getenv("WISE_SANDBOX_TOKEN")
 CHECKIN_WORKER_URL = os.getenv("CHECKIN_WORKER_URL")
@@ -63,12 +64,13 @@ GROK_RESPONSES_URL = _build_responses_url(
     or os.getenv("NSFW_RESPONSES_URL")
     or "https://g2p.tinalee.eu.org/v1/responses"
 )
-# OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+OPENAI_BASE_URL = _normalize_ai_base_url(os.getenv("OPENAI_BASE_URL"))
 XAI_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BASE_URL") or GROK_RESPONSES_URL)
 NSFW_RESPONSES_URL = GROK_RESPONSES_URL
 NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY") or XAI_API_KEY
 NSFW_MODEL = os.getenv("NSFW_MODEL", os.getenv("XAI_MODEL", "grok-4"))
-DEFAULT_MODEL = os.getenv("XAI_MODEL", "grok-4")
+MENTION_MODEL = os.getenv("XAI_MODEL", "grok-4")
+DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
 
 # AI Settings
 MAX_HISTORY_MESSAGES = 10
@@ -101,8 +103,14 @@ TROY_OUNCE_TO_GRAMS = 31.1034768
 if not DISCORD_BOT_TOKEN:
     print("FATAL ERROR: DISCORD_BOT_TOKEN not found in .env file.")
     exit(1)
+if not OPENAI_API_KEY:
+    print("Warning: OPENAI_API_KEY not found. Command/game AI features will be disabled.")
+if not OPENAI_BASE_URL:
+    print("Warning: OPENAI_BASE_URL not found. Command/game AI features will be disabled.")
 if not XAI_API_KEY:
-    print("Warning: XAI_API_KEY/NSFW_API_KEY/GROK2API_API_KEY not found. Grok AI features will be disabled.")
+    print("Warning: XAI_API_KEY/GROK2API_API_KEY/NSFW_API_KEY not found. Mention AI features will be disabled.")
+if not XAI_BASE_URL:
+    print("Warning: XAI_BASE_URL/GROK_RESPONSES_URL not found. Mention AI features will be disabled.")
 if not BOT_OWNER_ID_STR:
     print("Warning: BOT_OWNER_ID not found. Owner-only commands will be disabled.")
 if not WISE_SANDBOX_TOKEN:

@@ -97,9 +97,10 @@ Fill in your values:
 
 ```env
 DISCORD_BOT_TOKEN=your_bot_token_here
-# OPENAI_API_KEY=your_openai_key_here
+OPENAI_API_KEY=your_openai_key_here
+OPENAI_BASE_URL=your_openai_compatible_base_url
+OPENAI_MODEL=
 XAI_API_KEY=your_xai_or_grok_key_here
-# OPENAI_BASE_URL=your_openai_compatible_base_url
 XAI_BASE_URL=https://g2p.tinalee.eu.org/v1
 XAI_MODEL=grok-4
 NSFW_RESPONSES_URL=https://g2p.tinalee.eu.org/v1/responses
@@ -113,8 +114,10 @@ CHECKIN_AUTH_PASS=your_worker_password       # optional
 
 Save with `Ctrl+X`, `Y`, `Enter`.
 
-The startup model for mentions and `!tldr` comes from `XAI_MODEL`.
-The bot owner can change it at runtime with `!aimodel <model>` and reset it with `!aimodel default`.
+Bot mentions/replies use the Grok/xAI endpoint from `XAI_BASE_URL` and `XAI_MODEL`.
+Command/game AI uses only `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`.
+If `OPENAI_MODEL` is not set, it uses the built-in default `gpt-5.4`.
+The bot owner can change the command/game AI model at runtime with `!aimodel <model>` and reset it with `!aimodel default`.
 The bot owner can query the live model catalog from the configured API with `!aimodels`.
 
 ### Step 6: Test Run

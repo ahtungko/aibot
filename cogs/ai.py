@@ -3,6 +3,7 @@ import asyncio
 from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
 import html
+import json
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -20,13 +21,12 @@ from config import (
     HISTORY_EXPIRY_SECONDS,
     MAX_HISTORY_MESSAGES,
     MIN_DELAY_BETWEEN_CALLS,
+    MENTION_MODEL,
     NSFW_API_KEY,
     NSFW_MODEL,
     NSFW_RESPONSES_URL,
-    # OPENAI_API_KEY,
-    # OPENAI_BACKUP_API_KEY,
-    # OPENAI_BACKUP_BASE_URL,
-    # OPENAI_BASE_URL,
+    OPENAI_API_KEY,
+    OPENAI_BASE_URL,
     XAI_API_KEY,
     XAI_BASE_URL,
 )
@@ -171,10 +171,12 @@ class AI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.http_client = None
+        self.mention_client = None
         self.nsfw_client = None
         self.last_ai_call_time = 0
         self.conversation_history = {}
         self.primary_model = DEFAULT_MODEL
+        self.mention_model = MENTION_MODEL
         self._load_model_settings()
 
     @staticmethod
@@ -219,6 +221,49 @@ class AI(commands.Cog):
                 model_ids.append(model_id.strip())
 
         return model_ids
+
+    @staticmethod
+    def _extract_stream_chat_text(raw_text):
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            return None
+
+        parts = []
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("data:"):
+                continue
+
+            data = stripped[len("data:"):].strip()
+            if not data or data == "[DONE]":
+                continue
+
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            choices = payload.get("choices")
+            if not isinstance(choices, list):
+                continue
+
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+
+                delta = choice.get("delta")
+                if isinstance(delta, dict):
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        parts.append(content)
+
+                message = choice.get("message")
+                if isinstance(message, dict):
+                    content = message.get("content")
+                    if isinstance(content, str) and content:
+                        parts.append(content)
+
+        combined = "".join(parts).strip()
+        return combined or None
 
     @staticmethod
     def _chunk_text(text, max_length=1990):
@@ -586,14 +631,28 @@ class AI(commands.Cog):
                 await asyncio.sleep(1)
 
     async def cog_load(self):
-        # if OPENAI_API_KEY and OPENAI_BASE_URL:
-        if XAI_API_KEY and XAI_BASE_URL:
+        if OPENAI_API_KEY and OPENAI_BASE_URL:
             try:
                 self.http_client = httpx.AsyncClient(
-                    # base_url=OPENAI_BASE_URL,
+                    base_url=OPENAI_BASE_URL,
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                    },
+                    verify=False,
+                    timeout=15.0,
+                )
+                print(f"Successfully initialized command AI HTTP client: model={self.primary_model}, base_url={OPENAI_BASE_URL}")
+            except Exception as e:
+                print(f"CRITICAL: Error initializing command AI HTTP client: {e}")
+                self.http_client = None
+
+        if XAI_API_KEY and XAI_BASE_URL:
+            try:
+                self.mention_client = httpx.AsyncClient(
                     base_url=XAI_BASE_URL,
                     headers={
-                        # "Authorization": f"Bearer {OPENAI_API_KEY}",
                         "Authorization": f"Bearer {XAI_API_KEY}",
                         "Content-Type": "application/json",
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -601,12 +660,10 @@ class AI(commands.Cog):
                     verify=False,
                     timeout=15.0,
                 )
-                # print(f"Successfully initialized AI HTTP client: model={DEFAULT_MODEL}, base_url={OPENAI_BASE_URL}")
-                print(f"Successfully initialized Grok AI HTTP client: model={self.primary_model}, base_url={XAI_BASE_URL}")
+                print(f"Successfully initialized mention Grok AI HTTP client: model={self.mention_model}, base_url={XAI_BASE_URL}")
             except Exception as e:
-                # print(f"CRITICAL: Error initializing primary AI HTTP client: {e}")
-                print(f"CRITICAL: Error initializing primary Grok AI HTTP client: {e}")
-                self.http_client = None
+                print(f"CRITICAL: Error initializing mention Grok AI HTTP client: {e}")
+                self.mention_client = None
 
         if NSFW_API_KEY and NSFW_RESPONSES_URL:
             try:
@@ -624,91 +681,100 @@ class AI(commands.Cog):
                 print(f"CRITICAL: Error initializing Grok Responses AI HTTP client: {e}")
                 self.nsfw_client = None
 
-        if not any((self.http_client, self.nsfw_client)):
-            print("Grok API configuration not found. AI functionality is disabled.")
+        if not any((self.http_client, self.mention_client, self.nsfw_client)):
+            print("AI configuration not found. AI functionality is disabled.")
 
     async def cog_unload(self):
         if self.http_client:
             await self.http_client.aclose()
+        if self.mention_client:
+            await self.mention_client.aclose()
         if self.nsfw_client:
             await self.nsfw_client.aclose()
 
     @staticmethod
-    def _build_responses_input(messages):
-        response_input = []
+    def _build_chat_messages(messages, instructions=None):
+        chat_messages = []
+
+        if isinstance(instructions, str) and instructions.strip():
+            chat_messages.append({
+                "role": "system",
+                "content": instructions.strip(),
+            })
 
         for message in messages:
             if not isinstance(message, dict):
                 continue
 
             role = message.get("role") or "user"
-            if role not in {"user", "assistant", "system", "developer"}:
+            if role == "developer":
+                role = "system"
+            elif role not in {"user", "assistant", "system"}:
                 role = "user"
 
             content = message.get("content")
             if isinstance(content, str):
                 text = content.strip()
-                if not text:
-                    continue
-                response_input.append({
-                    "role": role,
-                    "content": [{"type": "input_text", "text": text}],
-                })
+                if text:
+                    chat_messages.append({"role": role, "content": text})
                 continue
 
             if not isinstance(content, list):
                 continue
 
-            blocks = []
+            parts = []
             for block in content:
                 if not isinstance(block, dict):
                     continue
                 text = block.get("text")
                 if isinstance(text, str) and text.strip():
-                    blocks.append({"type": "input_text", "text": text.strip()})
+                    parts.append(text.strip())
 
-            if blocks:
-                response_input.append({"role": role, "content": blocks})
+            if parts:
+                chat_messages.append({"role": role, "content": "\n".join(parts)})
 
-        return response_input
+        return chat_messages
 
-    async def call_ai(self, messages, instructions=AI_PERSONALITY):
-        if self.http_client is None:
+    async def _call_chat_ai(self, client, model_name, messages, instructions=AI_PERSONALITY, *, client_name, stream=False):
+        if client is None:
             return None
 
-        response_input = self._build_responses_input(messages)
+        chat_messages = self._build_chat_messages(messages, instructions)
 
         for _attempt in range(2):
             try:
                 payload = {
-                    "model": self.primary_model,
-                    "input": response_input,
-                    "instructions": instructions,
-                    "stream": False,
-                    "store": False,
+                    "model": model_name,
+                    "messages": chat_messages,
+                    "stream": stream,
                 }
 
-                # response = await self.http_client.post("/chat/completions", json=payload)
-                response = await self.http_client.post("/responses", json=payload)
+                response = await client.post("/chat/completions", json=payload)
+                raw_response_text = response.text
+
+                if stream and response.status_code == 200:
+                    ai_response_text = self._extract_stream_chat_text(raw_response_text)
+                    if ai_response_text:
+                        print(f"--- {client_name} AI STREAM TEXT ({model_name}) ---\n{ai_response_text}\n--- END ---")
+                        return ai_response_text
 
                 try:
                     resp_json = response.json()
-                    import json
 
-                    print(f"--- AI RESPONSE JSON ({self.primary_model}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+                    print(f"--- {client_name} AI CHAT COMPLETION JSON ({model_name}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
 
                     if response.status_code == 200:
                         ai_response_text = self._format_response_for_discord(resp_json)
                         if ai_response_text:
                             return ai_response_text
-                        print(f"Grok API returned 200 without extractable text for model={self.primary_model}.")
+                        print(f"{client_name} AI returned 200 without extractable text for model={model_name}.")
                         break
 
                     print(f"API Error ({response.status_code}): {response.text}")
                     if response.status_code in [400, 401, 403, 404]:
                         break
                     if response.status_code in [429, 500, 502, 503, 504]:
-                        print(f"Server overloaded ({response.status_code}) on primary Grok endpoint.")
+                        print(f"Server overloaded ({response.status_code}) on {client_name.lower()} AI endpoint.")
                         break
                 except Exception as log_err:
                     print(f"Log Error: Could not parse response: {log_err}")
@@ -717,16 +783,36 @@ class AI(commands.Cog):
             except Exception as e:
                 err_str = str(e).lower()
                 if "503" in err_str or "502" in err_str or "529" in err_str:
-                    print(f"AI Call overloaded [Primary]: {e}")
+                    print(f"AI Call overloaded [{client_name}]: {e}")
                     break
                 if "timeout" in err_str or "closed" in err_str:
-                    print(f"AI Call early-break [Primary] (connection dead): {e}")
+                    print(f"AI Call early-break [{client_name}] (connection dead): {e}")
                     break
 
-                print(f"AI Call error [Primary]: {e}")
+                print(f"AI Call error [{client_name}]: {e}")
                 await asyncio.sleep(1)
 
         return None
+
+    async def call_ai(self, messages, instructions=AI_PERSONALITY):
+        return await self._call_chat_ai(
+            self.http_client,
+            self.primary_model,
+            messages,
+            instructions,
+            client_name="Command",
+            stream=True,
+        )
+
+    async def call_mention_ai(self, messages, instructions=AI_PERSONALITY):
+        return await self._call_chat_ai(
+            self.mention_client,
+            self.mention_model,
+            messages,
+            instructions,
+            client_name="Mention",
+            stream=False,
+        )
 
     async def fetch_available_models(self):
         if self.http_client is None:
@@ -792,7 +878,7 @@ class AI(commands.Cog):
         return self._format_response_for_discord(resp_json)
 
     async def handle_ai_mention(self, message):
-        if self.http_client is None:
+        if self.mention_client is None:
             await self._safe_reply(message, "My AI brain is currently offline.")
             return
 
@@ -823,7 +909,7 @@ class AI(commands.Cog):
 
         try:
             async with message.channel.typing():
-                ai_response_text = await self.call_ai(history["messages"])
+                ai_response_text = await self.call_mention_ai(history["messages"])
                 if not ai_response_text:
                     await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
@@ -965,10 +1051,10 @@ class AI(commands.Cog):
                 model_ids = await self.fetch_available_models()
 
             if not model_ids:
-                await ctx.send(f"No models were returned from `{XAI_BASE_URL}/models`.")
+                await ctx.send(f"No models were returned from `{OPENAI_BASE_URL}/models`.")
                 return
 
-            lines = [f"Available models from `{XAI_BASE_URL}/models`:"]
+            lines = [f"Available models from `{OPENAI_BASE_URL}/models`:"]
             for model_id in model_ids:
                 marker = " (current)" if model_id == self.primary_model else ""
                 lines.append(f"- `{model_id}`{marker}")
