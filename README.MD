@@ -113,6 +113,10 @@ CHECKIN_AUTH_PASS=your_worker_password       # optional
 
 Save with `Ctrl+X`, `Y`, `Enter`.
 
+The startup model for mentions and `!tldr` comes from `XAI_MODEL`.
+The bot owner can change it at runtime with `!aimodel <model>` and reset it with `!aimodel default`.
+The bot owner can query the live model catalog from the configured API with `!aimodels`.
+
 ### Step 6: Test Run
 
 ```bash

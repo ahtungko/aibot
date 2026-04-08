@@ -10,6 +10,7 @@ discord/abc.txt
 dashboard_data.json
 pins.json
 afk.json
+ai_settings.json
 economy.db
 
 # --- Python ---
@@ -35,4 +36,4 @@ desktop.ini
 # --- IDE ---
 .vscode/
 .idea/
-*.swp
+*.swp

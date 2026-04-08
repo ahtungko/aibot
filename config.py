@@ -52,6 +52,7 @@ COMMAND_PREFIX = "!"
 USER_DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "abc.txt")
 AFK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "afk.json")
 PINS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pins.json")
+AI_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_settings.json")
 
 # API URLs
 BASE_CURRENCY_API_URL = "https://api.frankfurter.dev/v1/latest"

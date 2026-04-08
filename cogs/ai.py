@@ -30,8 +30,12 @@ from config import (
     XAI_API_KEY,
     XAI_BASE_URL,
 )
+from utils.storage import load_ai_settings, save_ai_settings
+
+
 class AI(commands.Cog):
     INLINE_CITATION_PATTERN = re.compile(r"\[\[(\d+)\]\]\((https?://[^\s)]+)\)")
+    PRIMARY_MODEL_SETTING_KEY = "primary_model"
     DEFAULT_NEWS_COUNTRY = "my"
     DEFAULT_NEWS_LANGUAGE = "en"
     NEWS_COUNTRY_ALIASES = {
@@ -170,6 +174,51 @@ class AI(commands.Cog):
         self.nsfw_client = None
         self.last_ai_call_time = 0
         self.conversation_history = {}
+        self.primary_model = DEFAULT_MODEL
+        self._load_model_settings()
+
+    @staticmethod
+    def _normalize_model_name(model_name):
+        value = (model_name or "").strip()
+        if not value or len(value) > 100:
+            return None
+        return value
+
+    def _load_model_settings(self):
+        settings = load_ai_settings()
+        if not isinstance(settings, dict):
+            settings = {}
+
+        saved_model = self._normalize_model_name(settings.get(self.PRIMARY_MODEL_SETTING_KEY))
+        self.primary_model = saved_model or DEFAULT_MODEL
+
+    def _save_model_settings(self):
+        settings = load_ai_settings()
+        if not isinstance(settings, dict):
+            settings = {}
+
+        if self.primary_model == DEFAULT_MODEL:
+            settings.pop(self.PRIMARY_MODEL_SETTING_KEY, None)
+        else:
+            settings[self.PRIMARY_MODEL_SETTING_KEY] = self.primary_model
+
+        save_ai_settings(settings)
+
+    @staticmethod
+    def _extract_model_ids(payload):
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return []
+
+        model_ids = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id.strip():
+                model_ids.append(model_id.strip())
+
+        return model_ids
 
     @staticmethod
     def _chunk_text(text, max_length=1990):
@@ -553,7 +602,7 @@ class AI(commands.Cog):
                     timeout=15.0,
                 )
                 # print(f"Successfully initialized AI HTTP client: model={DEFAULT_MODEL}, base_url={OPENAI_BASE_URL}")
-                print(f"Successfully initialized Grok AI HTTP client: model={DEFAULT_MODEL}, base_url={XAI_BASE_URL}")
+                print(f"Successfully initialized Grok AI HTTP client: model={self.primary_model}, base_url={XAI_BASE_URL}")
             except Exception as e:
                 # print(f"CRITICAL: Error initializing primary AI HTTP client: {e}")
                 print(f"CRITICAL: Error initializing primary Grok AI HTTP client: {e}")
@@ -632,7 +681,7 @@ class AI(commands.Cog):
         for _attempt in range(2):
             try:
                 payload = {
-                    "model": DEFAULT_MODEL,
+                    "model": self.primary_model,
                     "input": response_input,
                     "instructions": instructions,
                     "stream": False,
@@ -646,13 +695,13 @@ class AI(commands.Cog):
                     resp_json = response.json()
                     import json
 
-                    print(f"--- AI RESPONSE JSON ({DEFAULT_MODEL}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+                    print(f"--- AI RESPONSE JSON ({self.primary_model}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
 
                     if response.status_code == 200:
                         ai_response_text = self._format_response_for_discord(resp_json)
                         if ai_response_text:
                             return ai_response_text
-                        print(f"Grok API returned 200 without extractable text for model={DEFAULT_MODEL}.")
+                        print(f"Grok API returned 200 without extractable text for model={self.primary_model}.")
                         break
 
                     print(f"API Error ({response.status_code}): {response.text}")
@@ -678,6 +727,32 @@ class AI(commands.Cog):
                 await asyncio.sleep(1)
 
         return None
+
+    async def fetch_available_models(self):
+        if self.http_client is None:
+            return None
+
+        try:
+            response = await self.http_client.get("/models")
+        except Exception as e:
+            print(f"Models API call error: {e}")
+            return None
+
+        try:
+            resp_json = response.json()
+            import json
+
+            print(f"--- MODELS API JSON ({self.primary_model}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+        except Exception as log_err:
+            print(f"Models Log Error: Could not parse response: {log_err}")
+            print(f"Raw Response: {response.text}")
+            return None
+
+        if response.status_code != 200:
+            print(f"Models API Error ({response.status_code}): {response.text}")
+            return None
+
+        return self._extract_model_ids(resp_json)
 
     async def call_responses_ai(self, prompt, instructions=None, tools=None):
         if self.nsfw_client is None:
@@ -849,6 +924,73 @@ class AI(commands.Cog):
                 await self._safe_send(ctx, "Failed to fetch the news. Something went wrong.")
             except Exception as send_error:
                 print(f"Failed to deliver !news error message: {send_error}")
+
+    @commands.command(name="aimodel")
+    @commands.is_owner()
+    async def aimodel_command(self, ctx: commands.Context, *, model_name: str = None):
+        if model_name is None:
+            source = "startup default" if self.primary_model == DEFAULT_MODEL else "owner override"
+            await ctx.send(
+                f"Primary AI model: `{self.primary_model}` ({source}). "
+                f"Default from .env: `{DEFAULT_MODEL}`. "
+                f"Use `{COMMAND_PREFIX}aimodel <model>` to change it, `{COMMAND_PREFIX}aimodel default` to reset, "
+                f"or `{COMMAND_PREFIX}aimodels` to query models."
+            )
+            return
+
+        if model_name.strip().lower() in {"default", "reset"}:
+            self.primary_model = DEFAULT_MODEL
+            self._save_model_settings()
+            await ctx.send(f"Primary AI model reset to `{self.primary_model}`.")
+            return
+
+        normalized_model = self._normalize_model_name(model_name)
+        if not normalized_model:
+            await ctx.send("Please provide a valid AI model name.")
+            return
+
+        self.primary_model = normalized_model
+        self._save_model_settings()
+        await ctx.send(f"Primary AI model set to `{self.primary_model}`.")
+
+    @commands.command(name="aimodels")
+    @commands.is_owner()
+    async def aimodels_command(self, ctx: commands.Context):
+        if self.http_client is None:
+            await ctx.send("AI is currently offline. Can't fetch models.")
+            return
+
+        try:
+            async with ctx.typing():
+                model_ids = await self.fetch_available_models()
+
+            if not model_ids:
+                await ctx.send(f"No models were returned from `{XAI_BASE_URL}/models`.")
+                return
+
+            lines = [f"Available models from `{XAI_BASE_URL}/models`:"]
+            for model_id in model_ids:
+                marker = " (current)" if model_id == self.primary_model else ""
+                lines.append(f"- `{model_id}`{marker}")
+
+            await self._send_text_chunks(ctx, "\n".join(lines))
+        except Exception as e:
+            print(f"Error in !aimodels command: {e}")
+            await ctx.send("Failed to fetch the models list. Something went wrong.")
+
+    @aimodel_command.error
+    async def aimodel_command_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("Only the bot owner can change the AI model.")
+            return
+        raise error
+
+    @aimodels_command.error
+    async def aimodels_command_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("Only the bot owner can fetch the AI models list.")
+            return
+        raise error
 
     @commands.command(name="clear")
     async def clear_command(self, ctx: commands.Context):
