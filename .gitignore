@@ -37,3 +37,5 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+tests/test_economy_regressions.py
+tests/test_ai.py
