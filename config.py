@@ -74,6 +74,7 @@ GROK_DEFAULT_MODEL = (
     or os.getenv("NSFW_MODEL")
     or "grok-4"
 )
+GROK_IMAGE_MODEL = os.getenv("GROK_IMAGE_MODEL", "grok-imagine-image-lite")
 NSFW_MODEL = GROK_DEFAULT_MODEL
 MENTION_MODEL = GROK_DEFAULT_MODEL
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")

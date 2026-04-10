@@ -1,5 +1,6 @@
 # cogs/ai.py - AI mention handler, !clear, !tldr, conversation memory, !nsfw, !news
 import asyncio
+import io
 from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
 import html
@@ -14,11 +15,13 @@ import discord
 import httpx
 from discord.ext import commands
 
+from cogs.economy import add_balance, db_transaction, get_balance, log_transaction
 from config import (
     AI_PERSONALITY,
     COMMAND_PREFIX,
     DEFAULT_MODEL,
     GROK_DEFAULT_MODEL,
+    GROK_IMAGE_MODEL,
     HISTORY_EXPIRY_SECONDS,
     MAX_HISTORY_MESSAGES,
     MIN_DELAY_BETWEEN_CALLS,
@@ -30,6 +33,13 @@ from config import (
     XAI_BASE_URL,
 )
 from utils.storage import load_ai_settings, save_ai_settings
+
+
+GROK_IMAGE_COST = 200
+GROK_IMAGE_SIZE = "1024x1024"
+GROK_IMAGE_COUNT = 1
+GROK_IMAGE_RESPONSE_FORMAT = "url"
+GROK_IMAGE_GENERATION_TX = "Grok Image Generation"
 
 
 class GrokModelSelector(discord.ui.Select):
@@ -372,6 +382,37 @@ class AI(commands.Cog):
                 })
 
         return models
+
+    @staticmethod
+    def _extract_generated_image_url(payload):
+        if not isinstance(payload, dict):
+            return None
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return None
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            image_url = item.get("url")
+            if isinstance(image_url, str) and image_url.strip():
+                return image_url.strip()
+
+        return None
+
+    @staticmethod
+    def _guess_image_filename(content_type):
+        normalized = (content_type or "").split(";", 1)[0].strip().lower()
+        extension_map = {
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+        }
+        extension = extension_map.get(normalized, ".png")
+        return f"grok-image{extension}"
 
     @staticmethod
     def _extract_stream_chat_text(raw_text):
@@ -1011,6 +1052,63 @@ class AI(commands.Cog):
 
         return self._extract_models(resp_json)
 
+    async def call_grok_image_api(self, prompt):
+        if self.mention_client is None or not XAI_BASE_URL:
+            return None
+
+        payload = {
+            "model": GROK_IMAGE_MODEL,
+            "prompt": prompt,
+            "n": GROK_IMAGE_COUNT,
+            "size": GROK_IMAGE_SIZE,
+            "response_format": GROK_IMAGE_RESPONSE_FORMAT,
+        }
+
+        try:
+            response = await self.mention_client.post(
+                f"{XAI_BASE_URL}/images/generations",
+                json=payload,
+            )
+        except Exception as e:
+            print(f"Grok image API call error: {e}")
+            return None
+
+        try:
+            resp_json = response.json()
+            print(f"--- GROK IMAGE API JSON ({GROK_IMAGE_MODEL}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+        except Exception as log_err:
+            print(f"Grok image log error: Could not parse response: {log_err}")
+            print(f"Raw Response: {response.text}")
+            return None
+
+        if response.status_code != 200:
+            print(f"Grok image API error ({response.status_code}): {response.text}")
+            return None
+
+        return self._extract_generated_image_url(resp_json)
+
+    async def generate_grok_image_file(self, prompt):
+        image_url = await self.call_grok_image_api(prompt)
+        if not image_url or self.mention_client is None:
+            return None
+
+        try:
+            response = await self.mention_client.get(image_url)
+        except Exception as e:
+            print(f"Grok image download error: {e}")
+            return None
+
+        if response.status_code != 200:
+            print(f"Grok image download error ({response.status_code}): {response.text[:300]}")
+            return None
+
+        if not response.content:
+            print("Grok image download returned empty content.")
+            return None
+
+        filename = self._guess_image_filename(response.headers.get("Content-Type"))
+        return discord.File(io.BytesIO(response.content), filename=filename)
+
     async def call_responses_ai(self, prompt, instructions=None, tools=None):
         if self.nsfw_client is None:
             return None
@@ -1139,6 +1237,66 @@ class AI(commands.Cog):
                 await self._safe_send(ctx, "Failed to generate a response. Something went wrong.")
             except Exception as send_error:
                 print(f"Failed to deliver !nsfw error message: {send_error}")
+
+    @commands.command(name="gimg")
+    async def gimg_command(self, ctx: commands.Context, *, prompt: str = None):
+        if not prompt:
+            await self._safe_send(ctx, f"Usage: `{COMMAND_PREFIX}gimg [prompt]`")
+            return
+
+        if self.mention_client is None:
+            await self._safe_send(ctx, "Grok image generation is currently offline. Ask the bot owner to configure the endpoint first.")
+            return
+
+        uid = str(ctx.author.id)
+        current_balance = get_balance(uid)
+        if current_balance < GROK_IMAGE_COST:
+            await self._safe_send(
+                ctx,
+                f"You need at least **{GROK_IMAGE_COST} JC** to generate an image. Current balance: **{current_balance} JC**.",
+            )
+            return
+
+        try:
+            async with ctx.typing():
+                image_file = await self.generate_grok_image_file(prompt)
+                if image_file is None:
+                    await self._safe_send(ctx, "Failed to generate an image right now. No JC was charged.")
+                    return
+
+                try:
+                    await self._safe_send(ctx, file=image_file)
+                finally:
+                    image_file.close()
+
+            try:
+                with db_transaction() as conn:
+                    latest_balance = get_balance(uid, conn=conn)
+                    if latest_balance < GROK_IMAGE_COST:
+                        await self._safe_send(
+                            ctx,
+                            "Image delivered, but your balance changed before billing, so no JC was charged.",
+                        )
+                        return
+
+                    new_balance = add_balance(uid, -GROK_IMAGE_COST, conn=conn)
+                    log_transaction(uid, -GROK_IMAGE_COST, GROK_IMAGE_GENERATION_TX, conn=conn)
+            except Exception as billing_error:
+                print(f"Grok image billing error: {billing_error}")
+                await self._safe_send(ctx, "Image delivered, but billing failed. No JC was charged.")
+                return
+
+            self.last_ai_call_time = time.time()
+            await self._safe_send(
+                ctx,
+                f"🧾 Charged **{GROK_IMAGE_COST} JC** for image generation. New balance: **{new_balance} JC**.",
+            )
+        except Exception as e:
+            print(f"Error in !gimg command: {e}")
+            try:
+                await self._safe_send(ctx, "Failed to deliver the generated image. No JC was charged.")
+            except Exception as send_error:
+                print(f"Failed to deliver !gimg error message: {send_error}")
 
     @commands.command(name="news")
     async def news_command(
