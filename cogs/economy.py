@@ -1976,6 +1976,32 @@ async def validate_admin_amount(ctx: commands.Context, amount: int):
     return True
 
 
+def get_known_economy_user_ids(conn=None) -> list[str]:
+    tables = db_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        fetchall=True,
+        conn=conn,
+    )
+
+    user_ids = set()
+    for (table_name,) in tables or []:
+        columns = db_query(f"PRAGMA table_info({table_name})", fetchall=True, conn=conn)
+        column_names = {column[1] for column in columns}
+        if "user_id" not in column_names:
+            continue
+
+        rows = db_query(
+            f"SELECT DISTINCT user_id FROM {table_name} WHERE user_id IS NOT NULL AND TRIM(user_id) <> ''",
+            fetchall=True,
+            conn=conn,
+        )
+        for (user_id,) in rows or []:
+            if isinstance(user_id, str) and user_id.strip():
+                user_ids.add(user_id.strip())
+
+    return sorted(user_ids)
+
+
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -5125,6 +5151,73 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
 
     # --- Admin Commands ---
+
+    @commands.command(name='airdrop')
+    @commands.is_owner()
+    async def airdrop_command(self, ctx: commands.Context, *, args: str = None):
+        """Owner Only: Send JC to all known economy users and DM them individually."""
+        raw_args = (args or "").strip()
+        if not raw_args:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}airdrop [reason] [amount]`")
+            return
+
+        parts = raw_args.rsplit(maxsplit=1)
+        if len(parts) != 2 or not parts[0].strip():
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}airdrop [reason] [amount]`")
+            return
+
+        reason = parts[0].strip()
+        try:
+            amount = int(parts[1])
+        except ValueError:
+            await ctx.send("Amount must be a positive integer.")
+            return
+
+        if not await validate_admin_amount(ctx, amount):
+            return
+
+        user_ids = get_known_economy_user_ids()
+        if not user_ids:
+            await ctx.send("No known economy users found for an airdrop.")
+            return
+
+        tx_type = f"Airdrop: {reason}"
+        with db_transaction() as conn:
+            for uid in user_ids:
+                add_balance(uid, amount, conn=conn)
+                log_transaction(uid, amount, tx_type, conn=conn)
+
+        dm_sent = 0
+        dm_failed = 0
+        for uid in user_ids:
+            user = None
+            if self.bot:
+                user = self.bot.get_user(int(uid))
+                if user is None:
+                    try:
+                        user = await self.bot.fetch_user(int(uid))
+                    except Exception:
+                        user = None
+
+            if user is None:
+                dm_failed += 1
+                continue
+
+            try:
+                await user.send(
+                    f"🎁 You received **{amount:,} JC**!\n"
+                    f"Reason: {reason}"
+                )
+                dm_sent += 1
+            except Exception:
+                dm_failed += 1
+
+        total_distributed = amount * len(user_ids)
+        await ctx.send(
+            f"✅ Airdrop complete: {len(user_ids)} users received **{amount:,} JC** each "
+            f"(**{total_distributed:,} JC** total). DMs: {dm_sent} sent, {dm_failed} failed.\n"
+            f"Reason: {reason}"
+        )
 
     @commands.command(name='addcoins', aliases=['addjc'])
     @commands.is_owner()

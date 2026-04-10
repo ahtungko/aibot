@@ -237,7 +237,7 @@ class HelpDropdown(discord.ui.Select):
         elif val == "admin":
             embed.title = "👑 Admin Setup"
             embed.description = "Owner/Administrator Commands"
-            embed.add_field(name="Economy Controls", value=f"`{p}addcoins @user [amt]` - Give coins\n`{p}takecoins @user [amt]` - Take coins\n`{p}grantvip @user [days]` - Give VIP", inline=False)
+            embed.add_field(name="Economy Controls", value=f"`{p}addcoins @user [amt]` - Give coins\n`{p}takecoins @user [amt]` - Take coins\n`{p}airdrop [reason] [amount]` - Reward all known users + DM them\n`{p}grantvip @user [days]` - Give VIP", inline=False)
             embed.add_field(name="Taxman System 🕵️", value=f"`{p}settaxmantoggle [on/off]` - Enable daily tax\n`{p}settaxmanpercent [%]` - Set tax rate\n`{p}taxstatus` - System status & timer\n`{p}settaxchannel [#ch]` - Set announcement channel", inline=False)
             embed.add_field(name="Rain & Notices", value=f"`{p}rainrate [%]` - Set rain chance\n`{p}setnoticechannel [#ch]` - Set notice channel\n`{p}setnotice [msg]` - Post announcement", inline=False)
             embed.add_field(name="Mystery Box", value=f"`{p}setbox [rates...]` - Start loot event\n`{p}setboxchannel [#ch]` - Set box channel", inline=False)
