@@ -68,8 +68,14 @@ OPENAI_BASE_URL = _normalize_ai_base_url(os.getenv("OPENAI_BASE_URL"))
 XAI_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BASE_URL") or GROK_RESPONSES_URL)
 NSFW_RESPONSES_URL = GROK_RESPONSES_URL
 NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY") or XAI_API_KEY
-NSFW_MODEL = os.getenv("NSFW_MODEL", os.getenv("XAI_MODEL", "grok-4"))
-MENTION_MODEL = os.getenv("XAI_MODEL", "grok-4")
+GROK_DEFAULT_MODEL = (
+    os.getenv("GROK_MODEL")
+    or os.getenv("XAI_MODEL")
+    or os.getenv("NSFW_MODEL")
+    or "grok-4"
+)
+NSFW_MODEL = GROK_DEFAULT_MODEL
+MENTION_MODEL = GROK_DEFAULT_MODEL
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
 
 # AI Settings

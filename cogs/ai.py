@@ -18,12 +18,11 @@ from config import (
     AI_PERSONALITY,
     COMMAND_PREFIX,
     DEFAULT_MODEL,
+    GROK_DEFAULT_MODEL,
     HISTORY_EXPIRY_SECONDS,
     MAX_HISTORY_MESSAGES,
     MIN_DELAY_BETWEEN_CALLS,
-    MENTION_MODEL,
     NSFW_API_KEY,
-    NSFW_MODEL,
     NSFW_RESPONSES_URL,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
@@ -33,9 +32,130 @@ from config import (
 from utils.storage import load_ai_settings, save_ai_settings
 
 
+class GrokModelSelector(discord.ui.Select):
+    def __init__(self, model_view):
+        self.model_view = model_view
+        options = []
+
+        for model in model_view.current_page_models:
+            model_id = model["id"]
+            model_name = model["name"]
+            options.append(
+                discord.SelectOption(
+                    label=model_name[:100],
+                    value=model_id,
+                    description=model_id[:100],
+                    default=(model_id == model_view.cog.grok_model),
+                )
+            )
+
+        super().__init__(
+            placeholder="Select a Grok model to switch instantly...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_model_id = self.values[0]
+        self.model_view.cog._set_grok_model(selected_model_id)
+        self.model_view.refresh_selector()
+        await interaction.response.edit_message(
+            content=self.model_view.render_content(),
+            view=self.model_view,
+        )
+
+
+class GrokModelsView(discord.ui.View):
+    PAGE_SIZE = 10
+
+    def __init__(self, cog, author_id, models):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.author_id = author_id
+        self.models = models
+        self.page_index = 0
+        self.message = None
+        self.selector = None
+        self.refresh_selector()
+
+    @property
+    def page_count(self):
+        return max(1, (len(self.models) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+
+    @property
+    def current_page_models(self):
+        start = self.page_index * self.PAGE_SIZE
+        end = start + self.PAGE_SIZE
+        return self.models[start:end]
+
+    def refresh_selector(self):
+        if self.selector is not None:
+            self.remove_item(self.selector)
+
+        self.selector = GrokModelSelector(self)
+        self.add_item(self.selector)
+        self.previous_page.disabled = self.page_index <= 0
+        self.next_page.disabled = self.page_index >= self.page_count - 1
+
+    def render_content(self):
+        lines = [
+            f"Grok models from `{XAI_BASE_URL}/models` (page {self.page_index + 1}/{self.page_count}):",
+            f"Current Grok model: `{self.cog.grok_model}`",
+            "Use the dropdown below to switch instantly.",
+            "",
+        ]
+
+        for model in self.current_page_models:
+            marker = " (current)" if model["id"] == self.cog.grok_model else ""
+            lines.append(f"- {model['name']} — `{model['id']}`{marker}")
+
+        return "\n".join(lines)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the bot owner can use this Grok model picker.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary, row=1)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_index = max(0, self.page_index - 1)
+        self.refresh_selector()
+        await interaction.response.edit_message(
+            content=self.render_content(),
+            view=self,
+        )
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, row=1)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_index = min(self.page_count - 1, self.page_index + 1)
+        self.refresh_selector()
+        await interaction.response.edit_message(
+            content=self.render_content(),
+            view=self,
+        )
+
+
 class AI(commands.Cog):
     INLINE_CITATION_PATTERN = re.compile(r"\[\[(\d+)\]\]\((https?://[^\s)]+)\)")
     PRIMARY_MODEL_SETTING_KEY = "primary_model"
+    GROK_MODEL_SETTING_KEY = "grok_model"
     DEFAULT_NEWS_COUNTRY = "my"
     DEFAULT_NEWS_LANGUAGE = "en"
     NEWS_COUNTRY_ALIASES = {
@@ -176,7 +296,7 @@ class AI(commands.Cog):
         self.last_ai_call_time = 0
         self.conversation_history = {}
         self.primary_model = DEFAULT_MODEL
-        self.mention_model = MENTION_MODEL
+        self.grok_model = GROK_DEFAULT_MODEL
         self._load_model_settings()
 
     @staticmethod
@@ -193,6 +313,8 @@ class AI(commands.Cog):
 
         saved_model = self._normalize_model_name(settings.get(self.PRIMARY_MODEL_SETTING_KEY))
         self.primary_model = saved_model or DEFAULT_MODEL
+        saved_grok_model = self._normalize_model_name(settings.get(self.GROK_MODEL_SETTING_KEY))
+        self.grok_model = saved_grok_model or GROK_DEFAULT_MODEL
 
     def _save_model_settings(self):
         settings = load_ai_settings()
@@ -204,23 +326,52 @@ class AI(commands.Cog):
         else:
             settings[self.PRIMARY_MODEL_SETTING_KEY] = self.primary_model
 
+        if self.grok_model == GROK_DEFAULT_MODEL:
+            settings.pop(self.GROK_MODEL_SETTING_KEY, None)
+        else:
+            settings[self.GROK_MODEL_SETTING_KEY] = self.grok_model
+
         save_ai_settings(settings)
+
+    def _set_grok_model(self, model_id):
+        normalized_model = self._normalize_model_name(model_id)
+        if not normalized_model:
+            return None
+
+        self.grok_model = normalized_model
+        self._save_model_settings()
+        return self.grok_model
 
     @staticmethod
     def _extract_model_ids(payload):
+        return [model["id"] for model in AI._extract_models(payload)]
+
+    @staticmethod
+    def _extract_models(payload):
+        if not isinstance(payload, dict):
+            return []
+
         data = payload.get("data")
         if not isinstance(data, list):
             return []
 
-        model_ids = []
+        models = []
         for item in data:
             if not isinstance(item, dict):
                 continue
             model_id = item.get("id")
             if isinstance(model_id, str) and model_id.strip():
-                model_ids.append(model_id.strip())
+                normalized_id = model_id.strip()
+                model_name = item.get("name")
+                if not isinstance(model_name, str) or not model_name.strip():
+                    model_name = normalized_id
 
-        return model_ids
+                models.append({
+                    "id": normalized_id,
+                    "name": model_name.strip(),
+                })
+
+        return models
 
     @staticmethod
     def _extract_stream_chat_text(raw_text):
@@ -660,7 +811,7 @@ class AI(commands.Cog):
                     verify=False,
                     timeout=15.0,
                 )
-                print(f"Successfully initialized mention Grok AI HTTP client: model={self.mention_model}, base_url={XAI_BASE_URL}")
+                print(f"Successfully initialized mention Grok AI HTTP client: model={self.grok_model}, base_url={XAI_BASE_URL}")
             except Exception as e:
                 print(f"CRITICAL: Error initializing mention Grok AI HTTP client: {e}")
                 self.mention_client = None
@@ -676,7 +827,7 @@ class AI(commands.Cog):
                     verify=False,
                     timeout=30.0,
                 )
-                print(f"Successfully initialized Grok Responses AI HTTP client: model={NSFW_MODEL}, url={NSFW_RESPONSES_URL}")
+                print(f"Successfully initialized Grok Responses AI HTTP client: model={self.grok_model}, url={NSFW_RESPONSES_URL}")
             except Exception as e:
                 print(f"CRITICAL: Error initializing Grok Responses AI HTTP client: {e}")
                 self.nsfw_client = None
@@ -807,45 +958,65 @@ class AI(commands.Cog):
     async def call_mention_ai(self, messages, instructions=AI_PERSONALITY):
         return await self._call_chat_ai(
             self.mention_client,
-            self.mention_model,
+            self.grok_model,
             messages,
             instructions,
             client_name="Mention",
             stream=False,
         )
 
-    async def fetch_available_models(self):
-        if self.http_client is None:
+    async def _fetch_models_payload(self, client, *, api_label, model_name):
+        if client is None:
             return None
 
         try:
-            response = await self.http_client.get("/models")
+            response = await client.get("/models")
         except Exception as e:
-            print(f"Models API call error: {e}")
+            print(f"{api_label} call error: {e}")
             return None
 
         try:
             resp_json = response.json()
-            import json
-
-            print(f"--- MODELS API JSON ({self.primary_model}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+            print(f"--- {api_label} JSON ({model_name}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
         except Exception as log_err:
-            print(f"Models Log Error: Could not parse response: {log_err}")
+            print(f"{api_label} log error: Could not parse response: {log_err}")
             print(f"Raw Response: {response.text}")
             return None
 
         if response.status_code != 200:
-            print(f"Models API Error ({response.status_code}): {response.text}")
+            print(f"{api_label} Error ({response.status_code}): {response.text}")
+            return None
+
+        return resp_json
+
+    async def fetch_available_models(self):
+        resp_json = await self._fetch_models_payload(
+            self.http_client,
+            api_label="MODELS API",
+            model_name=self.primary_model,
+        )
+        if resp_json is None:
             return None
 
         return self._extract_model_ids(resp_json)
+
+    async def fetch_available_grok_models(self):
+        resp_json = await self._fetch_models_payload(
+            self.mention_client,
+            api_label="GROK MODELS API",
+            model_name=self.grok_model,
+        )
+        if resp_json is None:
+            return None
+
+        return self._extract_models(resp_json)
 
     async def call_responses_ai(self, prompt, instructions=None, tools=None):
         if self.nsfw_client is None:
             return None
 
         payload = {
-            "model": NSFW_MODEL,
+            "model": self.grok_model,
             "input": prompt,
             "stream": False,
             "store": False,
@@ -863,9 +1034,7 @@ class AI(commands.Cog):
 
         try:
             resp_json = response.json()
-            import json
-
-            print(f"--- RESPONSES API JSON ({NSFW_MODEL}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
+            print(f"--- RESPONSES API JSON ({self.grok_model}) ---\n{json.dumps(resp_json, indent=2)}\n--- END ---")
         except Exception as log_err:
             print(f"Responses Log Error: Could not parse response: {log_err}")
             print(f"Raw Response: {response.text}")
@@ -1039,6 +1208,54 @@ class AI(commands.Cog):
         self._save_model_settings()
         await ctx.send(f"Primary AI model set to `{self.primary_model}`.")
 
+    @commands.command(name="gmodel")
+    @commands.is_owner()
+    async def gmodel_command(self, ctx: commands.Context, *, model_id: str = None):
+        if model_id is None:
+            source = "startup default" if self.grok_model == GROK_DEFAULT_MODEL else "owner override"
+            await ctx.send(
+                f"Grok model: `{self.grok_model}` ({source}). "
+                f"Default from .env: `{GROK_DEFAULT_MODEL}`. "
+                f"Use `{COMMAND_PREFIX}gmodel <id>` to change it, `{COMMAND_PREFIX}gmodel default` to reset, "
+                f"or `{COMMAND_PREFIX}gmodels` to browse models."
+            )
+            return
+
+        if model_id.strip().lower() in {"default", "reset"}:
+            self.grok_model = GROK_DEFAULT_MODEL
+            self._save_model_settings()
+            await ctx.send(f"Grok model reset to `{self.grok_model}`.")
+            return
+
+        normalized_model = self._set_grok_model(model_id)
+        if not normalized_model:
+            await ctx.send("Please provide a valid Grok model id.")
+            return
+
+        await ctx.send(f"Grok model set to `{normalized_model}`.")
+
+    @commands.command(name="gmodels")
+    @commands.is_owner()
+    async def gmodels_command(self, ctx: commands.Context):
+        if self.mention_client is None:
+            await ctx.send("Grok AI is currently offline. Can't fetch models.")
+            return
+
+        try:
+            async with ctx.typing():
+                models = await self.fetch_available_grok_models()
+
+            if not models:
+                await ctx.send(f"No models were returned from `{XAI_BASE_URL}/models`.")
+                return
+
+            view = GrokModelsView(self, ctx.author.id, models)
+            message = await self._safe_send(ctx, view.render_content(), view=view)
+            view.message = message
+        except Exception as e:
+            print(f"Error in !gmodels command: {e}")
+            await ctx.send("Failed to fetch the Grok models list. Something went wrong.")
+
     @commands.command(name="aimodels")
     @commands.is_owner()
     async def aimodels_command(self, ctx: commands.Context):
@@ -1075,6 +1292,20 @@ class AI(commands.Cog):
     async def aimodels_command_error(self, ctx: commands.Context, error):
         if isinstance(error, commands.NotOwner):
             await ctx.send("Only the bot owner can fetch the AI models list.")
+            return
+        raise error
+
+    @gmodel_command.error
+    async def gmodel_command_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("Only the bot owner can change the Grok model.")
+            return
+        raise error
+
+    @gmodels_command.error
+    async def gmodels_command_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("Only the bot owner can fetch the Grok models list.")
             return
         raise error
 

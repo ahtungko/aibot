@@ -102,10 +102,11 @@ OPENAI_BASE_URL=your_openai_compatible_base_url
 OPENAI_MODEL=
 XAI_API_KEY=your_xai_or_grok_key_here
 XAI_BASE_URL=https://g2p.tinalee.eu.org/v1
-XAI_MODEL=grok-4
+GROK_MODEL=grok-4
+XAI_MODEL=
 NSFW_RESPONSES_URL=https://g2p.tinalee.eu.org/v1/responses
 NSFW_API_KEY=your_nsfw_api_key_here
-NSFW_MODEL=grok-4
+NSFW_MODEL=
 BOT_OWNER_ID=your_discord_user_id
 WISE_SANDBOX_TOKEN=your_wise_token          # optional
 CHECKIN_WORKER_URL=your_worker_url          # optional
@@ -114,11 +115,12 @@ CHECKIN_AUTH_PASS=your_worker_password       # optional
 
 Save with `Ctrl+X`, `Y`, `Enter`.
 
-Bot mentions/replies use the Grok/xAI endpoint from `XAI_BASE_URL` and `XAI_MODEL`.
+Bot mentions/replies and `!nsfw` use the Grok/xAI endpoint from `XAI_BASE_URL` and the shared Grok model (`GROK_MODEL`, with `XAI_MODEL` / `NSFW_MODEL` kept as fallbacks).
 Command/game AI uses only `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`.
 If `OPENAI_MODEL` is not set, it uses the built-in default `gpt-5.4`.
 The bot owner can change the command/game AI model at runtime with `!aimodel <model>` and reset it with `!aimodel default`.
 The bot owner can query the live model catalog from the configured API with `!aimodels`.
+The bot owner can query Grok models with `!gmodels`, then switch the shared Grok model with `!gmodel <id>` or directly from the interactive selector shown by `!gmodels`.
 
 ### Step 6: Test Run
 
