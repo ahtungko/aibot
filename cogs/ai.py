@@ -812,13 +812,77 @@ class AI(commands.Cog):
 
         return formatted_text
 
-    async def _send_text_chunks(self, destination, text, *, reply_to=None):
+    @staticmethod
+    def _guess_file_extension(content_type):
+        normalized = (content_type or "").split(";", 1)[0].strip().lower()
+        extension_map = {
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "audio/mpeg": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/wav": ".wav",
+            "video/mp4": ".mp4",
+            "video/webm": ".webm",
+        }
+        if normalized in extension_map:
+            return extension_map[normalized]
+        if "/" in normalized:
+            subtype = normalized.split("/", 1)[1]
+            if subtype.isalnum():
+                return f".{subtype}"
+        return ".bin"
+
+    async def _extract_and_download_files(self, text, client, base_url):
+        if not text or not client or not base_url:
+            return text, None
+            
+        target_prefix = f"{base_url}/files/"
+        pattern = re.compile(re.escape(target_prefix) + r"[^\s)\]\"'>]+")
+        urls = list(set(pattern.findall(text)))
+        
+        if not urls:
+            return text, None
+            
+        files = []
+        new_text = text
+        for url in urls[:10]:
+            try:
+                new_text = new_text.replace(url, "").strip()
+                response = await client.get(url, follow_redirects=True)
+                if response.status_code == 200 and response.content:
+                    ext = self._guess_file_extension(response.headers.get("Content-Type"))
+                    files.append(discord.File(io.BytesIO(response.content), filename=f"response_file{ext}"))
+            except Exception as e:
+                print(f"Failed to download AI linked file {url}: {e}")
+                
+        return new_text, files or None
+
+    async def _send_text_chunks(self, destination, text, *, reply_to=None, files=None):
         chunks = self._chunk_text(text)
+        if not chunks:
+            if files:
+                if reply_to is not None:
+                    await self._safe_reply(reply_to, "", file=files[0] if len(files) == 1 else None, files=files if len(files) > 1 else None)
+                else:
+                    await self._safe_send(destination, "", file=files[0] if len(files) == 1 else None, files=files if len(files) > 1 else None)
+            return
+
         for index, chunk in enumerate(chunks):
+            current_files = files if index == 0 else None
+            kw = {}
+            if current_files:
+                if len(current_files) == 1:
+                    kw["file"] = current_files[0]
+                else:
+                    kw["files"] = current_files
+                    
             if index == 0 and reply_to is not None:
-                await self._safe_reply(reply_to, chunk)
+                await self._safe_reply(reply_to, chunk, **kw)
             else:
-                await self._safe_send(destination, chunk)
+                await self._safe_send(destination, chunk, **kw)
             if index < len(chunks) - 1:
                 await asyncio.sleep(1)
 
@@ -1186,7 +1250,10 @@ class AI(commands.Cog):
                     history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
                 self.last_ai_call_time = time.time()
-                await self._send_text_chunks(message.channel, ai_response_text, reply_to=message)
+                ai_response_text, extracted_files = await self._extract_and_download_files(
+                    ai_response_text, self.mention_client, XAI_BASE_URL
+                )
+                await self._send_text_chunks(message.channel, ai_response_text, reply_to=message, files=extracted_files)
         except Exception as e:
             # print(f"Error processing OpenAI prompt: {e}")
             print(f"Error processing Grok prompt: {e}")
