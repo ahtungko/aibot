@@ -978,16 +978,21 @@ class AI(commands.Cog):
             if not isinstance(content, list):
                 continue
 
-            parts = []
+            # Pass the list directly for OpenAI API structured content (like vision)
+            # Filter and ensure proper format
+            formatted_content = []
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                text = block.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
+                if "type" in block:
+                    formatted_content.append(block)
+                elif "text" in block:
+                    text_val = block.get("text")
+                    if isinstance(text_val, str) and text_val.strip():
+                        formatted_content.append({"type": "text", "text": text_val.strip()})
 
-            if parts:
-                chat_messages.append({"role": role, "content": "\n".join(parts)})
+            if formatted_content:
+                chat_messages.append({"role": role, "content": formatted_content})
 
         return chat_messages
 
@@ -1213,10 +1218,34 @@ class AI(commands.Cog):
             await self._safe_reply(message, "My AI brain is currently offline.")
             return
 
-        user_message = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
-        if not user_message:
-            await self._safe_reply(message, "Hello! Mention me with a question to get an AI response.")
+        user_message_text = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
+        
+        user_message_content = []
+        if user_message_text:
+            user_message_content.append({"type": "text", "text": user_message_text})
+            
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                user_message_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": attachment.url}
+                })
+            else:
+                # For non-images, we attempt file_url if supported, or provide link
+                user_message_content.append({
+                    "type": "file_url",
+                    "file_url": {"url": attachment.url}
+                })
+
+        if not user_message_content:
+            await self._safe_reply(message, "Hello! Mention me with a question or attach a file to get an AI response.")
             return
+
+        # Flatten if it's just one text part for better compatibility
+        if len(user_message_content) == 1 and user_message_content[0]["type"] == "text":
+            user_message = user_message_content[0]["text"]
+        else:
+            user_message = user_message_content
 
         current_time = time.time()
         if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
