@@ -319,6 +319,19 @@ class Minigames(commands.Cog):
         self.active_races = {} # channel_id -> HorseRaceInstance
         self.active_cracks = {} # channel_id -> CodeCrackerView
 
+    @staticmethod
+    def recycle_scramble_bank():
+        unused_count = db_query("SELECT COUNT(*) FROM scramble_words WHERE status = 0", fetchone=True)[0]
+        if unused_count > 0:
+            return False
+
+        used_count = db_query("SELECT COUNT(*) FROM scramble_words WHERE status = 1", fetchone=True)[0]
+        if used_count <= 0:
+            return False
+
+        db_query("UPDATE scramble_words SET status = 0 WHERE status = 1", commit=True)
+        return True
+
     # --- Horse Race Commands ---
 
     @commands.group(name='race', invoke_without_command=True)
@@ -453,9 +466,10 @@ class Minigames(commands.Cog):
     # --- AI Scramble Commands ---
 
     async def refill_scramble_bank(self):
-        """Pre-generate 60 unique words from AI and save to DB."""
+        """Pre-generate a fresh batch of unique words from AI and save to DB."""
         ai_cog = self.bot.get_cog("AI")
-        if ai_cog is None or ai_cog.http_client is None:
+        if ai_cog is None:
+            self.recycle_scramble_bank()
             return
 
         categories = [
@@ -471,21 +485,35 @@ class Minigames(commands.Cog):
             "Microscopic Life", "Ocean Currents", "Famous Explorers", "Wonders of the World"
         ]
         
-        # Pick 10 random categories to ask for 6 words each
-        selected_cats = random.sample(categories, 10)
+        # Keep the batch small enough to return reliably within the configured AI timeouts.
+        selected_cats = random.sample(categories, 6)
         
         prompt = (
-            f"Provide 6 words each for these 10 categories: {', '.join(selected_cats)}.\n"
+            f"Provide 5 words each for these 6 categories: {', '.join(selected_cats)}.\n"
             "Words should be 6-10 letters long and interesting.\n"
             "Return ONLY a JSON list of objects: "
             "[{\"original\": \"WORD\", \"scrambled\": \"DWRO\", \"category\": \"Theme\"}]"
         )
         
         try:
-            response_text = await ai_cog.call_ai(
-                [{"role": "user", "content": prompt}],
-                instructions="You are a word puzzle master. Output raw JSON list only. No intro or outro."
-            )
+            response_text = None
+            if getattr(ai_cog, "http_client", None) is not None:
+                response_text = await ai_cog.call_ai(
+                    [{"role": "user", "content": prompt}],
+                    instructions="You are a word puzzle master. Output raw JSON list only. No intro or outro."
+                )
+
+            if (not isinstance(response_text, str) or not response_text.strip()) and getattr(ai_cog, "mention_client", None) is not None:
+                response_text = await ai_cog.call_mention_ai(
+                    [{"role": "user", "content": prompt}],
+                    instructions="You are a word puzzle master. Output raw JSON list only. No intro or outro."
+                )
+
+            if not isinstance(response_text, str) or not response_text.strip():
+                self.recycle_scramble_bank()
+                return
+
+            response_text = response_text.strip()
             
             if "```json" in response_text: response_text = response_text.split("```json")[1].split("```")[0].strip()
             elif "```" in response_text: response_text = response_text.split("```")[1].split("```")[0].strip()
@@ -493,6 +521,7 @@ class Minigames(commands.Cog):
             words_data = json.loads(response_text)
             
             # Insert into DB
+            added_count = 0
             for item in words_data:
                 orig = item.get('original', "").strip().upper()
                 scram = item.get('scrambled', "").strip().upper()
@@ -504,6 +533,10 @@ class Minigames(commands.Cog):
                     if not exists:
                         db_query("INSERT INTO scramble_words (original, scrambled, category, status) VALUES (?, ?, ?, 0)", 
                                  (orig, scram, cat), commit=True)
+                        added_count += 1
+
+            if added_count == 0:
+                self.recycle_scramble_bank()
         except Exception as e:
             print(f"Refill error: {e}")
 
