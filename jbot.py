@@ -48,6 +48,7 @@ COGS = [
     'cogs.pins',
     'cogs.precious',
     'cogs.minigames',
+    'cogs.table_games',
 ]
 
 
@@ -201,7 +202,7 @@ class HelpDropdown(discord.ui.Select):
         elif val == "gam":
             embed.title = "🎲 Gambling & Duels"
             embed.add_field(name="PVP Duels ⚔️", value=f"`{p}duel @user [bet]` - Coin Flip Duel", inline=False)
-            embed.add_field(name="Gambling 🎲", value=f"`{p}flip [bet] [h/t]` - Coin Flip\n`{p}slots [bet]` - Slot Machine\n`{p}bj [bet]` - Blackjack\n`{p}crash [bet]` - Crash Game 🚀", inline=False)
+            embed.add_field(name="Gambling 🎲", value=f"`{p}flip [bet] [h/t]` - Coin Flip\n`{p}slots [bet]` - Slot Machine\n`{p}bj [bet]` - Solo Blackjack\n`{p}bjtable [bet]` - Multiplayer Blackjack Table\n`{p}table` - View/leave active table\n`{p}crash [bet]` - Crash Game 🚀", inline=False)
             embed.add_field(name="Crimes 🥷", value=f"`{p}crime` - High stakes heist (Risk: Jail)\n`{p}rob @user` - Steal JC & Gold!", inline=False)
             
         elif val == "shop":
