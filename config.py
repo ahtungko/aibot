@@ -48,6 +48,9 @@ BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
 WISE_SANDBOX_TOKEN = os.getenv("WISE_SANDBOX_TOKEN")
 CHECKIN_WORKER_URL = os.getenv("CHECKIN_WORKER_URL")
 CHECKIN_AUTH_PASS = os.getenv("CHECKIN_AUTH_PASS", "")
+WEBDAV_BACKUP_URL = os.getenv("WEBDAV_BACKUP_URL", "").strip().rstrip("/")
+WEBDAV_USERNAME = os.getenv("WEBDAV_USERNAME", "").strip()
+WEBDAV_PASSWORD = os.getenv("WEBDAV_PASSWORD", "")
 
 # Bot Settings
 COMMAND_PREFIX = "!"
@@ -131,6 +134,8 @@ if not CHECKIN_WORKER_URL:
     print("Warning: CHECKIN_WORKER_URL not found. The !ck check-in command will be disabled.")
 if not NSFW_API_KEY:
     print("Warning: NSFW_API_KEY/GROK2API_API_KEY/XAI_API_KEY not found. The Grok Responses endpoint for !nsfw will be disabled.")
+if any((WEBDAV_BACKUP_URL, WEBDAV_USERNAME, WEBDAV_PASSWORD)) and not all((WEBDAV_BACKUP_URL, WEBDAV_USERNAME, WEBDAV_PASSWORD)):
+    print("Warning: WebDAV backup is partially configured. Set WEBDAV_BACKUP_URL, WEBDAV_USERNAME, and WEBDAV_PASSWORD to use DB backups.")
 
 try:
     OWNER_ID = int(BOT_OWNER_ID_STR) if BOT_OWNER_ID_STR else None
