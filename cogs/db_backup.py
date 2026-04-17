@@ -17,6 +17,8 @@ class DatabaseBackup(commands.Cog):
     LAST_ATTEMPT_KEY = "webdav_backup_last_attempt"
     LAST_SUCCESS_KEY = "webdav_backup_last_success"
     LAST_ERROR_KEY = "webdav_backup_last_error"
+    LAST_RESTORE_KEY = "webdav_backup_last_restore"
+    LAST_RESTORE_ERROR_KEY = "webdav_backup_last_restore_error"
     DEFAULT_INTERVAL_MINUTES = 360
     MIN_INTERVAL_MINUTES = 10
     MAX_INTERVAL_MINUTES = 7 * 24 * 60
@@ -99,6 +101,17 @@ class DatabaseBackup(commands.Cog):
         return local_path, timestamp
 
     @staticmethod
+    def _build_restore_paths(remote_filename: str):
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        restore_dir = os.path.join(root_dir, "artifacts", "db_backups", "restores")
+        os.makedirs(restore_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        safe_name = os.path.basename(remote_filename) or "economy_remote.db"
+        downloaded_path = os.path.join(restore_dir, f"downloaded_{timestamp}_{safe_name}")
+        pre_restore_path = os.path.join(restore_dir, f"economy_before_restore_{timestamp}.db")
+        return downloaded_path, pre_restore_path, timestamp
+
+    @staticmethod
     def _create_sqlite_snapshot(target_path: str):
         source_conn = sqlite3.connect(DB_PATH)
         target_conn = sqlite3.connect(target_path)
@@ -126,6 +139,52 @@ class DatabaseBackup(commands.Cog):
                 response_text = await response.text()
                 if response.status not in {200, 201, 204}:
                     raise RuntimeError(f"WebDAV upload failed ({response.status}): {response_text[:240]}")
+
+    async def _download_file_from_webdav(self, remote_filename: str, local_path: str):
+        if self.bot.http_session is None or self.bot.http_session.closed:
+            raise RuntimeError("HTTP session is unavailable right now.")
+
+        download_url = f"{WEBDAV_BACKUP_URL.rstrip('/')}/{remote_filename}"
+        auth = aiohttp.BasicAuth(WEBDAV_USERNAME, WEBDAV_PASSWORD)
+
+        async with self.bot.http_session.get(
+            download_url,
+            auth=auth,
+            timeout=aiohttp.ClientTimeout(total=180),
+        ) as response:
+            if response.status != 200:
+                response_text = await response.text()
+                raise RuntimeError(f"WebDAV download failed ({response.status}): {response_text[:240]}")
+
+            with open(local_path, "wb") as handle:
+                async for chunk in response.content.iter_chunked(1024 * 256):
+                    handle.write(chunk)
+
+    @staticmethod
+    def _validate_sqlite_file(local_path: str):
+        with open(local_path, "rb") as handle:
+            header = handle.read(16)
+        if not header.startswith(b"SQLite format 3"):
+            raise RuntimeError("Downloaded file is not a valid SQLite database.")
+
+        conn = sqlite3.connect(local_path)
+        try:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+
+        if not row or row[0].lower() != "ok":
+            raise RuntimeError(f"SQLite quick_check failed: {row[0] if row else 'unknown error'}")
+
+    @staticmethod
+    def _restore_sqlite_database(source_path: str):
+        source_conn = sqlite3.connect(source_path)
+        target_conn = sqlite3.connect(DB_PATH, timeout=60)
+        try:
+            source_conn.backup(target_conn)
+        finally:
+            target_conn.close()
+            source_conn.close()
 
     async def _perform_backup(self, *, source: str = "manual"):
         if not self._is_webdav_configured():
@@ -159,6 +218,42 @@ class DatabaseBackup(commands.Cog):
                     f"Source: `{source}`\n"
                     f"Error: `{str(exc)[:1500]}`\n"
                     f"Target: `{WEBDAV_BACKUP_URL or '(not configured)'}`"
+                ),
+                color=discord.Color.red(),
+            )
+            raise
+
+    async def _perform_restore(self, remote_filename: str):
+        if not self._is_webdav_configured():
+            raise ValueError("WebDAV backup is not configured. Set WEBDAV_BACKUP_URL, WEBDAV_USERNAME, and WEBDAV_PASSWORD in `.env`.")
+
+        downloaded_path, pre_restore_path, timestamp = self._build_restore_paths(remote_filename)
+        try:
+            await self._download_file_from_webdav(remote_filename, downloaded_path)
+            self._validate_sqlite_file(downloaded_path)
+            self._create_sqlite_snapshot(pre_restore_path)
+            self._restore_sqlite_database(downloaded_path)
+            set_setting(self.LAST_RESTORE_KEY, str(int(time.time())))
+            set_setting(self.LAST_RESTORE_ERROR_KEY, "")
+            await self._notify_owner(
+                title="✅ WebDAV Restore Complete",
+                description=(
+                    f"Restored from: `{remote_filename}`\n"
+                    f"Downloaded copy: `{downloaded_path}`\n"
+                    f"Pre-restore snapshot: `{pre_restore_path}`\n"
+                    f"Target DB: `{DB_PATH}`"
+                ),
+                color=discord.Color.green(),
+            )
+            return downloaded_path, pre_restore_path, timestamp
+        except Exception as exc:
+            set_setting(self.LAST_RESTORE_ERROR_KEY, str(exc)[:500])
+            await self._notify_owner(
+                title="❌ WebDAV Restore Failed",
+                description=(
+                    f"Requested file: `{remote_filename}`\n"
+                    f"Error: `{str(exc)[:1500]}`\n"
+                    f"Target DB: `{DB_PATH}`"
                 ),
                 color=discord.Color.red(),
             )
@@ -275,7 +370,9 @@ class DatabaseBackup(commands.Cog):
         interval = self._get_interval_minutes()
         last_attempt = self._utc_timestamp_text(get_setting(self.LAST_ATTEMPT_KEY, "0"))
         last_success = self._utc_timestamp_text(get_setting(self.LAST_SUCCESS_KEY, "0"))
+        last_restore = self._utc_timestamp_text(get_setting(self.LAST_RESTORE_KEY, "0"))
         last_error = (get_setting(self.LAST_ERROR_KEY, "") or "").strip() or "None"
+        last_restore_error = (get_setting(self.LAST_RESTORE_ERROR_KEY, "") or "").strip() or "None"
         target = WEBDAV_BACKUP_URL or "(not configured)"
 
         embed = discord.Embed(title="WebDAV Backup Status", color=discord.Color.teal())
@@ -284,14 +381,54 @@ class DatabaseBackup(commands.Cog):
         embed.add_field(name="Interval", value=f"{interval} min", inline=True)
         embed.add_field(name="Last Attempt", value=last_attempt, inline=False)
         embed.add_field(name="Last Success", value=last_success, inline=False)
+        embed.add_field(name="Last Restore", value=last_restore, inline=False)
         embed.add_field(name="Target", value=f"`{target}`", inline=False)
         embed.add_field(name="Last Error", value=last_error[:1024], inline=False)
+        embed.add_field(name="Last Restore Error", value=last_restore_error[:1024], inline=False)
         await ctx.send(embed=embed)
+
+    @commands.command(name="dbrestore")
+    @commands.is_owner()
+    async def dbrestore_command(self, ctx: commands.Context, target: str = None, confirm: str = None):
+        if target is None:
+            await ctx.send(
+                f"Usage: `{COMMAND_PREFIX}dbrestore latest confirm` or `{COMMAND_PREFIX}dbrestore <remote_filename> confirm`\n"
+                f"This will overwrite the local `economy.db` after making a safety snapshot."
+            )
+            return
+
+        if (confirm or "").strip().lower() != "confirm":
+            await ctx.send(
+                f"Restore requires confirmation.\n"
+                f"Run: `{COMMAND_PREFIX}dbrestore {target} confirm`"
+            )
+            return
+
+        remote_filename = "economy_latest.db" if target.strip().lower() == "latest" else os.path.basename(target.strip())
+        if not remote_filename:
+            await ctx.send("Please provide a valid remote backup filename.")
+            return
+
+        try:
+            async with ctx.typing():
+                downloaded_path, pre_restore_path, _timestamp = await self._perform_restore(remote_filename)
+
+            await ctx.send(
+                "✅ Database restore completed.\n"
+                f"Restored from: `{remote_filename}`\n"
+                f"Safety snapshot saved to: `{pre_restore_path}`\n"
+                f"Downloaded copy saved to: `{downloaded_path}`\n"
+                "Recommended: restart the bot now to ensure every task uses the restored database."
+            )
+        except Exception as exc:
+            print(f"Error in !dbrestore command: {exc}")
+            await ctx.send(f"❌ Database restore failed: {exc}")
 
     @dbbackup_command.error
     @dbbackupauto_command.error
     @dbbackupinterval_command.error
     @dbbackupstatus_command.error
+    @dbrestore_command.error
     async def backup_command_error(self, ctx: commands.Context, error: commands.CommandError):
         if isinstance(error, commands.NotOwner):
             await ctx.send("Only the bot owner can manage WebDAV backups.")
