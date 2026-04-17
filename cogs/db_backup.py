@@ -63,6 +63,32 @@ class DatabaseBackup(commands.Cog):
         clamped = max(self.MIN_INTERVAL_MINUTES, min(self.MAX_INTERVAL_MINUTES, int(value)))
         set_setting(self.INTERVAL_MINUTES_KEY, str(clamped))
 
+    async def _notify_owner(self, *, title: str, description: str, color: discord.Color):
+        owner_id = getattr(self.bot, "owner_id", None)
+        if not owner_id:
+            return
+
+        owner = self.bot.get_user(owner_id)
+        if owner is None:
+            try:
+                owner = await self.bot.fetch_user(owner_id)
+            except Exception:
+                owner = None
+
+        if owner is None:
+            return
+
+        embed = discord.Embed(
+            title=title,
+            description=description[:4000],
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        try:
+            await owner.send(embed=embed)
+        except Exception as exc:
+            print(f"Failed to DM backup notification to owner: {exc}")
+
     @staticmethod
     def _build_backup_paths():
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -101,7 +127,7 @@ class DatabaseBackup(commands.Cog):
                 if response.status not in {200, 201, 204}:
                     raise RuntimeError(f"WebDAV upload failed ({response.status}): {response_text[:240]}")
 
-    async def _perform_backup(self):
+    async def _perform_backup(self, *, source: str = "manual"):
         if not self._is_webdav_configured():
             raise ValueError("WebDAV backup is not configured. Set WEBDAV_BACKUP_URL, WEBDAV_USERNAME, and WEBDAV_PASSWORD in `.env`.")
 
@@ -113,9 +139,29 @@ class DatabaseBackup(commands.Cog):
             await self._upload_file_to_webdav(local_path, "economy_latest.db")
             set_setting(self.LAST_SUCCESS_KEY, str(int(time.time())))
             set_setting(self.LAST_ERROR_KEY, "")
+            await self._notify_owner(
+                title="✅ WebDAV Backup Complete",
+                description=(
+                    f"Source: `{source}`\n"
+                    f"Uploaded files:\n"
+                    f"- `economy_{timestamp}.db`\n"
+                    f"- `economy_latest.db`\n"
+                    f"Target: `{WEBDAV_BACKUP_URL}`"
+                ),
+                color=discord.Color.green(),
+            )
             return local_path, timestamp
         except Exception as exc:
             set_setting(self.LAST_ERROR_KEY, str(exc)[:500])
+            await self._notify_owner(
+                title="❌ WebDAV Backup Failed",
+                description=(
+                    f"Source: `{source}`\n"
+                    f"Error: `{str(exc)[:1500]}`\n"
+                    f"Target: `{WEBDAV_BACKUP_URL or '(not configured)'}`"
+                ),
+                color=discord.Color.red(),
+            )
             raise
 
     @tasks.loop(minutes=10)
@@ -138,7 +184,7 @@ class DatabaseBackup(commands.Cog):
             return
 
         try:
-            local_path, _timestamp = await self._perform_backup()
+            local_path, _timestamp = await self._perform_backup(source="auto")
             try:
                 os.remove(local_path)
             except OSError:
@@ -161,7 +207,7 @@ class DatabaseBackup(commands.Cog):
         local_path = None
         try:
             async with ctx.typing():
-                local_path, timestamp = await self._perform_backup()
+                local_path, timestamp = await self._perform_backup(source="manual")
 
             await ctx.send(
                 f"✅ WebDAV backup uploaded successfully.\n"
