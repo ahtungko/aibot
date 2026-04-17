@@ -325,6 +325,7 @@ class AI(commands.Cog):
         self.primary_model = saved_model or DEFAULT_MODEL
         saved_grok_model = self._normalize_model_name(settings.get(self.GROK_MODEL_SETTING_KEY))
         self.grok_model = saved_grok_model or GROK_DEFAULT_MODEL
+        self.memory_disabled_users = set(settings.get("memory_disabled_users", []))
 
     def _save_model_settings(self):
         settings = load_ai_settings()
@@ -340,6 +341,8 @@ class AI(commands.Cog):
             settings.pop(self.GROK_MODEL_SETTING_KEY, None)
         else:
             settings[self.GROK_MODEL_SETTING_KEY] = self.grok_model
+
+        settings["memory_disabled_users"] = list(getattr(self, "memory_disabled_users", set()))
 
         save_ai_settings(settings)
 
@@ -1254,17 +1257,27 @@ class AI(commands.Cog):
             return
 
         uid = str(message.author.id)
-        if uid in self.conversation_history:
-            if current_time - self.conversation_history[uid]["last_active"] > HISTORY_EXPIRY_SECONDS:
-                del self.conversation_history[uid]
-        if uid not in self.conversation_history:
-            self.conversation_history[uid] = {"messages": [], "last_active": current_time}
 
-        history = self.conversation_history[uid]
-        history["last_active"] = current_time
+        if getattr(self, "memory_disabled_users", None) is None:
+            self.memory_disabled_users = set()
+
+        memory_disabled = uid in self.memory_disabled_users
+
+        if memory_disabled:
+            history = {"messages": []}
+        else:
+            if uid in self.conversation_history:
+                if current_time - self.conversation_history[uid]["last_active"] > HISTORY_EXPIRY_SECONDS:
+                    del self.conversation_history[uid]
+            if uid not in self.conversation_history:
+                self.conversation_history[uid] = {"messages": [], "last_active": current_time}
+
+            history = self.conversation_history[uid]
+            history["last_active"] = current_time
+
         history["messages"].append({"role": "user", "content": user_message})
 
-        if len(history["messages"]) > MAX_HISTORY_MESSAGES:
+        if not memory_disabled and len(history["messages"]) > MAX_HISTORY_MESSAGES:
             history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
         try:
@@ -1274,9 +1287,10 @@ class AI(commands.Cog):
                     await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
 
-                history["messages"].append({"role": "assistant", "content": ai_response_text})
-                if len(history["messages"]) > MAX_HISTORY_MESSAGES:
-                    history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
+                if not memory_disabled:
+                    history["messages"].append({"role": "assistant", "content": ai_response_text})
+                    if len(history["messages"]) > MAX_HISTORY_MESSAGES:
+                        history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
                 self.last_ai_call_time = time.time()
                 ai_response_text, extracted_files = await self._extract_and_download_files(
@@ -1571,6 +1585,23 @@ class AI(commands.Cog):
             await ctx.send(f"🧹 {ctx.author.mention}, your AI conversation history has been cleared!")
         else:
             await ctx.send(f"💭 {ctx.author.mention}, you don't have any conversation history.")
+
+    @commands.command(name="memory")
+    async def memory_command(self, ctx: commands.Context):
+        if getattr(self, "memory_disabled_users", None) is None:
+            self.memory_disabled_users = set()
+            
+        uid = str(ctx.author.id)
+        if uid in self.memory_disabled_users:
+            self.memory_disabled_users.remove(uid)
+            self._save_model_settings()
+            await ctx.send(f"🧠 {ctx.author.mention}, AI conversation memory has been **enabled**. The bot will now remember your context across messages in a short time window.")
+        else:
+            self.memory_disabled_users.add(uid)
+            if uid in self.conversation_history:
+                del self.conversation_history[uid]
+            self._save_model_settings()
+            await ctx.send(f"🚫 {ctx.author.mention}, AI conversation memory has been **disabled**. Your previous context has also been cleared.")
 
     @commands.command(name="tldr", aliases=["summarize"])
     async def tldr_command(self, ctx: commands.Context, count: int = 50):
