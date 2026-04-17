@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import time
@@ -22,6 +23,7 @@ class DatabaseBackup(commands.Cog):
     DEFAULT_INTERVAL_MINUTES = 360
     MIN_INTERVAL_MINUTES = 10
     MAX_INTERVAL_MINUTES = 7 * 24 * 60
+    RESTORE_ARTIFACT_KEEP_COUNT = 5
 
     def __init__(self, bot):
         self.bot = bot
@@ -64,6 +66,15 @@ class DatabaseBackup(commands.Cog):
     def _set_interval_minutes(self, value: int):
         clamped = max(self.MIN_INTERVAL_MINUTES, min(self.MAX_INTERVAL_MINUTES, int(value)))
         set_setting(self.INTERVAL_MINUTES_KEY, str(clamped))
+
+    async def _restart_bot_process(self, *, reason: str):
+        await self._notify_owner(
+            title="🔄 Bot Restart Requested",
+            description=f"Reason: {reason}\nSystemd should restart the bot automatically.",
+            color=discord.Color.orange(),
+        )
+        await asyncio.sleep(2)
+        await self.bot.close()
 
     async def _notify_owner(self, *, title: str, description: str, color: discord.Color):
         owner_id = getattr(self.bot, "owner_id", None)
@@ -110,6 +121,33 @@ class DatabaseBackup(commands.Cog):
         downloaded_path = os.path.join(restore_dir, f"downloaded_{timestamp}_{safe_name}")
         pre_restore_path = os.path.join(restore_dir, f"economy_before_restore_{timestamp}.db")
         return downloaded_path, pre_restore_path, timestamp
+
+    def _cleanup_restore_artifacts(self):
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        restore_dir = os.path.join(root_dir, "artifacts", "db_backups", "restores")
+        if not os.path.isdir(restore_dir):
+            return
+
+        groups = {
+            "downloaded_": [],
+            "economy_before_restore_": [],
+        }
+
+        for entry in os.scandir(restore_dir):
+            if not entry.is_file():
+                continue
+            for prefix in groups:
+                if entry.name.startswith(prefix):
+                    groups[prefix].append(entry.path)
+                    break
+
+        for _prefix, paths in groups.items():
+            paths.sort(key=lambda path: os.path.getmtime(path), reverse=True)
+            for old_path in paths[self.RESTORE_ARTIFACT_KEEP_COUNT:]:
+                try:
+                    os.remove(old_path)
+                except OSError as exc:
+                    print(f"Failed to remove old restore artifact {old_path}: {exc}")
 
     @staticmethod
     def _create_sqlite_snapshot(target_path: str):
@@ -245,6 +283,7 @@ class DatabaseBackup(commands.Cog):
                 ),
                 color=discord.Color.green(),
             )
+            self._cleanup_restore_artifacts()
             return downloaded_path, pre_restore_path, timestamp
         except Exception as exc:
             set_setting(self.LAST_RESTORE_ERROR_KEY, str(exc)[:500])
@@ -389,10 +428,11 @@ class DatabaseBackup(commands.Cog):
 
     @commands.command(name="dbrestore")
     @commands.is_owner()
-    async def dbrestore_command(self, ctx: commands.Context, target: str = None, confirm: str = None):
+    async def dbrestore_command(self, ctx: commands.Context, target: str = None, confirm: str = None, action: str = None):
         if target is None:
             await ctx.send(
                 f"Usage: `{COMMAND_PREFIX}dbrestore latest confirm` or `{COMMAND_PREFIX}dbrestore <remote_filename> confirm`\n"
+                f"Optional restart: `{COMMAND_PREFIX}dbrestore latest confirm restart`\n"
                 f"This will overwrite the local `economy.db` after making a safety snapshot."
             )
             return
@@ -420,15 +460,29 @@ class DatabaseBackup(commands.Cog):
                 f"Downloaded copy saved to: `{downloaded_path}`\n"
                 "Recommended: restart the bot now to ensure every task uses the restored database."
             )
+            if (action or "").strip().lower() == "restart":
+                await ctx.send("🔄 Restarting bot now... systemd should bring it back in about 10 seconds.")
+                await self._restart_bot_process(reason=f"Database restored from `{remote_filename}`")
         except Exception as exc:
             print(f"Error in !dbrestore command: {exc}")
             await ctx.send(f"❌ Database restore failed: {exc}")
+
+    @commands.command(name="restartbot")
+    @commands.is_owner()
+    async def restartbot_command(self, ctx: commands.Context, confirm: str = None):
+        if (confirm or "").strip().lower() != "confirm":
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}restartbot confirm`")
+            return
+
+        await ctx.send("🔄 Restarting bot now... systemd should bring it back in about 10 seconds.")
+        await self._restart_bot_process(reason=f"Owner `{ctx.author}` requested restart")
 
     @dbbackup_command.error
     @dbbackupauto_command.error
     @dbbackupinterval_command.error
     @dbbackupstatus_command.error
     @dbrestore_command.error
+    @restartbot_command.error
     async def backup_command_error(self, ctx: commands.Context, error: commands.CommandError):
         if isinstance(error, commands.NotOwner):
             await ctx.send("Only the bot owner can manage WebDAV backups.")
