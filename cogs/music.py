@@ -81,7 +81,8 @@ class Music(commands.Cog):
         song_title = song.get('title', 'song')
         song_artist = ', '.join([s.get('name') for s in song.get('singers', []) if s.get('name')]) or 'Unknown Artist'
 
-        MAX_FILE_SIZE = 25 * 1024 * 1024
+        limit = ctx.guild.filesize_limit if ctx.guild else 25 * 1024 * 1024
+        MAX_FILE_SIZE = limit
 
         best_link = None
         links = song.get('fileLinks', [])
@@ -92,8 +93,19 @@ class Music(commands.Cog):
                 best_link = link
                 break
 
+        if not best_link and sorted_links:
+            best_link = sorted_links[0]
+            quality = best_link.get('quality')
+            file_format = best_link.get('format')
+            file_size_mb = best_link.get('size', 0) / (1024 * 1024)
+            download_url = f"{API_DOWNLOAD_URLS['joox']}?ID={song_id}&quality={quality}&format={file_format}"
+            
+            await ctx.send(f"The best format for **{song_title}** ({file_size_mb:.2f} MB) exceeds Discord's file size limit.\nYou can download it directly here: {download_url}")
+            self.search_results_cache.pop(user_id, None)
+            return
+
         if not best_link:
-            await ctx.send("No download format found that fits within Discord's file size limit.")
+            await ctx.send("No download formats available.")
             return
 
         quality = best_link.get('quality')
@@ -113,6 +125,13 @@ class Music(commands.Cog):
             await ctx.send(f"✅ Download complete!")
             self.search_results_cache.pop(user_id, None)
 
+        except discord.HTTPException as e:
+            if e.status == 413:
+                await ctx.send(f"The downloaded file was still too large for Discord. You can download it directly here: {download_url}")
+                self.search_results_cache.pop(user_id, None)
+            else:
+                print(f"Discord error downloading song: {e}")
+                await ctx.send("Sorry, I encountered an error while uploading the song to Discord.")
         except Exception as e:
             print(f"Error downloading song: {e}")
             await ctx.send("Sorry, I encountered an error while downloading the song.")
