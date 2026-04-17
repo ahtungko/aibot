@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 
 from config import COMMAND_PREFIX, MIMO_API_KEY, MIMO_TTS_MODEL, MIMO_TTS_URL
+from cogs.economy import get_setting, set_setting
 
 
 class MimoTTS(commands.Cog):
@@ -18,9 +19,17 @@ class MimoTTS(commands.Cog):
     MAX_TEXT_LENGTH = 1800
     MAX_SAMPLE_BYTES = 5 * 1024 * 1024
     DISCORD_UPLOAD_LIMIT = 8 * 1024 * 1024
+    TTS_TOGGLE_SETTING_KEY = "mimo_tts_enabled"
 
     def __init__(self, bot):
         self.bot = bot
+
+    def _is_tts_enabled(self) -> bool:
+        stored = (get_setting(self.TTS_TOGGLE_SETTING_KEY, "on") or "on").strip().lower()
+        return stored not in {"0", "off", "false", "disabled", "disable"}
+
+    def _set_tts_enabled(self, enabled: bool):
+        set_setting(self.TTS_TOGGLE_SETTING_KEY, "on" if enabled else "off")
 
     @staticmethod
     def _usage():
@@ -446,6 +455,10 @@ class MimoTTS(commands.Cog):
     @commands.command(name="tts", aliases=["mimo"])
     @commands.cooldown(1, 20, commands.BucketType.user)
     async def tts_command(self, ctx: commands.Context, *, args: str = None):
+        if not self._is_tts_enabled():
+            await ctx.send("MiMo TTS is currently disabled by the bot owner.")
+            return
+
         if not MIMO_API_KEY:
             await ctx.send("MiMo TTS is not configured yet. Add `MIMO_API_KEY` to `.env` first.")
             return
@@ -488,6 +501,10 @@ class MimoTTS(commands.Cog):
     @commands.command(name="sayai", aliases=["aitts", "mimosay"])
     @commands.cooldown(1, 25, commands.BucketType.user)
     async def sayai_command(self, ctx: commands.Context, *, args: str = None):
+        if not self._is_tts_enabled():
+            await ctx.send("MiMo TTS is currently disabled by the bot owner.")
+            return
+
         if not MIMO_API_KEY:
             await ctx.send("MiMo TTS is not configured yet. Add `MIMO_API_KEY` to `.env` first.")
             return
@@ -536,6 +553,39 @@ class MimoTTS(commands.Cog):
     async def sayai_command_error(self, ctx: commands.Context, error: commands.CommandError):
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"Please wait {error.retry_after:.1f}s before using `!sayai` again.")
+            return
+        raise error
+
+    @commands.command(name="ttstoggle")
+    @commands.is_owner()
+    async def ttstoggle_command(self, ctx: commands.Context, state: str = None):
+        current_enabled = self._is_tts_enabled()
+
+        if state is None:
+            current_text = "ON" if current_enabled else "OFF"
+            await ctx.send(
+                f"MiMo TTS is currently **{current_text}**.\n"
+                f"Usage: `{COMMAND_PREFIX}ttstoggle on` or `{COMMAND_PREFIX}ttstoggle off`"
+            )
+            return
+
+        normalized = state.strip().lower()
+        if normalized in {"on", "enable", "enabled", "true", "1"}:
+            self._set_tts_enabled(True)
+            await ctx.send("✅ MiMo TTS has been **enabled**.")
+            return
+
+        if normalized in {"off", "disable", "disabled", "false", "0"}:
+            self._set_tts_enabled(False)
+            await ctx.send("✅ MiMo TTS has been **disabled**.")
+            return
+
+        await ctx.send(f"Usage: `{COMMAND_PREFIX}ttstoggle on` or `{COMMAND_PREFIX}ttstoggle off`")
+
+    @ttstoggle_command.error
+    async def ttstoggle_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("Only the bot owner can toggle MiMo TTS.")
             return
         raise error
 
