@@ -3040,7 +3040,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='crime')
     async def crime_command(self, ctx: commands.Context):
-        """Commit a crime for a flat 300 JC! Risk: 2hr Jail & 300 JC Fine. (1hr CD)"""
+        """Attempt a crime for 700 JC. Risk: 500 JC fine and 2hr jail. (1hr CD)"""
         uid = str(ctx.author.id)
         now = int(time.time())
 
@@ -3059,20 +3059,20 @@ class Economy(commands.Cog):
         wallet = get_balance(uid)
         bank = get_bank(uid)
         total_wealth = wallet + bank
+        reward_amt = 700
+        fine = 500
         
-        if total_wealth < 300:
-            await ctx.send(f"❌ {ctx.author.mention}, you need at least **300** JC (Wallet + Bank combined) to risk committing a crime!")
+        if total_wealth < fine:
+            await ctx.send(f"❌ {ctx.author.mention}, you need at least **{fine}** JC (Wallet + Bank combined) to risk committing a crime!")
             return
-            
-        base_amt = 500
         
         # Success Chance 40%
         if random.random() < 0.40:
             # Success
             with db_transaction() as conn:
-                add_balance(uid, base_amt, conn=conn)
+                add_balance(uid, reward_amt, conn=conn)
                 update_user_stats(uid, conn=conn, last_crime=now + 3600)
-                log_transaction(uid, base_amt, "Crime Success", conn=conn)
+                log_transaction(uid, reward_amt, "Crime Success", conn=conn)
                 apply_progress_events(uid, {"crime_successes": 1}, conn=conn)
             
             crimes = [
@@ -3084,14 +3084,13 @@ class Economy(commands.Cog):
             
             embed = discord.Embed(
                 title="🏆 CRIME SUCCESS!",
-                description=f"{ctx.author.mention}, you **{crime}** and earned **{base_amt:,}** JC!",
+                description=f"{ctx.author.mention}, you **{crime}** and earned **{reward_amt:,}** JC!",
                 color=discord.Color.green()
             )
-            embed.add_field(name="Total Wealth", value=f"**{wallet + bank + base_amt:,}** JC", inline=False)
+            embed.add_field(name="Total Wealth", value=f"**{wallet + bank + reward_amt:,}** JC", inline=False)
             await ctx.send(embed=embed)
         else:
             # Failure - 60%
-            fine = base_amt
             jail_time_seconds = 2 * 3600
             
             with db_transaction() as conn:
