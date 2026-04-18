@@ -1039,7 +1039,8 @@ class AI(commands.Cog):
                         break
                     if response.status_code in [429, 500, 502, 503, 504]:
                         print(f"Server overloaded ({response.status_code}) on {client_name.lower()} AI endpoint.")
-                        break
+                        await asyncio.sleep(1)
+                        continue
                 except Exception as log_err:
                     print(f"Log Error: Could not parse response: {log_err}")
                     print(f"Raw Response: {response.text}")
@@ -1048,12 +1049,10 @@ class AI(commands.Cog):
                 err_str = str(e).lower()
                 if "503" in err_str or "502" in err_str or "529" in err_str:
                     print(f"AI Call overloaded [{client_name}]: {e}")
-                    break
-                if "timeout" in err_str or "closed" in err_str:
+                elif "timeout" in err_str or "closed" in err_str:
                     print(f"AI Call early-break [{client_name}] (connection dead): {e}")
-                    break
-
-                print(f"AI Call error [{client_name}]: {e}")
+                else:
+                    print(f"AI Call error [{client_name}]: {e}")
                 await asyncio.sleep(1)
 
         return None
