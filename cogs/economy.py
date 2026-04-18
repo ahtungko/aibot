@@ -3040,7 +3040,7 @@ class Economy(commands.Cog):
 
     @commands.command(name='crime')
     async def crime_command(self, ctx: commands.Context):
-        """Commit a crime for big rewards! Risk: Jail & Wealth Fines. (1hr CD)"""
+        """Commit a crime for a flat 300 JC! Risk: 2hr Jail & 300 JC Fine. (1hr CD)"""
         uid = str(ctx.author.id)
         now = int(time.time())
 
@@ -3060,9 +3060,11 @@ class Economy(commands.Cog):
         bank = get_bank(uid)
         total_wealth = wallet + bank
         
-        # Calculate 15% Reward/Fine
-        # Ensure a minimum amount for the gamble to feel real even for broke players
-        base_amt = max(300, int(total_wealth * 0.15))
+        if total_wealth < 300:
+            await ctx.send(f"❌ {ctx.author.mention}, you need at least **300** JC (Wallet + Bank combined) to risk committing a crime!")
+            return
+            
+        base_amt = 500
         
         # Success Chance 40%
         if random.random() < 0.40:
@@ -3088,7 +3090,7 @@ class Economy(commands.Cog):
             embed.add_field(name="Total Wealth", value=f"**{wallet + bank + base_amt:,}** JC", inline=False)
             await ctx.send(embed=embed)
         else:
-            # Failure - 40%
+            # Failure - 60%
             fine = base_amt
             jail_time_seconds = 2 * 3600
             
@@ -3097,15 +3099,8 @@ class Economy(commands.Cog):
                 wallet_taken = collection["wallet_taken"]
                 bank_taken = collection["bank_taken"]
                 collected_fine = collection["collected"]
-                debt_amt = collection["shortfall"]
 
-                if debt_amt > 0:
-                    # Debt penalty: +10 mins per 10 JC missing
-                    debt_penalty_secs = int(debt_amt / 10) * 600
-                else:
-                    debt_penalty_secs = 0
-
-                jail_until = now + jail_time_seconds + debt_penalty_secs
+                jail_until = now + jail_time_seconds
 
                 update_user_stats(uid, conn=conn, jail_until=jail_until, last_crime=now + 3600)
                 track_fee(collected_fine, conn=conn)
@@ -3118,17 +3113,10 @@ class Economy(commands.Cog):
             )
             embed.add_field(name="Fine Assessed", value=f"**{fine:,}** JC", inline=True)
             embed.add_field(name="Collected Now", value=f"**{collected_fine:,}** JC", inline=True)
-            embed.add_field(name="Base Sentence", value="2 Hours", inline=True)
+            embed.add_field(name="Sentence", value="2 Hours", inline=True)
 
-            if debt_amt > 0:
-                embed.add_field(name="Unpaid Balance", value=f"**{debt_amt:,}** JC", inline=True)
             if wallet_taken > 0 or bank_taken > 0:
                 embed.add_field(name="Seized Funds", value=f"Wallet: **{wallet_taken:,}** JC\nBank: **{bank_taken:,}** JC", inline=False)
-            
-            if debt_penalty_secs > 0:
-                h = debt_penalty_secs // 3600
-                m = (debt_penalty_secs % 3600) // 60
-                embed.add_field(name="Debt Sentence", value=f"+{h}h {m}m", inline=True)
                 
             embed.add_field(name="Jail Release", value=f"<t:{jail_until}:R>", inline=False)
             embed.set_footer(text="While in jail, you cannot use any bot commands!")
