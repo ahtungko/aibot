@@ -174,6 +174,9 @@ CODE_CRACKER_ENTRY_FEE_TX = "Code Cracker Entry Fee"
 CODE_CRACKER_WIN_TX = "Win Code Cracker"
 CODE_CRACKER_LOSS_TX = "Code Cracker Loss"
 CODE_CRACKER_TIMEOUT_REFUND_TX = "Code Cracker Timeout Refund"
+MINES_LOSS_TX = "Mines Loss"
+MINES_REFUND_TX = "Mines Refund"
+MINES_CASHOUT_PREFIX = "Mines Cashout ("
 TRANSFER_TO_PREFIX = "Transfer to "
 TRANSFER_FROM_PREFIX = "Transfer from "
 TRANSFER_FEE_TX = "Transfer Fee"
@@ -197,6 +200,11 @@ WEEKLY_MISSION_SLOTS = 2
 BOX_EPIC_PITY_THRESHOLD = 90
 BOX_LEGENDARY_PITY_THRESHOLD = 180
 MITHRIL_CHAT_PASSIVE_TX = "Mithril Chat Passive"
+MINES_BOARD_SIDE = 5
+MINES_TOTAL_TILES = MINES_BOARD_SIDE * MINES_BOARD_SIDE
+MINES_FIXED_COUNT = 10
+MINES_HOUSE_EDGE = 0.97
+MINES_TIMEOUT_SECONDS = 300
 
 ACHIEVEMENT_DEFINITIONS = {
     "first_stack": {
@@ -821,6 +829,9 @@ TRANSACTION_POLICY_REGISTRY = {
             "refund": {"vault_refund": "full"},
         },
         normalize_transaction_type("mystery bounty tax"): {
+            "refund": {"vault_refund": "full"},
+        },
+        normalize_transaction_type(MINES_LOSS_TX): {
             "refund": {"vault_refund": "full"},
         },
         normalize_transaction_type("role fee"): {
@@ -1976,6 +1987,41 @@ async def validate_admin_amount(ctx: commands.Context, amount: int):
     return True
 
 
+def calculate_mines_multiplier(
+    safe_picks: int,
+    mine_count: int,
+    *,
+    total_tiles: int = MINES_TOTAL_TILES,
+    house_edge: float = MINES_HOUSE_EDGE,
+) -> float:
+    safe_picks = int(safe_picks)
+    mine_count = int(mine_count)
+    total_tiles = int(total_tiles)
+
+    if total_tiles <= 1:
+        raise ValueError("total_tiles must be greater than 1")
+    if mine_count < 1 or mine_count >= total_tiles:
+        raise ValueError("mine_count must be between 1 and total_tiles - 1")
+
+    max_safe_picks = total_tiles - mine_count
+    if safe_picks < 0 or safe_picks > max_safe_picks:
+        raise ValueError("safe_picks is out of range for the current board")
+
+    if safe_picks == 0:
+        return 1.0
+
+    fair_multiplier = 1.0
+    remaining_total = total_tiles
+    remaining_safe = total_tiles - mine_count
+
+    for _ in range(safe_picks):
+        fair_multiplier *= remaining_total / remaining_safe
+        remaining_total -= 1
+        remaining_safe -= 1
+
+    return fair_multiplier * float(house_edge)
+
+
 def get_known_economy_user_ids(conn=None) -> list[str]:
     tables = db_query(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -2008,6 +2054,7 @@ class Economy(commands.Cog):
         self.taxman_task.start()
         self.box_event_task.start()
         self.passive_cache = {} # {uid: last_awarded_time}
+        self.active_mines_games = {}
 
     async def _resolve_admin_member_preview_args(self, ctx: commands.Context, args: tuple[str, ...], *, member_required: bool, default_to_author: bool):
         preview_requested = False
@@ -2112,6 +2159,12 @@ class Economy(commands.Cog):
     def cog_unload(self):
         self.taxman_task.cancel()
         self.box_event_task.cancel()
+        for view in list(self.active_mines_games.values()):
+            try:
+                view.stop()
+            except Exception:
+                pass
+        self.active_mines_games.clear()
 
     @tasks.loop(hours=1) # Check more frequently than 24h to handle restarts better
     async def taxman_task(self):
@@ -3946,6 +3999,51 @@ class Economy(commands.Cog):
         view.message = await ctx.send(embed=embed, view=view)
         # Start the game loop
         asyncio.create_task(view.run_game())
+
+    @commands.command(name='mines')
+    async def mines_command(self, ctx: commands.Context, amount: str = None):
+        """Play Mines with a fixed 10-mine board."""
+        if amount is None:
+            await ctx.send(f"Usage: `{COMMAND_PREFIX}mines [amount]`")
+            return
+
+        val, err = await validate_bet(ctx, amount)
+        if err:
+            await ctx.send(err)
+            return
+        amount = val
+
+        mine_count = MINES_FIXED_COUNT
+
+        uid = str(ctx.author.id)
+        active_game = self.active_mines_games.get(uid)
+        if active_game and not getattr(active_game, "game_over", False):
+            await ctx.send(f"❌ {ctx.author.mention}, you already have an active **Mines** game. Finish it or cash out first.")
+            return
+
+        failure_message = None
+        pay_msg = ""
+        with db_transaction() as conn:
+            success, pay_msg = pay_jc(uid, amount, conn=conn)
+            if not success:
+                failure_message = pay_msg
+
+        if failure_message:
+            await ctx.send(f"❌ Mines entry failed. {failure_message}")
+            return
+
+        view = MinesView(self, ctx, amount, mine_count, pay_msg)
+        start_embed = view.build_active_embed()
+
+        try:
+            view.message = await ctx.send(embed=start_embed, view=view)
+        except Exception:
+            with db_transaction() as conn:
+                add_balance(uid, amount, conn=conn)
+                log_transaction(uid, amount, MINES_REFUND_TX, conn=conn)
+            raise
+
+        self.active_mines_games[uid] = view
 
     @commands.command(name='rob', aliases=['steal', 'stolen'])
     async def rob_command(self, ctx: commands.Context, member: discord.Member = None):
@@ -5838,6 +5936,337 @@ class CrashView(discord.ui.View):
         if not self.cashed_out and not self.crashed:
             self.crashed = True
             await self.do_crash()
+
+class MinesTileSelect(discord.ui.Select):
+    def __init__(self, game_view: "MinesView"):
+        self.game_view = game_view
+        super().__init__(
+            placeholder="Reveal a tile...",
+            min_values=1,
+            max_values=1,
+            options=self.game_view.build_tile_options(),
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.game_view.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your Mines game!", ephemeral=True)
+            return
+        await self.game_view.handle_tile_pick(interaction, int(self.values[0]))
+
+
+class MinesView(discord.ui.View):
+    def __init__(self, cog: Economy, ctx: commands.Context, bet: int, mine_count: int, pay_msg: str):
+        super().__init__(timeout=MINES_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.ctx = ctx
+        self.bet = int(bet)
+        self.mine_count = int(mine_count)
+        self.pay_msg = pay_msg
+        self.message = None
+        self.game_over = False
+        self.revealed_safe_tiles: list[int] = []
+        self.pick_history: list[str] = []
+        self.mine_tiles = set(random.sample(range(MINES_TOTAL_TILES), self.mine_count))
+        self.exploded_tile: int | None = None
+
+        self.tile_select = MinesTileSelect(self)
+        self.cashout_button = discord.ui.Button(
+            label="Cancel / Refund",
+            style=discord.ButtonStyle.secondary,
+            emoji="💰",
+            row=1,
+        )
+        self.cashout_button.callback = self._cashout_callback
+        self.add_item(self.tile_select)
+        self.add_item(self.cashout_button)
+        self.refresh_controls()
+
+    def cleanup_active_game(self):
+        uid = str(self.ctx.author.id)
+        if self.cog.active_mines_games.get(uid) is self:
+            self.cog.active_mines_games.pop(uid, None)
+
+    @property
+    def safe_pick_count(self) -> int:
+        return len(self.revealed_safe_tiles)
+
+    @property
+    def hidden_tile_count(self) -> int:
+        return MINES_TOTAL_TILES - self.safe_pick_count - (1 if self.exploded_tile is not None else 0)
+
+    def tile_name(self, index: int) -> str:
+        row = (index // MINES_BOARD_SIDE) + 1
+        col = chr(ord("A") + (index % MINES_BOARD_SIDE))
+        return f"{col}{row}"
+
+    def build_tile_options(self) -> list[discord.SelectOption]:
+        options = []
+        for index in range(MINES_TOTAL_TILES):
+            if index in self.revealed_safe_tiles or index == self.exploded_tile:
+                continue
+            options.append(
+                discord.SelectOption(
+                    label=self.tile_name(index),
+                    value=str(index),
+                    description=f"Reveal tile {self.tile_name(index)}",
+                )
+            )
+        return options
+
+    def current_multiplier(self) -> float:
+        return calculate_mines_multiplier(self.safe_pick_count, self.mine_count)
+
+    def next_pick_safe_chance(self) -> float | None:
+        remaining_tiles = MINES_TOTAL_TILES - self.safe_pick_count
+        remaining_safe = (MINES_TOTAL_TILES - self.mine_count) - self.safe_pick_count
+        if remaining_tiles <= 0 or remaining_safe < 0:
+            return None
+        if remaining_safe == 0:
+            return 1.0
+        return remaining_safe / remaining_tiles
+
+    def next_multiplier(self) -> float | None:
+        max_safe_picks = MINES_TOTAL_TILES - self.mine_count
+        if self.safe_pick_count >= max_safe_picks:
+            return None
+        return calculate_mines_multiplier(self.safe_pick_count + 1, self.mine_count)
+
+    def current_payout(self) -> int:
+        if self.safe_pick_count <= 0:
+            return self.bet
+        payout = int(round(self.bet * self.current_multiplier()))
+        return max(self.bet, payout)
+
+    def next_payout(self) -> int | None:
+        multiplier = self.next_multiplier()
+        if multiplier is None:
+            return None
+        payout = int(round(self.bet * multiplier))
+        return max(self.bet, payout)
+
+    def render_board(self, *, reveal_all_mines: bool = False) -> str:
+        rows = []
+        for row in range(MINES_BOARD_SIDE):
+            tiles = []
+            for col in range(MINES_BOARD_SIDE):
+                index = row * MINES_BOARD_SIDE + col
+                if index == self.exploded_tile:
+                    tile = "💥"
+                elif index in self.revealed_safe_tiles:
+                    tile = "💎"
+                elif reveal_all_mines and index in self.mine_tiles:
+                    tile = "💣"
+                else:
+                    tile = "🟦"
+                tiles.append(tile)
+            rows.append(" ".join(tiles))
+        return "\n".join(rows)
+
+    def refresh_controls(self):
+        options = self.build_tile_options()
+        self.tile_select.options = options or [
+            discord.SelectOption(label="No tiles left", value="0", description="Game is over")
+        ]
+        self.tile_select.disabled = self.game_over or not options
+
+        if self.safe_pick_count > 0:
+            self.cashout_button.label = f"Cash Out {self.current_payout():,} JC"
+            self.cashout_button.style = discord.ButtonStyle.green
+        else:
+            self.cashout_button.label = "Cancel / Refund"
+            self.cashout_button.style = discord.ButtonStyle.secondary
+
+        self.cashout_button.disabled = self.game_over
+
+    def build_active_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="💣 Mines", color=discord.Color.orange())
+        embed.description = (
+            "Fixed board: **5×5** with **10 hidden mines**.\n"
+            "Pick a tile from the menu below. After your first safe pick, you can cash out anytime.\n\n"
+            f"{self.render_board()}"
+        )
+        embed.add_field(name="Bet", value=f"**{self.bet:,}** JC", inline=True)
+        embed.add_field(name="Mines", value=f"**{self.mine_count}**", inline=True)
+        embed.add_field(name="Hidden Tiles", value=f"**{self.hidden_tile_count}**", inline=True)
+        embed.add_field(name="Current Cashout", value=f"**{self.current_payout():,}** JC", inline=True)
+
+        next_payout = self.next_payout()
+        if next_payout is None:
+            embed.add_field(name="Next Safe Pick", value="**All safe tiles cleared**", inline=True)
+        else:
+            embed.add_field(name="Next Safe Pick", value=f"**{next_payout:,}** JC", inline=True)
+
+        multiplier = self.current_multiplier()
+        safe_chance = self.next_pick_safe_chance()
+        mine_chance_text = "0.0%" if safe_chance == 1.0 else (f"{(1 - safe_chance) * 100:.1f}%" if safe_chance is not None else "—")
+        embed.add_field(
+            name="Current Multiplier",
+            value=f"**{multiplier:.4f}x**" if self.safe_pick_count > 0 else "**1.0000x**",
+            inline=True,
+        )
+        embed.add_field(name="Mine Chance Next Pick", value=f"**{mine_chance_text}**", inline=True)
+        embed.add_field(name="Safe Picks", value=f"**{self.safe_pick_count}**", inline=True)
+
+        if self.pick_history:
+            embed.add_field(
+                name="Opened Safe Tiles",
+                value=", ".join(self.pick_history[-10:]),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Opened Safe Tiles",
+                value="None yet",
+                inline=False,
+            )
+
+        embed.add_field(name="Payment", value=self.pay_msg, inline=False)
+        embed.set_footer(text=f"House Edge: {int((1 - MINES_HOUSE_EDGE) * 100)}%")
+        return embed
+
+    def build_loss_embed(self, new_balance: int) -> discord.Embed:
+        exploded_name = self.tile_name(self.exploded_tile) if self.exploded_tile is not None else "Unknown"
+        embed = discord.Embed(title="💥 BOOM! You hit a mine.", color=discord.Color.red())
+        embed.description = f"You revealed **{exploded_name}** and lost your **{self.bet:,} JC** bet."
+        embed.add_field(name="Mines", value=f"**{self.mine_count}**", inline=True)
+        embed.add_field(name="Safe Picks", value=f"**{self.safe_pick_count}**", inline=True)
+        embed.add_field(name="Current Wallet", value=f"**{new_balance:,}** JC", inline=True)
+        if self.pick_history:
+            embed.add_field(name="Safe Tiles Found", value=", ".join(self.pick_history[-10:]), inline=False)
+        embed.add_field(name="Mine Map", value=self.render_board(reveal_all_mines=True), inline=False)
+        embed.set_footer(text="Your bet was sent to the vault.")
+        return embed
+
+    def build_cashout_embed(self, payout: int, new_balance: int, *, auto: bool = False, timeout: bool = False) -> discord.Embed:
+        if self.safe_pick_count <= 0:
+            title = "↩️ Mines cancelled"
+            description = f"Your **{self.bet:,} JC** bet was refunded."
+            color = discord.Color.blue()
+        else:
+            multiplier = self.current_multiplier()
+            intro = "Time ran out, so I auto-cashed you out." if timeout else ("Auto cash-out! You cleared every safe tile." if auto else "Nice timing — you cashed out safely.")
+            description = (
+                f"{intro}\n\n"
+                f"Multiplier: **{multiplier:.4f}x**\n"
+                f"Payout: **{payout:,} JC**\n"
+                f"Net Result: **{payout - self.bet:+,} JC**"
+            )
+            title = "💰 MINES CASHOUT!"
+            color = discord.Color.green()
+
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.add_field(name="Bet", value=f"**{self.bet:,}** JC", inline=True)
+        embed.add_field(name="Mines", value=f"**{self.mine_count}**", inline=True)
+        embed.add_field(name="Current Wallet", value=f"**{new_balance:,}** JC", inline=True)
+        if self.pick_history:
+            embed.add_field(name="Safe Tiles Found", value=", ".join(self.pick_history[-10:]), inline=False)
+        if self.safe_pick_count > 0:
+            embed.add_field(name="Final Board", value=self.render_board(reveal_all_mines=True), inline=False)
+        return embed
+
+    async def _finalize_message(self, interaction: discord.Interaction | None, embed: discord.Embed):
+        if interaction is not None:
+            try:
+                if interaction.response.is_done():
+                    await interaction.edit_original_response(embed=embed, view=None)
+                else:
+                    await interaction.response.edit_message(embed=embed, view=None)
+                return
+            except Exception:
+                pass
+
+        if self.message:
+            try:
+                await self.message.edit(embed=embed, view=None)
+                return
+            except Exception:
+                pass
+
+        await self.ctx.send(embed=embed)
+
+    async def handle_tile_pick(self, interaction: discord.Interaction, index: int):
+        if self.game_over:
+            await interaction.response.send_message("❌ This Mines game is already over.", ephemeral=True)
+            return
+
+        if index in self.revealed_safe_tiles:
+            await interaction.response.send_message("❌ That tile is already revealed.", ephemeral=True)
+            return
+
+        if index in self.mine_tiles:
+            self.exploded_tile = index
+            await self.finish_loss(interaction)
+            return
+
+        self.revealed_safe_tiles.append(index)
+        self.pick_history.append(self.tile_name(index))
+        self.refresh_controls()
+
+        if self.safe_pick_count >= (MINES_TOTAL_TILES - self.mine_count):
+            await self.finish_cashout(interaction, auto=True)
+            return
+
+        await interaction.response.edit_message(embed=self.build_active_embed(), view=self)
+
+    async def _cashout_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ This is not your Mines game!", ephemeral=True)
+            return
+        await self.finish_cashout(interaction)
+
+    async def finish_loss(self, interaction: discord.Interaction | None = None):
+        if self.game_over:
+            return
+
+        self.game_over = True
+        self.stop()
+        self.cleanup_active_game()
+        self.refresh_controls()
+
+        uid = str(self.ctx.author.id)
+        with db_transaction() as conn:
+            track_fee(self.bet, conn=conn)
+            log_transaction(uid, -self.bet, MINES_LOSS_TX, processed=1, conn=conn)
+            new_balance = get_balance(uid, conn=conn)
+
+        await self._finalize_message(interaction, self.build_loss_embed(new_balance))
+
+    async def finish_cashout(
+        self,
+        interaction: discord.Interaction | None = None,
+        *,
+        auto: bool = False,
+        timeout: bool = False,
+    ):
+        if self.game_over:
+            return
+
+        self.game_over = True
+        self.stop()
+        self.cleanup_active_game()
+        self.refresh_controls()
+
+        uid = str(self.ctx.author.id)
+        payout = self.current_payout()
+        with db_transaction() as conn:
+            new_balance = add_balance(uid, payout, conn=conn)
+            if self.safe_pick_count > 0:
+                log_transaction(uid, payout, f"{MINES_CASHOUT_PREFIX}{self.current_multiplier():.4f}x)", conn=conn)
+                if payout > self.bet:
+                    apply_progress_events(uid, {"mines_wins": 1, "gambling_wins": 1}, conn=conn)
+            else:
+                log_transaction(uid, payout, MINES_REFUND_TX, conn=conn)
+
+        await self._finalize_message(
+            interaction,
+            self.build_cashout_embed(payout, new_balance, auto=auto, timeout=timeout),
+        )
+
+    async def on_timeout(self):
+        if self.game_over:
+            return
+        await self.finish_cashout(auto=self.safe_pick_count > 0, timeout=True)
 
 class RainView(discord.ui.View):
     def __init__(self, pool):
