@@ -6082,7 +6082,7 @@ class MinesView(discord.ui.View):
     def build_active_embed(self) -> discord.Embed:
         embed = discord.Embed(title="💣 Mines", color=discord.Color.orange())
         embed.description = (
-            "Fixed board: **5×5** with **10 hidden mines**.\n"
+            "Fixed board: **5×5** with **15 hidden mines**.\n"
             "Pick a tile from the menu below. After your first safe pick, you can cash out anytime.\n\n"
             f"{self.render_board()}"
         )
