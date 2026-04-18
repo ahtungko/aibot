@@ -204,7 +204,7 @@ class HelpDropdown(discord.ui.Select):
         elif val == "gam":
             embed.title = "🎲 Gambling & Duels"
             embed.add_field(name="PVP Duels ⚔️", value=f"`{p}duel @user [bet]` - Coin Flip Duel", inline=False)
-            embed.add_field(name="Gambling 🎲", value=f"`{p}flip [bet] [h/t]` - Coin Flip\n`{p}slots [bet]` - Slot Machine\n`{p}bj [bet]` - Solo Blackjack\n`{p}bjtable [bet]` - Multiplayer Blackjack Table\n`{p}table` - View/leave active table\n`{p}crash [bet]` - Crash Game 🚀\n`{p}mines [bet]` - Fixed 10 mines, cash out before a bomb", inline=False)
+            embed.add_field(name="Gambling 🎲", value=f"`{p}flip [bet] [h/t]` - Coin Flip\n`{p}slots [bet]` - Slot Machine\n`{p}bj [bet]` - Solo Blackjack\n`{p}bjtable [bet]` - Multiplayer Blackjack Table\n`{p}table` - View/leave active table\n`{p}crash [bet]` - Crash Game 🚀\n`{p}mines [bet]` - Fixed 15 mines, cash out before a bomb", inline=False)
             embed.add_field(name="Crimes 🥷", value=f"`{p}crime` - High stakes heist (+700 JC / -500 JC + 2h Jail)\n`{p}rob @user` - Steal JC & Gold!", inline=False)
             
         elif val == "shop":
