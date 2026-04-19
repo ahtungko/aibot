@@ -191,6 +191,29 @@ ROBBERY_GOLD_FINE_PREFIX = "Robbery Fine: "
 ROBBERY_GOLD_RESTITUTION_PREFIX = "Restitution: Received "
 LINKED_TRANSFER_REFUND_LOG = "Admin Linked Refund: Transfer counterpart"
 LINKED_ROBBERY_REFUND_LOG = "Admin Linked Refund: Robbery counterpart"
+REFUND_LOG_PREFIX = "Refund: "
+ADMIN_LINKED_REFUND_PREFIX = "Admin Linked Refund: "
+TRANSACTION_LOG_FILTER_ALIASES = {
+    "all": "all",
+    "transfer": "transfer",
+    "transfers": "transfer",
+    "payback": "payback",
+    "paybacks": "payback",
+    "refund": "payback",
+    "refunds": "payback",
+    "broken": "broken",
+}
+TRANSACTION_LOG_FILTER_LABELS = {
+    "all": "Recent Activity",
+    "transfer": "Transfer / Payback Log",
+    "payback": "Payback / Refund Log",
+    "broken": "Broken Activity",
+}
+HISTORY_DEFAULT_LIMIT = 5
+HISTORY_MAX_LIMIT = 25
+AUDIT_DEFAULT_LIMIT = 15
+AUDIT_MAX_LIMIT = 25
+AUDIT_SCAN_LIMIT = 250
 BOX_EVENT_END_ANNOUNCED_KEY = "box_event_last_end_announcement"
 RC_DISCORD_BUCKET_COMMANDS = ['work', 'scavenge', 'scramble', 'mystery', 'beg', 'crime', 'fish', 'crack']
 UNJAIL_DISCORD_BUCKET_COMMANDS = ['crime']
@@ -315,6 +338,64 @@ MISSION_DEFINITION_MAP = {
 
 def normalize_transaction_type(tx_type: str) -> str:
     return tx_type.lower().strip()
+
+def format_transaction_amount(amount: int) -> str:
+    sign = "+" if amount > 0 else ""
+    return f"{sign}{amount:,}" if amount != 0 else "0"
+
+def format_transaction_timestamp(timestamp, *, relative: bool = False) -> str:
+    try:
+        ts_int = int(float(timestamp))
+        return f"<t:{ts_int}:{'R' if relative else 'f'}>"
+    except (ValueError, TypeError):
+        return f"`{timestamp}`"
+
+def transaction_matches_log_filter(tx_type: str, filter_mode: str | None, *, is_broken: bool = False) -> bool:
+    normalized_filter = normalize_transaction_type(filter_mode or "all")
+    if normalized_filter in {"", "all"}:
+        return True
+    if normalized_filter == "broken":
+        return is_broken
+
+    normalized_type = normalize_transaction_type(tx_type)
+    if normalized_filter == "transfer":
+        transfer_prefixes = (
+            normalize_transaction_type(TRANSFER_TO_PREFIX),
+            normalize_transaction_type(TRANSFER_FROM_PREFIX),
+            normalize_transaction_type(f"{REFUND_LOG_PREFIX}{TRANSFER_TO_PREFIX}"),
+            normalize_transaction_type(f"{REFUND_LOG_PREFIX}{TRANSFER_FROM_PREFIX}"),
+            normalize_transaction_type(LINKED_TRANSFER_REFUND_LOG),
+        )
+        return any(normalized_type.startswith(prefix) for prefix in transfer_prefixes)
+    if normalized_filter == "payback":
+        return "refund" in normalized_type
+    return True
+
+def get_transaction_log_sql_filter(filter_mode: str | None) -> tuple[str | None, tuple]:
+    normalized_filter = normalize_transaction_type(filter_mode or "all")
+    if normalized_filter == "transfer":
+        patterns = (
+            f"{TRANSFER_TO_PREFIX}%",
+            f"{TRANSFER_FROM_PREFIX}%",
+            f"{REFUND_LOG_PREFIX}{TRANSFER_TO_PREFIX}%",
+            f"{REFUND_LOG_PREFIX}{TRANSFER_FROM_PREFIX}%",
+            f"{LINKED_TRANSFER_REFUND_LOG}%",
+        )
+        return "(" + " OR ".join("type LIKE ?" for _ in patterns) + ")", patterns
+    if normalized_filter == "payback":
+        return "LOWER(type) LIKE ?", ("%refund%",)
+    return None, ()
+
+def get_transaction_rows_for_history(user_id: str, *, filter_mode: str | None = None, limit: int = HISTORY_DEFAULT_LIMIT):
+    where_clause, params = get_transaction_log_sql_filter(filter_mode)
+    query = "SELECT amount, type, timestamp FROM transactions WHERE user_id = ?"
+    query_params = [user_id]
+    if where_clause:
+        query += f" AND {where_clause}"
+        query_params.extend(params)
+    query += " ORDER BY id DESC LIMIT ?"
+    query_params.append(limit)
+    return db_query(query, tuple(query_params), fetchall=True) or []
 
 def normalize_title_name(title_name: str) -> str:
     return " ".join(title_name.lower().strip().split())
@@ -2055,6 +2136,81 @@ class Economy(commands.Cog):
         self.box_event_task.start()
         self.passive_cache = {} # {uid: last_awarded_time}
         self.active_mines_games = {}
+
+    def _resolve_transaction_log_member(self, ctx: commands.Context, raw: str):
+        token = raw.strip()
+        mention_match = re.fullmatch(r"<@!?(\d+)>", token)
+        guild = getattr(ctx, "guild", None)
+
+        if mention_match:
+            member_id = int(mention_match.group(1))
+            if guild:
+                member = guild.get_member(member_id)
+                if member:
+                    return member
+            if hasattr(self.bot, "get_user"):
+                member = self.bot.get_user(member_id)
+                if member:
+                    return member
+
+        if guild:
+            normalized = token.casefold()
+            members = getattr(guild, "members", []) or []
+            exact_matches = [
+                member for member in members
+                if getattr(member, "display_name", "").casefold() == normalized
+                or getattr(member, "name", "").casefold() == normalized
+            ]
+            if len(exact_matches) == 1:
+                return exact_matches[0]
+
+        return None
+
+    async def _parse_transaction_log_args(
+        self,
+        ctx: commands.Context,
+        args: tuple[str, ...],
+        *,
+        allow_member: bool,
+        default_limit: int,
+        max_limit: int,
+        allow_broken: bool,
+    ):
+        member = None
+        filter_mode = "all"
+        limit = default_limit
+        extras = []
+
+        for arg in args:
+            normalized = normalize_transaction_type(arg)
+            canonical_filter = TRANSACTION_LOG_FILTER_ALIASES.get(normalized)
+            if canonical_filter:
+                if canonical_filter == "broken" and not allow_broken:
+                    raise commands.BadArgument(f"`broken` is only available with `{COMMAND_PREFIX}audit`.")
+                if filter_mode != "all" and canonical_filter != filter_mode:
+                    raise commands.BadArgument("Please choose only one transaction filter.")
+                filter_mode = canonical_filter
+                continue
+
+            if normalized.isdigit():
+                parsed_limit = int(normalized)
+                if parsed_limit < 1 or parsed_limit > max_limit:
+                    raise commands.BadArgument(f"Count must be between 1 and {max_limit}.")
+                limit = parsed_limit
+                continue
+
+            if allow_member and member is None:
+                resolved_member = self._resolve_transaction_log_member(ctx, arg)
+                if resolved_member is not None:
+                    member = resolved_member
+                    continue
+
+            extras.append(arg)
+
+        if extras:
+            raise commands.BadArgument(f"Unrecognized arguments: {' '.join(extras)}")
+
+        return member, filter_mode, limit
 
     async def _resolve_admin_member_preview_args(self, ctx: commands.Context, args: tuple[str, ...], *, member_required: bool, default_to_author: bool):
         preview_requested = False
@@ -4254,79 +4410,97 @@ class Economy(commands.Cog):
             await ctx.send(embed=embed)
 
     @commands.command(name='history', aliases=['logs', 'stats'])
-    async def history_command(self, ctx: commands.Context):
-        """View your last 5 economy transactions."""
+    async def history_command(self, ctx: commands.Context, *args: str):
+        """View your recent economy transactions. Supports transfer/payback filters."""
+        _, filter_mode, limit = await self._parse_transaction_log_args(
+            ctx,
+            args,
+            allow_member=False,
+            default_limit=HISTORY_DEFAULT_LIMIT,
+            max_limit=HISTORY_MAX_LIMIT,
+            allow_broken=False,
+        )
         uid = str(ctx.author.id)
-        rows = db_query("SELECT amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 5", (uid,), fetchall=True)
+        rows = get_transaction_rows_for_history(uid, filter_mode=filter_mode, limit=limit)
 
         if not rows:
-            await ctx.send("📭 You haven't made any transactions yet!")
+            filter_label = TRANSACTION_LOG_FILTER_LABELS.get(filter_mode, "transactions").lower()
+            await ctx.send(
+                "📭 You haven't made any transactions yet!"
+                if filter_mode == "all"
+                else f"📭 No {filter_label} found for you yet."
+            )
             return
 
-        embed = discord.Embed(title=f"📜 {ctx.author.display_name}'s Recent Activity", color=discord.Color.blue())
-        history_text = ""
+        title_suffix = TRANSACTION_LOG_FILTER_LABELS.get(filter_mode, TRANSACTION_LOG_FILTER_LABELS["all"])
+        embed = discord.Embed(title=f"📜 {ctx.author.display_name}'s {title_suffix}", color=discord.Color.blue())
+        history_lines = []
         for amount, trans_type, timestamp in rows:
-            sign = "+" if amount > 0 else ""
-            fmt_amount = f"{sign}{amount:,}" if amount != 0 else "0"
-            try:
-                ts_int = int(float(timestamp))
-                ts_display = f"<t:{ts_int}:f>"
-            except (ValueError, TypeError):
-                ts_display = f"`{timestamp}`"
-            history_text += f"{ts_display} | **{trans_type}**: `{fmt_amount} JC`\n"
+            history_lines.append(
+                f"{format_transaction_timestamp(timestamp)} | **{trans_type}**: `{format_transaction_amount(amount)} JC`"
+            )
 
-        embed.description = history_text
+        embed.description = "\n".join(history_lines)
         bal = get_balance(uid)
         embed.set_footer(text=f"Current Balance: {bal:,} JC")
         await ctx.send(embed=embed)
 
     @commands.command(name='audit', aliases=['txl', 'txlogs'])
     @commands.is_owner()
-    async def audit_command(self, ctx: commands.Context, member: discord.Member = None, filter_mode: str = None):
+    async def audit_command(self, ctx: commands.Context, *args: str):
         """Bot Owner Only: View detailed user history with transaction IDs. 
-        Use !audit @user broken to find failed sessions."""
+        Use !audit [@user] [transfer/payback/broken] [count] to inspect logs."""
+        member, filter_mode, limit = await self._parse_transaction_log_args(
+            ctx,
+            args,
+            allow_member=True,
+            default_limit=AUDIT_DEFAULT_LIMIT,
+            max_limit=AUDIT_MAX_LIMIT,
+            allow_broken=True,
+        )
         target = member or ctx.author
         uid = str(target.id)
         
         # Fetch a larger set for analytical filtering
-        rows = db_query("SELECT id, amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT 100", (uid,), fetchall=True)
+        rows = db_query(
+            "SELECT id, amount, type, timestamp FROM transactions WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (uid, max(AUDIT_SCAN_LIMIT, limit * 10)),
+            fetchall=True,
+        )
 
         if not rows:
             await ctx.send(f"📭 No transactions found for **{target.display_name}**.")
             return
 
-        embed = discord.Embed(title=f"🔍 Audit Log: {target.display_name}", color=discord.Color.dark_gold())
-        if filter_mode: embed.title += f" ({filter_mode.capitalize()})"
+        title_suffix = TRANSACTION_LOG_FILTER_LABELS.get(filter_mode, TRANSACTION_LOG_FILTER_LABELS["all"])
+        embed = discord.Embed(title=f"🔍 Audit Log: {target.display_name} ({title_suffix})", color=discord.Color.dark_gold())
         
-        history_text = ""
-        count = 0
+        history_lines = []
         
         # Pre-scan for result matching (Win/Loss/Refund)
         all_tx = [{"id": r[0], "amt": r[1], "type": r[2], "ts": int(float(r[3]))} for r in rows]
         broken_entry_ids = get_broken_audit_entry_ids(all_tx)
-        normalized_filter = (filter_mode or "").lower()
         
-        for i, tx in enumerate(all_tx):
-            if count >= 15: break
-            
+        for tx in all_tx:
+            if len(history_lines) >= limit:
+                break
+
             is_broken = tx["id"] in broken_entry_ids
 
-            # Apply Filter
-            if normalized_filter == "broken" and not is_broken:
+            if not transaction_matches_log_filter(tx["type"], filter_mode, is_broken=is_broken):
                 continue
 
-            sign = "+" if tx["amt"] > 0 else ""
-            fmt_amount = f"{sign}{tx['amt']:,}"
-            ts_display = f"<t:{tx['ts']}:R>"
-            
             prefix = "⚠️ [BROKEN] " if is_broken else ""
-            history_text += f"{prefix}`#{tx['id']}` | {ts_display} | **{tx['type']}**: `{fmt_amount} JC`\n"
-            count += 1
+            history_lines.append(
+                f"{prefix}`#{tx['id']}` | {format_transaction_timestamp(tx['ts'], relative=True)} | "
+                f"**{tx['type']}**: `{format_transaction_amount(tx['amt'])} JC`"
+            )
 
-        if not history_text:
-            history_text = f"✅ No {filter_mode or ''} transactions found in recent history."
+        if not history_lines:
+            filter_label = TRANSACTION_LOG_FILTER_LABELS.get(filter_mode, "transactions").lower()
+            history_lines = [f"✅ No {filter_label} found in recent history."]
 
-        embed.description = history_text
+        embed.description = "\n".join(history_lines)
         embed.set_footer(text=f"Use {COMMAND_PREFIX}refund <id> [preview] [force] to reverse a transaction.")
         await ctx.send(embed=embed)
 

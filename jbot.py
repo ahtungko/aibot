@@ -199,7 +199,7 @@ class HelpDropdown(discord.ui.Select):
             embed.title = "💰 Economy & Banking"
             embed.add_field(name="Earning JC", value=f"`{p}daily` - Open daily crate\n`{p}work` - Earn JC (Progressive Tax 5-12%)\n`{p}beg` - Beg for change (5 min CD)\n`{p}fish` - Cast a line (Cost 50, CD 15s)\n`{p}top` - Leaderboard (Total Wealth)", inline=False)
             embed.add_field(name="Banking & Transfers", value=f"`{p}bal [@user]` - Check balance\n`{p}dep [amount]` - Secure JC in Bank\n`{p}with [amount]` - Withdraw JC\n`{p}give @user [amt]` - Transfer JC", inline=False)
-            embed.add_field(name="Trading & Stats", value=f"`{p}pf` - Portfolio & Net Worth\n`{p}history` - Transaction logs\n`{p}vault` - Global community pool", inline=False)
+            embed.add_field(name="Trading & Stats", value=f"`{p}pf` - Portfolio & Net Worth\n`{p}history [transfer/payback] [count]` - Transaction logs\n`{p}vault` - Global community pool", inline=False)
 
         elif val == "gam":
             embed.title = "🎲 Gambling & Duels"
@@ -246,7 +246,7 @@ class HelpDropdown(discord.ui.Select):
             embed.add_field(name="Taxman System 🕵️", value=f"`{p}settaxmantoggle [on/off]` - Enable daily tax\n`{p}settaxmanpercent [%]` - Set tax rate\n`{p}taxstatus` - System status & timer\n`{p}settaxchannel [#ch]` - Set announcement channel", inline=False)
             embed.add_field(name="Rain & Notices", value=f"`{p}rainrate [%]` - Set rain chance\n`{p}setnoticechannel [#ch]` - Set notice channel\n`{p}setnotice [msg]` - Post announcement", inline=False)
             embed.add_field(name="Mystery Box", value=f"`{p}setbox [rates...]` - Start loot event\n`{p}setboxchannel [#ch]` - Set box channel", inline=False)
-            embed.add_field(name="System", value=f"`{p}audit @user [broken]` - Audit history\n`{p}refund <tx_id> [preview] [force]` - Reverse transaction\n`{p}rc [@user] [preview]` - Reset CD\n`{p}unjail @user [preview]` - Release from jail", inline=False)
+            embed.add_field(name="System", value=f"`{p}audit [@user] [transfer/payback/broken] [count]` - Audit history\n`{p}refund <tx_id> [preview] [force]` - Reverse transaction\n`{p}rc [@user] [preview]` - Reset CD\n`{p}unjail @user [preview]` - Release from jail", inline=False)
             
         embed.set_footer(text="Made with ❤️ by Jenny")
         await interaction.response.edit_message(embed=embed)
