@@ -913,7 +913,7 @@ TRANSACTION_POLICY_REGISTRY = {
             "refund": {"vault_refund": "full"},
         },
         normalize_transaction_type(MINES_LOSS_TX): {
-            "refund": {"vault_refund": "full"},
+            "refund": {},
         },
         normalize_transaction_type("role fee"): {
             "refund": {"vault_refund": "full"},
@@ -6325,7 +6325,7 @@ class MinesView(discord.ui.View):
         if self.pick_history:
             embed.add_field(name="Safe Tiles Found", value=", ".join(self.pick_history[-10:]), inline=False)
         embed.add_field(name="Mine Map", value=self.render_board(reveal_all_mines=True), inline=False)
-        embed.set_footer(text="Your bet was sent to the vault.")
+        embed.set_footer(text="Mines losses do not affect the vault.")
         return embed
 
     def build_cashout_embed(self, payout: int, new_balance: int, *, auto: bool = False, timeout: bool = False) -> discord.Embed:
@@ -6416,7 +6416,6 @@ class MinesView(discord.ui.View):
 
         uid = str(self.ctx.author.id)
         with db_transaction() as conn:
-            track_fee(self.bet, conn=conn)
             log_transaction(uid, -self.bet, MINES_LOSS_TX, processed=1, conn=conn)
             new_balance = get_balance(uid, conn=conn)
 
@@ -6679,7 +6678,7 @@ class MinesGameView:
         embed.add_field(name="Current Wallet", value=f"**{new_balance:,}** JC", inline=True)
         if self.pick_history:
             embed.add_field(name="Safe Tiles Found", value=", ".join(self.pick_history[-10:]), inline=False)
-        embed.set_footer(text="Your bet was sent to the vault.")
+        embed.set_footer(text="More?")
         return embed
 
     def build_cashout_embed(self, payout: int, new_balance: int, *, auto: bool = False, timeout: bool = False) -> discord.Embed:
@@ -6765,7 +6764,6 @@ class MinesGameView:
 
         uid = str(self.ctx.author.id)
         with db_transaction() as conn:
-            track_fee(self.bet, conn=conn)
             log_transaction(uid, -self.bet, MINES_LOSS_TX, processed=1, conn=conn)
             new_balance = get_balance(uid, conn=conn)
 
