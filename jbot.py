@@ -68,6 +68,29 @@ async def on_disconnect():
     print("Bot disconnected from Discord. Reconnecting...")
 
 
+async def _message_targets_bot(message):
+    if bot.user is None:
+        return False
+
+    if bot.user.mentioned_in(message):
+        return True
+
+    reference = getattr(message, "reference", None)
+    if not reference or not getattr(reference, "message_id", None):
+        return False
+
+    resolved = getattr(reference, "resolved", None)
+    if isinstance(resolved, discord.Message):
+        return resolved.author.id == bot.user.id
+
+    try:
+        referenced_message = await message.channel.fetch_message(reference.message_id)
+    except (AttributeError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return False
+
+    return referenced_message.author.id == bot.user.id
+
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -133,8 +156,8 @@ async def on_message(message):
         await bot.process_commands(message)
         return
 
-    # AI mention handler (non-blocking)
-    if bot.user.mentioned_in(message):
+    # AI mention/reply handler (non-blocking)
+    if await _message_targets_bot(message):
         ai_cog = bot.get_cog("AI")
         if ai_cog:
             asyncio.create_task(ai_cog.handle_ai_mention(message))
@@ -190,7 +213,7 @@ class HelpDropdown(discord.ui.Select):
         
         if val == "ai":
             embed.title = "🤖 AI & Utilities"
-            embed.add_field(name="AI Chat", value=f"Simply mention the bot (`@{bot_name}`) to chat or ask questions.", inline=False)
+            embed.add_field(name="AI Chat", value=f"Simply mention the bot (`@{bot_name}`) or reply to one of its messages to chat or ask questions.", inline=False)
             embed.add_field(name="AI Tools", value=f"`{p}tldr [count]` - Summarize chat history\n`{p}clear` - Reset your AI conversation memory\n`{p}news [country code] [language code]` - Latest news with citations (defaults: MY, EN)\n`{p}tts [--voice/--style/--auto/--user] [text]` - Generate MiMo TTS WAV\n`{p}sayai [--voice/--style/--auto] [prompt]` - Grok/AI writes, MiMo speaks\n`{p}nsfw [prompt]` - NSFW endpoint reply (NSFW channels only)\n`{p}gimg [prompt]` - Generate one Grok image for 200 JC", inline=False)
             embed.add_field(name="Utilities", value=f"`{p}dict [word]` - Dictionary lookup\n`{p}afk [reason]` - Set your AFK status", inline=False)
             embed.add_field(name="Bookmarks", value=f"Reply to a message with `{p}pin` to save it\n`{p}pins` - View your pins\n`{p}unpin [num]` - Delete a pin", inline=False)

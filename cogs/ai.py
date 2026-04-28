@@ -9,7 +9,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import discord
 import httpx
@@ -164,6 +164,7 @@ class GrokModelsView(discord.ui.View):
 
 class AI(commands.Cog):
     INLINE_CITATION_PATTERN = re.compile(r"\[\[(\d+)\]\]\((https?://[^\s)]+)\)")
+    URL_PATTERN = re.compile(r"https?://[^\s)\]\"'>]+")
     PRIMARY_MODEL_SETTING_KEY = "primary_model"
     GROK_MODEL_SETTING_KEY = "grok_model"
     DEFAULT_NEWS_COUNTRY = "my"
@@ -307,7 +308,39 @@ class AI(commands.Cog):
         self.conversation_history = {}
         self.primary_model = DEFAULT_MODEL
         self.grok_model = GROK_DEFAULT_MODEL
+        self.active_mention_message_ids = set()
+        self.recent_mention_message_ids = {}
         self._load_model_settings()
+
+    def _mark_mention_message_started(self, message_id):
+        if message_id is None:
+            return True
+
+        now = time.time()
+        self.recent_mention_message_ids = {
+            mid: ts
+            for mid, ts in self.recent_mention_message_ids.items()
+            if now - ts < 120
+        }
+
+        if message_id in self.active_mention_message_ids:
+            print(f"Skipping duplicate AI mention while active: message_id={message_id}")
+            return False
+
+        recent_time = self.recent_mention_message_ids.get(message_id)
+        if recent_time and now - recent_time < 120:
+            print(f"Skipping duplicate AI mention already handled recently: message_id={message_id}")
+            return False
+
+        self.active_mention_message_ids.add(message_id)
+        return True
+
+    def _mark_mention_message_finished(self, message_id):
+        if message_id is None:
+            return
+
+        self.active_mention_message_ids.discard(message_id)
+        self.recent_mention_message_ids[message_id] = time.time()
 
     @staticmethod
     def _normalize_model_name(model_name):
@@ -416,6 +449,116 @@ class AI(commands.Cog):
         }
         extension = extension_map.get(normalized, ".png")
         return f"grok-image{extension}"
+
+    @staticmethod
+    def _attachment_is_image(attachment):
+        content_type = (getattr(attachment, "content_type", "") or "").strip().lower()
+        if content_type.startswith("image/"):
+            return True
+
+        filename = (getattr(attachment, "filename", "") or "").strip().lower()
+        return filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
+
+    @classmethod
+    def _looks_like_downloadable_asset_url(cls, url, *, base_url=None):
+        if not isinstance(url, str):
+            return False
+
+        normalized = url.strip().rstrip(".,")
+        if not normalized.startswith(("http://", "https://")):
+            return False
+
+        if base_url:
+            normalized_base = base_url.rstrip("/")
+            if normalized.startswith(f"{normalized_base}/files/"):
+                return True
+
+        parsed = urlparse(normalized)
+        path = (parsed.path or "").lower()
+
+        if path.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".mp4", ".webm", ".mp3", ".ogg", ".wav", ".pdf")):
+            return True
+
+        if any(token in path for token in ("/files/", "/file/", "/image/", "/images/")):
+            return True
+
+        return False
+
+    @classmethod
+    def _extract_urls_from_text(cls, text):
+        if not isinstance(text, str) or not text.strip():
+            return []
+
+        urls = []
+        seen = set()
+        for match in cls.URL_PATTERN.findall(text):
+            normalized = match.strip().rstrip(".,")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                urls.append(normalized)
+        return urls
+
+    @classmethod
+    def _extract_response_file_urls(cls, payload, *, base_url=None):
+        if not isinstance(payload, dict):
+            return []
+
+        urls = []
+        seen = set()
+
+        def add_url(candidate):
+            if not isinstance(candidate, str):
+                return
+
+            normalized = candidate.strip().rstrip(".,")
+            if not normalized or normalized in seen:
+                return
+            if not cls._looks_like_downloadable_asset_url(normalized, base_url=base_url):
+                return
+
+            seen.add(normalized)
+            urls.append(normalized)
+
+        def scan_value(value):
+            if isinstance(value, str):
+                for candidate in cls._extract_urls_from_text(value):
+                    add_url(candidate)
+                return
+
+            if isinstance(value, list):
+                for item in value:
+                    scan_value(item)
+                return
+
+            if not isinstance(value, dict):
+                return
+
+            for key in ("url", "file_url", "image_url"):
+                nested = value.get(key)
+                if isinstance(nested, str):
+                    add_url(nested)
+                elif isinstance(nested, dict):
+                    add_url(nested.get("url"))
+
+            for text_key in ("text", "output_text", "content"):
+                scan_value(value.get(text_key))
+
+            for nested_key in ("output", "choices", "message", "messages", "data", "attachments", "files"):
+                scan_value(value.get(nested_key))
+
+        scan_value(payload.get("output"))
+        scan_value(payload.get("choices"))
+        scan_value(payload.get("data"))
+        return urls
+
+    @staticmethod
+    def _guess_download_filename(url, content_type):
+        extension = AI._guess_file_extension(content_type)
+        parsed = urlparse(url or "")
+        candidate = (parsed.path.rsplit("/", 1)[-1] if parsed.path else "").strip()
+        if candidate and "." in candidate:
+            return candidate
+        return f"response_file{extension}"
 
     @staticmethod
     def _extract_stream_chat_text(raw_text):
@@ -838,29 +981,55 @@ class AI(commands.Cog):
                 return f".{subtype}"
         return ".bin"
 
-    async def _extract_and_download_files(self, text, client, base_url):
-        if not text or not client or not base_url:
+    async def _extract_and_download_files(self, text, client, base_url, *, extra_urls=None):
+        if not client:
             return text, None
-            
-        target_prefix = f"{base_url}/files/"
-        pattern = re.compile(re.escape(target_prefix) + r"[^\s)\]\"'>]+")
-        urls = list(set(pattern.findall(text)))
-        
+
+        urls = []
+        seen = set()
+
+        def add_url(candidate):
+            normalized = (candidate or "").strip().rstrip(".,")
+            if not normalized or normalized in seen:
+                return
+            if not self._looks_like_downloadable_asset_url(normalized, base_url=base_url):
+                return
+
+            seen.add(normalized)
+            urls.append(normalized)
+
+        for candidate in extra_urls or []:
+            add_url(candidate)
+
+        for candidate in self._extract_urls_from_text(text):
+            add_url(candidate)
+
         if not urls:
             return text, None
-            
+
         files = []
         new_text = text
         for url in urls[:10]:
             try:
-                new_text = new_text.replace(url, "").strip()
+                if isinstance(new_text, str):
+                    new_text = re.sub(rf"!\[[^\]]*\]\(\s*{re.escape(url)}\s*\)", "", new_text)
+                    new_text = re.sub(rf"\[[^\]]*\]\(\s*{re.escape(url)}\s*\)", "", new_text)
+                    new_text = new_text.replace(url, "")
+
                 response = await client.get(url, follow_redirects=True)
                 if response.status_code == 200 and response.content:
                     ext = self._guess_file_extension(response.headers.get("Content-Type"))
-                    files.append(discord.File(io.BytesIO(response.content), filename=f"response_file{ext}"))
+                    filename = self._guess_download_filename(url, response.headers.get("Content-Type"))
+                    if not filename.lower().endswith(ext):
+                        filename = f"{filename}{ext}"
+                    files.append(discord.File(io.BytesIO(response.content), filename=filename))
             except Exception as e:
                 print(f"Failed to download AI linked file {url}: {e}")
-                
+
+        if isinstance(new_text, str):
+            new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+            new_text = re.sub(r"[ \t]{2,}", " ", new_text).strip()
+
         return new_text, files or None
 
     async def _send_text_chunks(self, destination, text, *, reply_to=None, files=None):
@@ -999,13 +1168,24 @@ class AI(commands.Cog):
 
         return chat_messages
 
-    async def _call_chat_ai(self, client, model_name, messages, instructions=AI_PERSONALITY, *, client_name, stream=False):
+    async def _call_chat_ai(
+        self,
+        client,
+        model_name,
+        messages,
+        instructions=AI_PERSONALITY,
+        *,
+        client_name,
+        stream=False,
+        return_payload=False,
+        max_attempts=2,
+    ):
         if client is None:
             return None
 
         chat_messages = self._build_chat_messages(messages, instructions)
 
-        for _attempt in range(2):
+        for attempt in range(1, max_attempts + 1):
             try:
                 payload = {
                     "model": model_name,
@@ -1013,6 +1193,7 @@ class AI(commands.Cog):
                     "stream": stream,
                 }
 
+                print(f"{client_name} AI request attempt {attempt}/{max_attempts} for model={model_name}")
                 response = await client.post("/chat/completions", json=payload)
                 raw_response_text = response.text
 
@@ -1020,6 +1201,11 @@ class AI(commands.Cog):
                     ai_response_text = self._extract_stream_chat_text(raw_response_text)
                     if ai_response_text:
                         print(f"--- {client_name} AI STREAM TEXT ({model_name}) ---\n{ai_response_text}\n--- END ---")
+                        if return_payload:
+                            return {
+                                "text": ai_response_text,
+                                "payload": None,
+                            }
                         return ai_response_text
 
                 try:
@@ -1029,6 +1215,11 @@ class AI(commands.Cog):
 
                     if response.status_code == 200:
                         ai_response_text = self._format_response_for_discord(resp_json)
+                        if return_payload:
+                            return {
+                                "text": ai_response_text,
+                                "payload": resp_json,
+                            }
                         if ai_response_text:
                             return ai_response_text
                         print(f"{client_name} AI returned 200 without extractable text for model={model_name}.")
@@ -1037,7 +1228,7 @@ class AI(commands.Cog):
                     print(f"API Error ({response.status_code}): {response.text}")
                     if response.status_code in [400, 401, 403, 404]:
                         break
-                    if response.status_code in [429, 500, 502, 503, 504]:
+                    if response.status_code in [429, 500, 502, 503, 504] and attempt < max_attempts:
                         print(f"Server overloaded ({response.status_code}) on {client_name.lower()} AI endpoint.")
                         await asyncio.sleep(1)
                         continue
@@ -1053,7 +1244,8 @@ class AI(commands.Cog):
                     print(f"AI Call early-break [{client_name}] (connection dead): {e}")
                 else:
                     print(f"AI Call error [{client_name}]: {e}")
-                await asyncio.sleep(1)
+                if attempt < max_attempts:
+                    await asyncio.sleep(1)
 
         return None
 
@@ -1067,7 +1259,7 @@ class AI(commands.Cog):
             stream=True,
         )
 
-    async def call_mention_ai(self, messages, instructions=AI_PERSONALITY):
+    async def call_mention_ai(self, messages, instructions=AI_PERSONALITY, *, return_payload=False):
         return await self._call_chat_ai(
             self.mention_client,
             self.grok_model,
@@ -1075,6 +1267,8 @@ class AI(commands.Cog):
             instructions,
             client_name="Mention",
             stream=False,
+            return_payload=return_payload,
+            max_attempts=1,
         )
 
     async def _fetch_models_payload(self, client, *, api_label, model_name):
@@ -1220,82 +1414,105 @@ class AI(commands.Cog):
             await self._safe_reply(message, "My AI brain is currently offline.")
             return
 
-        user_message_text = message.content.replace(f"<@{self.bot.user.id}>", "").strip()
-        
-        user_message_content = []
-        if user_message_text:
-            user_message_content.append({"type": "text", "text": user_message_text})
-            
-        for attachment in message.attachments:
-            if attachment.content_type and attachment.content_type.startswith("image/"):
-                user_message_content.append({
-                    "type": "image_url",
-                    "image_url": {"url": attachment.url}
-                })
-            else:
-                # For non-images, we attempt file_url if supported, or provide link
-                user_message_content.append({
-                    "type": "file_url",
-                    "file_url": {"url": attachment.url}
-                })
-
-        if not user_message_content:
-            await self._safe_reply(message, "Hello! Mention me with a question or attach a file to get an AI response.")
+        message_id = getattr(message, "id", None)
+        if not self._mark_mention_message_started(message_id):
             return
-
-        # Flatten if it's just one text part for better compatibility
-        if len(user_message_content) == 1 and user_message_content[0]["type"] == "text":
-            user_message = user_message_content[0]["text"]
-        else:
-            user_message = user_message_content
-
-        current_time = time.time()
-        if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
-            remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - self.last_ai_call_time)
-            await self._safe_reply(message, f"I'm thinking... please wait {remaining_time:.1f}s.")
-            return
-
-        uid = str(message.author.id)
-
-        if getattr(self, "memory_disabled_users", None) is None:
-            self.memory_disabled_users = set()
-
-        memory_disabled = uid in self.memory_disabled_users
-
-        if memory_disabled:
-            history = {"messages": []}
-        else:
-            if uid in self.conversation_history:
-                if current_time - self.conversation_history[uid]["last_active"] > HISTORY_EXPIRY_SECONDS:
-                    del self.conversation_history[uid]
-            if uid not in self.conversation_history:
-                self.conversation_history[uid] = {"messages": [], "last_active": current_time}
-
-            history = self.conversation_history[uid]
-            history["last_active"] = current_time
-
-        history["messages"].append({"role": "user", "content": user_message})
-
-        if not memory_disabled and len(history["messages"]) > MAX_HISTORY_MESSAGES:
-            history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
         try:
+            user_message_text = re.sub(rf"<@!?{self.bot.user.id}>", "", message.content).strip()
+            
+            user_message_content = []
+            if user_message_text:
+                user_message_content.append({"type": "text", "text": user_message_text})
+                
+            for attachment in message.attachments:
+                if self._attachment_is_image(attachment):
+                    user_message_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": attachment.url}
+                    })
+                else:
+                    # For non-images, we attempt file_url if supported, or provide link
+                    user_message_content.append({
+                        "type": "file_url",
+                        "file_url": {"url": attachment.url}
+                    })
+
+            if not user_message_content:
+                await self._safe_reply(message, "Hello! Mention me with a question or attach a file to get an AI response.")
+                return
+
+            # Flatten if it's just one text part for better compatibility
+            if len(user_message_content) == 1 and user_message_content[0]["type"] == "text":
+                user_message = user_message_content[0]["text"]
+            else:
+                user_message = user_message_content
+
+            current_time = time.time()
+            if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
+                remaining_time = MIN_DELAY_BETWEEN_CALLS - (current_time - self.last_ai_call_time)
+                await self._safe_reply(message, f"I'm thinking... please wait {remaining_time:.1f}s.")
+                return
+
+            uid = str(message.author.id)
+
+            if getattr(self, "memory_disabled_users", None) is None:
+                self.memory_disabled_users = set()
+
+            memory_disabled = uid in self.memory_disabled_users
+
+            if memory_disabled:
+                history = {"messages": []}
+            else:
+                if uid in self.conversation_history:
+                    if current_time - self.conversation_history[uid]["last_active"] > HISTORY_EXPIRY_SECONDS:
+                        del self.conversation_history[uid]
+                if uid not in self.conversation_history:
+                    self.conversation_history[uid] = {"messages": [], "last_active": current_time}
+
+                history = self.conversation_history[uid]
+                history["last_active"] = current_time
+
+            history["messages"].append({"role": "user", "content": user_message})
+
+            if not memory_disabled and len(history["messages"]) > MAX_HISTORY_MESSAGES:
+                history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
+
             async with message.channel.typing():
-                ai_response_text = await self.call_mention_ai(history["messages"])
-                if not ai_response_text:
+                print(f"Handling AI mention: message_id={message_id} user_id={message.author.id}")
+                mention_result = await self.call_mention_ai(history["messages"], return_payload=True)
+                if not mention_result:
+                    await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
+                    return
+
+                ai_response_text = mention_result.get("text")
+                response_payload = mention_result.get("payload")
+
+                ai_response_text, extracted_files = await self._extract_and_download_files(
+                    ai_response_text,
+                    self.mention_client,
+                    XAI_BASE_URL,
+                    extra_urls=self._extract_response_file_urls(response_payload, base_url=XAI_BASE_URL),
+                )
+                if not ai_response_text and not extracted_files:
                     await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
 
                 if not memory_disabled:
-                    history["messages"].append({"role": "assistant", "content": ai_response_text})
+                    history["messages"].append({
+                        "role": "assistant",
+                        "content": ai_response_text or "[Generated file attachment]",
+                    })
                     if len(history["messages"]) > MAX_HISTORY_MESSAGES:
                         history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
                 self.last_ai_call_time = time.time()
-                ai_response_text, extracted_files = await self._extract_and_download_files(
-                    ai_response_text, self.mention_client, XAI_BASE_URL
+                await self._send_text_chunks(
+                    message.channel,
+                    ai_response_text or "",
+                    reply_to=message,
+                    files=extracted_files,
                 )
-                await self._send_text_chunks(message.channel, ai_response_text, reply_to=message, files=extracted_files)
         except Exception as e:
             # print(f"Error processing OpenAI prompt: {e}")
             print(f"Error processing Grok prompt: {e}")
@@ -1303,6 +1520,8 @@ class AI(commands.Cog):
                 await self._safe_reply(message, "I'm sorry, I encountered an error while trying to generate a response.")
             except Exception as send_error:
                 print(f"Failed to deliver AI error message: {send_error}")
+        finally:
+            self._mark_mention_message_finished(message_id)
 
     @commands.command(name="nsfw")
     async def nsfw_command(self, ctx: commands.Context, *, prompt: str = None):
