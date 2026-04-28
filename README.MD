@@ -9,7 +9,7 @@ A feature-rich Discord bot with AI chat, currency exchange, horoscopes, music do
 
 | Category | Commands |
 |---|---|
-| 🤖 **AI Chat & Utils** | `@JenBot [message]`, `!tldr [count]`, `!clear`, `!nsfw [prompt]` (NSFW channels), `!afk [reason]`, `!pin`, `!pins` |
+| 🤖 **AI Chat & Utils** | `@JenBot [message]`, `!tldr [count]`, `!clear`, `!nsfw [prompt]` (NSFW channels), `!img [prompt]` (edit attached/replied image), `!afk [reason]`, `!pin`, `!pins` |
 | 💰 **Economy & Bank**   | `!bal`, `!daily`, `!work`, `!dep [amount]`, `!with [amount]`, `!pf`, `!vault` |
 | 🎲 **Gambling & Duels** | `!flip`, `!slots`, `!bj`, `!duel @user`, `!bjduel @user`, `!rob @user` |
 | 🏪 **Shop & Inventory** | `!shop`, `!buy [item]`, `!inv`, `!sell [item]`, `!setrole [color]` |
@@ -27,7 +27,7 @@ JenBot/
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Template for secrets
 ├── cogs/                # Modular command groups
-│   ├── ai.py            # AI chat, !tldr, !clear, !nsfw
+│   ├── ai.py            # AI chat, !tldr, !clear, !nsfw, !img, !gimg
 │   ├── checkin.py       # !ck, !streak, !lb
 │   ├── currency.py      # Currency exchange, !liverate
 │   ├── economy.py       # Economy, Bank, Casino, Duels, Shop, Market
@@ -99,6 +99,9 @@ Fill in your values:
 DISCORD_BOT_TOKEN=your_bot_token_here
 OPENAI_API_KEY=your_openai_key_here
 OPENAI_BASE_URL=your_openai_compatible_base_url
+OPENAI_IMAGE_API_KEY=your_image_edit_key_here
+OPENAI_IMAGE_BASE_URL=your_image_edit_base_url
+OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_MODEL=
 XAI_API_KEY=your_xai_or_grok_key_here
 XAI_BASE_URL=https://g2p.tinalee.eu.org/v1
@@ -117,12 +120,15 @@ CHECKIN_AUTH_PASS=your_worker_password       # optional
 Save with `Ctrl+X`, `Y`, `Enter`.
 
 Bot mentions/replies and `!nsfw` use the Grok/xAI endpoint from `XAI_BASE_URL` and the shared Grok model (`GROK_MODEL`, with `XAI_MODEL` / `NSFW_MODEL` kept as fallbacks).
+`!img` uses `OPENAI_IMAGE_BASE_URL`, `OPENAI_IMAGE_API_KEY`, and `OPENAI_IMAGE_MODEL` to edit an attached image or an image from the message you reply to.
+If `OPENAI_IMAGE_BASE_URL` or `OPENAI_IMAGE_API_KEY` is omitted, `!img` falls back to `OPENAI_BASE_URL` / `OPENAI_API_KEY`.
 `!gimg` uses `GROK_IMAGE_MODEL` for Grok image generation.
 Command/game AI uses only `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL`.
 If `OPENAI_MODEL` is not set, it uses the built-in default `gpt-5.4`.
 The bot owner can change the command/game AI model at runtime with `!aimodel <model>` and reset it with `!aimodel default`.
 The bot owner can query the live model catalog from the configured API with `!aimodels`.
 The bot owner can query Grok models with `!gmodels`, then switch the shared Grok model with `!gmodel <id>` or directly from the interactive selector shown by `!gmodels`.
+Use `!img <prompt>` with an attached image, or reply to an image and run `!img <prompt>`.
 Any user with enough JC can use `!gimg <prompt>` to generate one image. The bot charges 200 JC only after the image is successfully delivered.
 
 ### Step 6: Test Run

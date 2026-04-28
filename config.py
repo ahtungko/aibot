@@ -42,6 +42,7 @@ RAW_XAI_API_KEY = (
     or os.getenv("NSFW_API_KEY")
 )
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_IMAGE_API_KEY = os.getenv("OPENAI_IMAGE_API_KEY") or OPENAI_API_KEY
 XAI_API_KEY = RAW_XAI_API_KEY
 MIMO_API_KEY = os.getenv("MIMO_API_KEY")
 BOT_OWNER_ID_STR = os.getenv("BOT_OWNER_ID")
@@ -69,6 +70,7 @@ GROK_RESPONSES_URL = _build_responses_url(
     or "https://g2p.tinalee.eu.org/v1/responses"
 )
 OPENAI_BASE_URL = _normalize_ai_base_url(os.getenv("OPENAI_BASE_URL"))
+OPENAI_IMAGE_BASE_URL = _normalize_ai_base_url(os.getenv("OPENAI_IMAGE_BASE_URL") or os.getenv("OPENAI_BASE_URL"))
 XAI_BASE_URL = _normalize_ai_base_url(os.getenv("XAI_BASE_URL") or GROK_RESPONSES_URL)
 NSFW_RESPONSES_URL = GROK_RESPONSES_URL
 NSFW_API_KEY = os.getenv("NSFW_API_KEY") or os.getenv("GROK2API_API_KEY") or XAI_API_KEY
@@ -84,6 +86,7 @@ GROK_IMAGE_MODEL = os.getenv("GROK_IMAGE_MODEL", "grok-imagine-image-lite")
 NSFW_MODEL = GROK_DEFAULT_MODEL
 MENTION_MODEL = GROK_DEFAULT_MODEL
 DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
+OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2").strip() or "gpt-image-2"
 
 # AI Settings
 MAX_HISTORY_MESSAGES = 10
@@ -120,6 +123,10 @@ if not OPENAI_API_KEY:
     print("Warning: OPENAI_API_KEY not found. Command/game AI features will be disabled.")
 if not OPENAI_BASE_URL:
     print("Warning: OPENAI_BASE_URL not found. Command/game AI features will be disabled.")
+if not OPENAI_IMAGE_API_KEY:
+    print("Warning: OPENAI_IMAGE_API_KEY/OPENAI_API_KEY not found. The !img command will be disabled.")
+if not OPENAI_IMAGE_BASE_URL:
+    print("Warning: OPENAI_IMAGE_BASE_URL/OPENAI_BASE_URL not found. The !img command will be disabled.")
 if not XAI_API_KEY:
     print("Warning: XAI_API_KEY/GROK2API_API_KEY/NSFW_API_KEY not found. Mention AI features will be disabled.")
 if not XAI_BASE_URL:

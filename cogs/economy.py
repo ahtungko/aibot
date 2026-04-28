@@ -6678,7 +6678,7 @@ class MinesGameView:
         embed.add_field(name="Current Wallet", value=f"**{new_balance:,}** JC", inline=True)
         if self.pick_history:
             embed.add_field(name="Safe Tiles Found", value=", ".join(self.pick_history[-10:]), inline=False)
-        embed.set_footer(text="More?")
+        embed.set_footer(text="Mines losses do not affect the vault.")
         return embed
 
     def build_cashout_embed(self, payout: int, new_balance: int, *, auto: bool = False, timeout: bool = False) -> discord.Embed:

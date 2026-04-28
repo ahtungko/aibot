@@ -214,7 +214,7 @@ class HelpDropdown(discord.ui.Select):
         if val == "ai":
             embed.title = "🤖 AI & Utilities"
             embed.add_field(name="AI Chat", value=f"Simply mention the bot (`@{bot_name}`) or reply to one of its messages to chat or ask questions.", inline=False)
-            embed.add_field(name="AI Tools", value=f"`{p}tldr [count]` - Summarize chat history\n`{p}clear` - Reset your AI conversation memory\n`{p}news [country code] [language code]` - Latest news with citations (defaults: MY, EN)\n`{p}tts [--voice/--style/--auto/--user] [text]` - Generate MiMo TTS WAV\n`{p}sayai [--voice/--style/--auto] [prompt]` - Grok/AI writes, MiMo speaks\n`{p}nsfw [prompt]` - NSFW endpoint reply (NSFW channels only)\n`{p}gimg [prompt]` - Generate one Grok image for 200 JC", inline=False)
+            embed.add_field(name="AI Tools", value=f"`{p}tldr [count]` - Summarize chat history\n`{p}clear` - Reset your AI conversation memory\n`{p}news [country code] [language code]` - Latest news with citations (defaults: MY, EN)\n`{p}tts [--voice/--style/--auto/--user] [text]` - Generate MiMo TTS WAV\n`{p}sayai [--voice/--style/--auto] [prompt]` - Grok/AI writes, MiMo speaks\n`{p}nsfw [prompt]` - NSFW endpoint reply (NSFW channels only)\n`{p}img [prompt]` - Edit an attached/replied image with OpenAI-compatible API\n`{p}gimg [prompt]` - Generate one Grok image for 200 JC", inline=False)
             embed.add_field(name="Utilities", value=f"`{p}dict [word]` - Dictionary lookup\n`{p}afk [reason]` - Set your AFK status", inline=False)
             embed.add_field(name="Bookmarks", value=f"Reply to a message with `{p}pin` to save it\n`{p}pins` - View your pins\n`{p}unpin [num]` - Delete a pin", inline=False)
             

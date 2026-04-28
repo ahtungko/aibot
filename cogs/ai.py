@@ -1,5 +1,6 @@
 # cogs/ai.py - AI mention handler, !clear, !tldr, conversation memory, !nsfw, !news
 import asyncio
+import base64
 import io
 from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -29,6 +30,9 @@ from config import (
     NSFW_RESPONSES_URL,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
+    OPENAI_IMAGE_API_KEY,
+    OPENAI_IMAGE_BASE_URL,
+    OPENAI_IMAGE_MODEL,
     XAI_API_KEY,
     XAI_BASE_URL,
 )
@@ -40,6 +44,11 @@ GROK_IMAGE_SIZE = "1024x1024"
 GROK_IMAGE_COUNT = 1
 GROK_IMAGE_RESPONSE_FORMAT = "url"
 GROK_IMAGE_GENERATION_TX = "Grok Image Generation"
+OPENAI_IMAGE_EDIT_COUNT = 1
+
+
+class ImageEditApiError(RuntimeError):
+    pass
 
 
 class GrokModelSelector(discord.ui.Select):
@@ -438,7 +447,7 @@ class AI(commands.Cog):
         return None
 
     @staticmethod
-    def _guess_image_filename(content_type):
+    def _guess_image_filename(content_type, *, stem="grok-image"):
         normalized = (content_type or "").split(";", 1)[0].strip().lower()
         extension_map = {
             "image/jpeg": ".jpg",
@@ -448,7 +457,7 @@ class AI(commands.Cog):
             "image/gif": ".gif",
         }
         extension = extension_map.get(normalized, ".png")
-        return f"grok-image{extension}"
+        return f"{stem}{extension}"
 
     @staticmethod
     def _attachment_is_image(attachment):
@@ -458,6 +467,129 @@ class AI(commands.Cog):
 
         filename = (getattr(attachment, "filename", "") or "").strip().lower()
         return filename.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"))
+
+    @staticmethod
+    def _guess_attachment_content_type(attachment):
+        content_type = (getattr(attachment, "content_type", "") or "").split(";", 1)[0].strip().lower()
+        if content_type.startswith("image/"):
+            return content_type
+
+        filename = (getattr(attachment, "filename", "") or "").strip().lower()
+        if filename.endswith((".jpg", ".jpeg")):
+            return "image/jpeg"
+        if filename.endswith(".png"):
+            return "image/png"
+        if filename.endswith(".webp"):
+            return "image/webp"
+        if filename.endswith(".gif"):
+            return "image/gif"
+        if filename.endswith(".bmp"):
+            return "image/bmp"
+
+        return "application/octet-stream"
+
+    @staticmethod
+    def _extract_generated_image_b64(payload):
+        if not isinstance(payload, dict):
+            return None
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return None
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            b64_json = item.get("b64_json") or item.get("base64")
+            if isinstance(b64_json, str) and b64_json.strip():
+                content_type = item.get("mime_type") or item.get("content_type")
+                normalized_content_type = None
+                if isinstance(content_type, str) and content_type.strip():
+                    normalized_content_type = content_type.strip().lower()
+
+                return {
+                    "data": b64_json.strip(),
+                    "content_type": normalized_content_type,
+                }
+
+        return None
+
+    @staticmethod
+    def _sanitize_payload_for_logging(payload):
+        if isinstance(payload, dict):
+            sanitized = {}
+            for key, value in payload.items():
+                if key in {"b64_json", "base64"} and isinstance(value, str):
+                    sanitized[key] = f"[omitted base64 image data: {len(value)} chars]"
+                else:
+                    sanitized[key] = AI._sanitize_payload_for_logging(value)
+            return sanitized
+
+        if isinstance(payload, list):
+            return [AI._sanitize_payload_for_logging(item) for item in payload]
+
+        return payload
+
+    @staticmethod
+    def _extract_api_error_details(payload):
+        if not isinstance(payload, dict):
+            return None
+
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return None
+
+        details = {}
+        for key in ("message", "type", "param", "code"):
+            value = error.get(key)
+            if value is not None:
+                details[key] = value
+
+        return details or None
+
+    @staticmethod
+    def _format_openai_image_edit_error(status_code, payload):
+        details = AI._extract_api_error_details(payload) or {}
+        error_code = (details.get("code") or "").strip().lower() if isinstance(details.get("code"), str) else ""
+        error_type = (details.get("type") or "").strip().lower() if isinstance(details.get("type"), str) else ""
+        raw_message = details.get("message")
+        message = raw_message.strip() if isinstance(raw_message, str) else ""
+
+        if error_code == "content_policy_violation":
+            return "Image edit request was rejected by the image API content policy. Try a simpler edit prompt or a different image."
+
+        if status_code in {401, 403}:
+            return "Image editing authentication failed. Ask the bot owner to check the dedicated image API key and base URL."
+
+        if status_code == 429:
+            return "Image editing is rate-limited right now. Please try again in a moment."
+
+        if message:
+            if len(message) > 300:
+                message = message[:297].rstrip() + "..."
+            return f"Image edit request failed ({error_code or error_type or f'HTTP {status_code}'}): {message}"
+
+        return f"Image edit request failed (HTTP {status_code})."
+
+    @staticmethod
+    def _decode_base64_image_data(encoded_image, *, default_content_type="image/png"):
+        if not isinstance(encoded_image, str) or not encoded_image.strip():
+            return None, default_content_type
+
+        normalized = encoded_image.strip()
+        content_type = default_content_type
+
+        if normalized.startswith("data:") and "," in normalized:
+            header, _, normalized = normalized.partition(",")
+            match = re.match(r"data:([^;]+);base64$", header.strip(), flags=re.IGNORECASE)
+            if match:
+                content_type = match.group(1).strip().lower()
+
+        try:
+            return base64.b64decode(normalized), content_type
+        except Exception:
+            return None, content_type
 
     @classmethod
     def _looks_like_downloadable_asset_url(cls, url, *, base_url=None):
@@ -1374,6 +1506,135 @@ class AI(commands.Cog):
         filename = self._guess_image_filename(response.headers.get("Content-Type"))
         return discord.File(io.BytesIO(response.content), filename=filename)
 
+    async def _find_image_attachment(self, ctx: commands.Context):
+        message = getattr(ctx, "message", None)
+        if message is None:
+            return None
+
+        for attachment in getattr(message, "attachments", []):
+            if self._attachment_is_image(attachment):
+                return attachment
+
+        reference = getattr(message, "reference", None)
+        if not reference or not getattr(reference, "message_id", None):
+            return None
+
+        referenced_message = reference.resolved if isinstance(reference.resolved, discord.Message) else None
+        if referenced_message is None:
+            try:
+                referenced_message = await ctx.channel.fetch_message(reference.message_id)
+            except Exception:
+                referenced_message = None
+
+        if referenced_message is None:
+            return None
+
+        for attachment in getattr(referenced_message, "attachments", []):
+            if self._attachment_is_image(attachment):
+                return attachment
+
+        return None
+
+    async def generate_openai_edited_image_file(self, prompt, attachment):
+        if not OPENAI_IMAGE_API_KEY or not OPENAI_IMAGE_BASE_URL or attachment is None:
+            return None
+
+        try:
+            image_bytes = await attachment.read()
+        except Exception as e:
+            print(f"OpenAI image edit attachment read error: {e}")
+            return None
+
+        if not image_bytes:
+            print("OpenAI image edit attachment was empty.")
+            return None
+
+        attachment_name = (getattr(attachment, "filename", "") or "input.png").strip() or "input.png"
+        attachment_content_type = self._guess_attachment_content_type(attachment)
+
+        data = {
+            "model": OPENAI_IMAGE_MODEL,
+            "prompt": prompt,
+            "n": str(OPENAI_IMAGE_EDIT_COUNT),
+        }
+        files = {
+            "image": (attachment_name, image_bytes, attachment_content_type),
+        }
+
+        try:
+            async with httpx.AsyncClient(
+                headers={
+                    "Authorization": f"Bearer {OPENAI_IMAGE_API_KEY}",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                },
+                verify=False,
+                timeout=60.0,
+            ) as client:
+                response = await client.post(
+                    f"{OPENAI_IMAGE_BASE_URL}/images/edits",
+                    data=data,
+                    files=files,
+                )
+
+                response_content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+                if response.status_code == 200 and response_content_type.startswith("image/") and response.content:
+                    filename = self._guess_image_filename(response_content_type, stem="edited-image")
+                    return discord.File(io.BytesIO(response.content), filename=filename)
+
+                try:
+                    resp_json = response.json()
+                    sanitized_resp_json = self._sanitize_payload_for_logging(resp_json)
+                    print(f"--- OPENAI IMAGE EDIT JSON ({OPENAI_IMAGE_MODEL}) ---\n{json.dumps(sanitized_resp_json, indent=2)}\n--- END ---")
+                except Exception as log_err:
+                    print(f"OpenAI image edit log error: Could not parse response: {log_err}")
+                    print(f"Raw Response: {response.text}")
+                    return None
+
+                if response.status_code != 200:
+                    print(f"OpenAI image edit API error ({response.status_code}): {response.text}")
+                    raise ImageEditApiError(
+                        self._format_openai_image_edit_error(response.status_code, resp_json)
+                    )
+
+                image_b64 = self._extract_generated_image_b64(resp_json)
+                if image_b64:
+                    decoded_image, decoded_content_type = self._decode_base64_image_data(
+                        image_b64["data"],
+                        default_content_type=image_b64.get("content_type") or "image/png",
+                    )
+                    if decoded_image:
+                        filename = self._guess_image_filename(decoded_content_type, stem="edited-image")
+                        return discord.File(io.BytesIO(decoded_image), filename=filename)
+
+                image_url = self._extract_generated_image_url(resp_json)
+                if not image_url:
+                    print("OpenAI image edit response did not include a usable image result.")
+                    return None
+
+                download_response = await client.get(image_url, follow_redirects=True)
+                if download_response.status_code != 200:
+                    print(f"OpenAI image edit download error ({download_response.status_code}): {download_response.text[:300]}")
+                    return None
+
+                if not download_response.content:
+                    print("OpenAI image edit download returned empty content.")
+                    return None
+
+                filename = self._guess_download_filename(
+                    image_url,
+                    download_response.headers.get("Content-Type"),
+                )
+                ext = self._guess_file_extension(download_response.headers.get("Content-Type"))
+                if not filename.lower().endswith(ext):
+                    filename = f"{filename}{ext}"
+
+                return discord.File(io.BytesIO(download_response.content), filename=filename)
+        except Exception as e:
+            if isinstance(e, ImageEditApiError):
+                raise
+            print(f"OpenAI image edit API call error: {e}")
+            return None
+
     async def call_responses_ai(self, prompt, instructions=None, tools=None):
         if self.nsfw_client is None:
             return None
@@ -1565,6 +1826,52 @@ class AI(commands.Cog):
                 await self._safe_send(ctx, "Failed to generate a response. Something went wrong.")
             except Exception as send_error:
                 print(f"Failed to deliver !nsfw error message: {send_error}")
+
+    @commands.command(name="img")
+    async def img_command(self, ctx: commands.Context, *, prompt: str = None):
+        if not prompt:
+            await self._safe_send(
+                ctx,
+                f"Usage: `{COMMAND_PREFIX}img [prompt]` with an attached image, or reply to an image with `{COMMAND_PREFIX}img [prompt]`.",
+            )
+            return
+
+        if not OPENAI_IMAGE_API_KEY or not OPENAI_IMAGE_BASE_URL:
+            await self._safe_send(ctx, "Image editing is currently offline. Ask the bot owner to configure the dedicated image endpoint first.")
+            return
+
+        attachment = await self._find_image_attachment(ctx)
+        if attachment is None:
+            await self._safe_send(
+                ctx,
+                f"Please attach an image to your `{COMMAND_PREFIX}img` message, or reply to an image with `{COMMAND_PREFIX}img [prompt]`.",
+            )
+            return
+
+        try:
+            async with ctx.typing():
+                image_file = await self.generate_openai_edited_image_file(prompt, attachment)
+                if image_file is None:
+                    await self._safe_send(ctx, "Failed to edit the image right now. Please try again later.")
+                    return
+
+                try:
+                    await self._safe_send(ctx, file=image_file)
+                finally:
+                    image_file.close()
+
+            self.last_ai_call_time = time.time()
+        except ImageEditApiError as e:
+            try:
+                await self._safe_send(ctx, str(e))
+            except Exception as send_error:
+                print(f"Failed to deliver !img API error message: {send_error}")
+        except Exception as e:
+            print(f"Error in !img command: {e}")
+            try:
+                await self._safe_send(ctx, "Failed to deliver the edited image. Something went wrong.")
+            except Exception as send_error:
+                print(f"Failed to deliver !img error message: {send_error}")
 
     @commands.command(name="gimg")
     async def gimg_command(self, ctx: commands.Context, *, prompt: str = None):
