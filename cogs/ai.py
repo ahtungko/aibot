@@ -45,6 +45,7 @@ GROK_IMAGE_COUNT = 1
 GROK_IMAGE_RESPONSE_FORMAT = "url"
 GROK_IMAGE_GENERATION_TX = "Grok Image Generation"
 OPENAI_IMAGE_EDIT_COUNT = 1
+MENTION_AI_TIMEOUT_SECONDS = 60.0
 
 
 class ImageEditApiError(RuntimeError):
@@ -530,6 +531,20 @@ class AI(commands.Cog):
             return [AI._sanitize_payload_for_logging(item) for item in payload]
 
         return payload
+
+    @staticmethod
+    def _format_ai_call_exception(exc):
+        message = str(exc).strip()
+        detail = message if message else "<no details>"
+        return f"{type(exc).__name__}: {detail}"
+
+    @staticmethod
+    def _is_ai_connection_error(exc):
+        if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.ProtocolError)):
+            return True
+
+        err_str = str(exc).lower()
+        return "timeout" in err_str or "closed" in err_str
 
     @staticmethod
     def _extract_api_error_details(payload):
@@ -1218,7 +1233,7 @@ class AI(commands.Cog):
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                     },
                     verify=False,
-                    timeout=15.0,
+                    timeout=MENTION_AI_TIMEOUT_SECONDS,
                 )
                 print(f"Successfully initialized mention Grok AI HTTP client: model={self.grok_model}, base_url={XAI_BASE_URL}")
             except Exception as e:
@@ -1370,12 +1385,13 @@ class AI(commands.Cog):
 
             except Exception as e:
                 err_str = str(e).lower()
+                formatted_error = self._format_ai_call_exception(e)
                 if "503" in err_str or "502" in err_str or "529" in err_str:
-                    print(f"AI Call overloaded [{client_name}]: {e}")
-                elif "timeout" in err_str or "closed" in err_str:
-                    print(f"AI Call early-break [{client_name}] (connection dead): {e}")
+                    print(f"AI Call overloaded [{client_name}]: {formatted_error}")
+                elif self._is_ai_connection_error(e):
+                    print(f"AI Call early-break [{client_name}] (connection dead): {formatted_error}")
                 else:
-                    print(f"AI Call error [{client_name}]: {e}")
+                    print(f"AI Call error [{client_name}]: {formatted_error}")
                 if attempt < max_attempts:
                     await asyncio.sleep(1)
 
