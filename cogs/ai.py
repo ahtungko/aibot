@@ -1,6 +1,7 @@
 # cogs/ai.py - AI mention handler, !clear, !tldr, conversation memory, !nsfw, !news
 import asyncio
 import base64
+import copy
 import io
 from datetime import timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -45,7 +46,8 @@ GROK_IMAGE_COUNT = 1
 GROK_IMAGE_RESPONSE_FORMAT = "url"
 GROK_IMAGE_GENERATION_TX = "Grok Image Generation"
 OPENAI_IMAGE_EDIT_COUNT = 1
-MENTION_AI_TIMEOUT_SECONDS = 60.0
+GROK_AI_TIMEOUT_SECONDS = 180.0
+MENTION_AI_TIMEOUT_SECONDS = GROK_AI_TIMEOUT_SECONDS
 
 
 class ImageEditApiError(RuntimeError):
@@ -353,6 +355,27 @@ class AI(commands.Cog):
         self.recent_mention_message_ids[message_id] = time.time()
 
     @staticmethod
+    def _conversation_scope_key(source):
+        author = getattr(source, "author", None)
+        user_id = getattr(author, "id", None)
+        if user_id is None:
+            return None
+
+        guild = getattr(source, "guild", None)
+        guild_id = getattr(guild, "id", None) or "dm"
+        channel = getattr(source, "channel", None)
+        channel_id = getattr(channel, "id", None) or "unknown"
+        return f"{guild_id}:{channel_id}:{user_id}"
+
+    def _conversation_keys_for_user(self, user_id):
+        user_id = str(user_id)
+        return [
+            key
+            for key in self.conversation_history
+            if key == user_id or str(key).rsplit(":", 1)[-1] == user_id
+        ]
+
+    @staticmethod
     def _normalize_model_name(model_name):
         value = (model_name or "").strip()
         if not value or len(value) > 100:
@@ -369,6 +392,7 @@ class AI(commands.Cog):
         saved_grok_model = self._normalize_model_name(settings.get(self.GROK_MODEL_SETTING_KEY))
         self.grok_model = saved_grok_model or GROK_DEFAULT_MODEL
         self.memory_disabled_users = set(settings.get("memory_disabled_users", []))
+        self.ai_tools_enabled_users = set(settings.get("ai_tools_enabled_users", []))
 
     def _save_model_settings(self):
         settings = load_ai_settings()
@@ -386,6 +410,7 @@ class AI(commands.Cog):
             settings[self.GROK_MODEL_SETTING_KEY] = self.grok_model
 
         settings["memory_disabled_users"] = list(getattr(self, "memory_disabled_users", set()))
+        settings["ai_tools_enabled_users"] = list(getattr(self, "ai_tools_enabled_users", set()))
 
         save_ai_settings(settings)
 
@@ -1074,6 +1099,132 @@ class AI(commands.Cog):
         return urls
 
     @classmethod
+    def _tool_type_name(cls, tool):
+        if isinstance(tool, str):
+            value = tool.strip()
+            return value.lower() if value else None
+
+        if isinstance(tool, dict):
+            for key in ("type", "name", "tool"):
+                value = tool.get(key)
+                if isinstance(value, str):
+                    value = value.strip()
+                    if value:
+                        return value.lower()
+
+        return None
+
+    @staticmethod
+    def _search_tool_payload(tool_type):
+        return {
+            "type": tool_type,
+            "enable_image_understanding": True,
+        }
+
+    @classmethod
+    def _search_tools(cls):
+        return [
+            cls._search_tool_payload("x_search"),
+            cls._search_tool_payload("web_search"),
+        ]
+
+
+    @classmethod
+    def _build_responses_payload(
+        cls,
+        input_data,
+        *,
+        model_name,
+        instructions=None,
+        stream=False,
+        store=False,
+        previous_response_id=None,
+        tools=None,
+    ):
+        payload = {
+            "model": model_name,
+            "input": list(input_data) if isinstance(input_data, tuple) else input_data,
+            "stream": bool(stream),
+            "store": bool(store),
+        }
+
+        if instructions is not None:
+            payload["instructions"] = instructions
+
+        if previous_response_id:
+            payload["previous_response_id"] = previous_response_id
+
+        if tools:
+            payload["tools"] = tools
+
+        return payload
+
+    @classmethod
+    def _build_responses_mention_input(cls, text, attachments):
+        content = []
+
+        if isinstance(text, str):
+            cleaned_text = text.strip()
+            if cleaned_text:
+                content.append({"type": "input_text", "text": cleaned_text})
+
+        for attachment in attachments or []:
+            if cls._attachment_is_image(attachment):
+                image_url = getattr(attachment, "url", None)
+                if isinstance(image_url, str) and image_url.strip():
+                    content.append({
+                        "type": "input_image",
+                        "image_url": image_url.strip(),
+                        "detail": "high",
+                    })
+            else:
+                file_url = getattr(attachment, "url", None)
+                if isinstance(file_url, str) and file_url.strip():
+                    content.append({
+                        "type": "input_file",
+                        "file_url": file_url.strip(),
+                    })
+
+        if not content:
+            return None
+
+        return [{"role": "user", "content": content}]
+
+    @classmethod
+    def _append_fallback_message(cls, history, item):
+        if history is None or item is None:
+            return
+
+        fallback_messages = history.setdefault("fallback_messages", [])
+        fallback_messages.append(copy.deepcopy(item))
+        if len(fallback_messages) > MAX_HISTORY_MESSAGES:
+            del fallback_messages[:-MAX_HISTORY_MESSAGES]
+
+    @classmethod
+    def _build_fallback_retry_input(cls, history):
+        if history is None:
+            return None
+
+        fallback_messages = history.get("fallback_messages")
+        if not fallback_messages:
+            return None
+
+        return copy.deepcopy(fallback_messages[-MAX_HISTORY_MESSAGES:])
+
+    @staticmethod
+    def _is_missing_previous_response_error(result):
+        if not isinstance(result, dict) or result.get("status_code") != 404:
+            return False
+
+        error_payload = result.get("error") or result.get("payload") or {}
+        if not isinstance(error_payload, dict):
+            return False
+
+        code = str(error_payload.get("code") or "").lower()
+        message = str(error_payload.get("error") or error_payload.get("message") or "").lower()
+        return code in {"not-found", "not_found"} and "response" in message and "not found" in message
+
+    @classmethod
     def _format_response_for_discord(cls, payload):
         text = cls._extract_response_text(payload)
         if not text:
@@ -1249,7 +1400,7 @@ class AI(commands.Cog):
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                     },
                     verify=False,
-                    timeout=30.0,
+                    timeout=GROK_AI_TIMEOUT_SECONDS,
                 )
                 print(f"Successfully initialized Grok Responses AI HTTP client: model={self.grok_model}, url={NSFW_RESPONSES_URL}")
             except Exception as e:
@@ -1326,6 +1477,7 @@ class AI(commands.Cog):
         stream=False,
         return_payload=False,
         max_attempts=2,
+        tools=None,
     ):
         if client is None:
             return None
@@ -1339,6 +1491,8 @@ class AI(commands.Cog):
                     "messages": chat_messages,
                     "stream": stream,
                 }
+                if tools:
+                    payload["tools"] = tools
 
                 print(f"{client_name} AI request attempt {attempt}/{max_attempts} for model={model_name}")
                 response = await client.post("/chat/completions", json=payload)
@@ -1407,7 +1561,7 @@ class AI(commands.Cog):
             stream=True,
         )
 
-    async def call_mention_ai(self, messages, instructions=AI_PERSONALITY, *, return_payload=False):
+    async def call_mention_ai(self, messages, instructions=AI_PERSONALITY, *, return_payload=False, tools=None):
         return await self._call_chat_ai(
             self.mention_client,
             self.grok_model,
@@ -1417,6 +1571,7 @@ class AI(commands.Cog):
             stream=False,
             return_payload=return_payload,
             max_attempts=1,
+            tools=tools,
         )
 
     async def _fetch_models_payload(self, client, *, api_label, model_name):
@@ -1651,20 +1806,29 @@ class AI(commands.Cog):
             print(f"OpenAI image edit API call error: {e}")
             return None
 
-    async def call_responses_ai(self, prompt, instructions=None, tools=None):
+    async def call_responses_ai(
+        self,
+        input_data,
+        instructions=None,
+        *,
+        stream=False,
+        store=False,
+        previous_response_id=None,
+        tools=None,
+        return_payload=False,
+    ):
         if self.nsfw_client is None:
             return None
 
-        payload = {
-            "model": self.grok_model,
-            "input": prompt,
-            "stream": False,
-            "store": False,
-        }
-        if instructions:
-            payload["instructions"] = instructions
-        if tools:
-            payload["tools"] = tools
+        payload = self._build_responses_payload(
+            input_data,
+            model_name=self.grok_model,
+            instructions=instructions,
+            stream=stream,
+            store=store,
+            previous_response_id=previous_response_id,
+            tools=tools,
+        )
 
         try:
             response = await self.nsfw_client.post(NSFW_RESPONSES_URL, json=payload)
@@ -1682,9 +1846,25 @@ class AI(commands.Cog):
 
         if response.status_code != 200:
             print(f"Responses API Error ({response.status_code}): {response.text}")
+            if return_payload:
+                return {
+                    "text": None,
+                    "payload": resp_json,
+                    "response_id": None,
+                    "status_code": response.status_code,
+                    "error": resp_json,
+                }
             return None
 
-        return self._format_response_for_discord(resp_json)
+        ai_response_text = self._format_response_for_discord(resp_json)
+        if return_payload:
+            return {
+                "text": ai_response_text,
+                "payload": resp_json,
+                "response_id": resp_json.get("id") if isinstance(resp_json, dict) else None,
+            }
+
+        return ai_response_text
 
     async def handle_ai_mention(self, message):
         if self.mention_client is None:
@@ -1697,33 +1877,11 @@ class AI(commands.Cog):
 
         try:
             user_message_text = re.sub(rf"<@!?{self.bot.user.id}>", "", message.content).strip()
-            
-            user_message_content = []
-            if user_message_text:
-                user_message_content.append({"type": "text", "text": user_message_text})
-                
-            for attachment in message.attachments:
-                if self._attachment_is_image(attachment):
-                    user_message_content.append({
-                        "type": "image_url",
-                        "image_url": {"url": attachment.url}
-                    })
-                else:
-                    # For non-images, we attempt file_url if supported, or provide link
-                    user_message_content.append({
-                        "type": "file_url",
-                        "file_url": {"url": attachment.url}
-                    })
+            user_message_input = self._build_responses_mention_input(user_message_text, message.attachments)
 
-            if not user_message_content:
+            if not user_message_input:
                 await self._safe_reply(message, "Hello! Mention me with a question or attach a file to get an AI response.")
                 return
-
-            # Flatten if it's just one text part for better compatibility
-            if len(user_message_content) == 1 and user_message_content[0]["type"] == "text":
-                user_message = user_message_content[0]["text"]
-            else:
-                user_message = user_message_content
 
             current_time = time.time()
             if current_time - self.last_ai_call_time < MIN_DELAY_BETWEEN_CALLS:
@@ -1732,38 +1890,62 @@ class AI(commands.Cog):
                 return
 
             uid = str(message.author.id)
+            conversation_key = self._conversation_scope_key(message)
 
             if getattr(self, "memory_disabled_users", None) is None:
                 self.memory_disabled_users = set()
+            if getattr(self, "ai_tools_enabled_users", None) is None:
+                self.ai_tools_enabled_users = set()
 
             memory_disabled = uid in self.memory_disabled_users
+            tools = self._search_tools() if uid in self.ai_tools_enabled_users else None
+            history = None
 
-            if memory_disabled:
-                history = {"messages": []}
-            else:
-                if uid in self.conversation_history:
-                    if current_time - self.conversation_history[uid]["last_active"] > HISTORY_EXPIRY_SECONDS:
-                        del self.conversation_history[uid]
-                if uid not in self.conversation_history:
-                    self.conversation_history[uid] = {"messages": [], "last_active": current_time}
+            if not memory_disabled and conversation_key:
+                if conversation_key in self.conversation_history:
+                    if current_time - self.conversation_history[conversation_key]["last_active"] > HISTORY_EXPIRY_SECONDS:
+                        del self.conversation_history[conversation_key]
+                if conversation_key not in self.conversation_history:
+                    self.conversation_history[conversation_key] = {"last_active": current_time, "response_id": None, "fallback_messages": []}
 
-                history = self.conversation_history[uid]
+                history = self.conversation_history[conversation_key]
                 history["last_active"] = current_time
-
-            history["messages"].append({"role": "user", "content": user_message})
-
-            if not memory_disabled and len(history["messages"]) > MAX_HISTORY_MESSAGES:
-                history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
+                history.setdefault("fallback_messages", [])
+                self._append_fallback_message(history, user_message_input[0])
 
             async with message.channel.typing():
                 print(f"Handling AI mention: message_id={message_id} user_id={message.author.id}")
-                mention_result = await self.call_mention_ai(history["messages"], return_payload=True)
-                if not mention_result:
+                previous_response_id = None if memory_disabled else (history or {}).get("response_id")
+                mention_result = await self.call_responses_ai(
+                    user_message_input,
+                    instructions=None if previous_response_id else AI_PERSONALITY,
+                    store=not memory_disabled,
+                    previous_response_id=previous_response_id,
+                    tools=tools,
+                    return_payload=True,
+                )
+                if self._is_missing_previous_response_error(mention_result) and previous_response_id:
+                    if history is not None:
+                        history["response_id"] = None
+                        history["last_active"] = time.time()
+                    print(f"Retrying AI mention without stale previous_response_id: {previous_response_id}")
+                    retry_input = self._build_fallback_retry_input(history) or user_message_input
+                    mention_result = await self.call_responses_ai(
+                        retry_input,
+                        instructions=AI_PERSONALITY,
+                        store=not memory_disabled,
+                        previous_response_id=None,
+                        tools=tools,
+                        return_payload=True,
+                    )
+
+                if not mention_result or mention_result.get("status_code"):
                     await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
 
                 ai_response_text = mention_result.get("text")
                 response_payload = mention_result.get("payload")
+                response_id = mention_result.get("response_id")
 
                 ai_response_text, extracted_files = await self._extract_and_download_files(
                     ai_response_text,
@@ -1775,13 +1957,13 @@ class AI(commands.Cog):
                     await self._safe_reply(message, "I'm sorry, I couldn't generate a response right now.")
                     return
 
-                if not memory_disabled:
-                    history["messages"].append({
+                if not memory_disabled and history is not None and response_id:
+                    history["response_id"] = response_id
+                    history["last_active"] = time.time()
+                    self._append_fallback_message(history, {
                         "role": "assistant",
                         "content": ai_response_text or "[Generated file attachment]",
                     })
-                    if len(history["messages"]) > MAX_HISTORY_MESSAGES:
-                        history["messages"] = history["messages"][-MAX_HISTORY_MESSAGES:]
 
                 self.last_ai_call_time = time.time()
                 await self._send_text_chunks(
@@ -2121,8 +2303,11 @@ class AI(commands.Cog):
     @commands.command(name="clear")
     async def clear_command(self, ctx: commands.Context):
         uid = str(ctx.author.id)
-        if uid in self.conversation_history:
-            del self.conversation_history[uid]
+        keys_to_clear = self._conversation_keys_for_user(uid)
+        for key in keys_to_clear:
+            del self.conversation_history[key]
+
+        if keys_to_clear:
             await ctx.send(f"🧹 {ctx.author.mention}, your AI conversation history has been cleared!")
         else:
             await ctx.send(f"💭 {ctx.author.mention}, you don't have any conversation history.")
@@ -2136,13 +2321,37 @@ class AI(commands.Cog):
         if uid in self.memory_disabled_users:
             self.memory_disabled_users.remove(uid)
             self._save_model_settings()
-            await ctx.send(f"🧠 {ctx.author.mention}, AI conversation memory has been **enabled**. The bot will now remember your context across messages in a short time window.")
+            await ctx.send(f"🧠 {ctx.author.mention}, AI conversation memory has been **enabled**. The bot will now remember your context through Grok's stored response chain.")
         else:
             self.memory_disabled_users.add(uid)
-            if uid in self.conversation_history:
-                del self.conversation_history[uid]
+            for key in self._conversation_keys_for_user(uid):
+                del self.conversation_history[key]
             self._save_model_settings()
             await ctx.send(f"🚫 {ctx.author.mention}, AI conversation memory has been **disabled**. Your previous context has also been cleared.")
+
+    @commands.command(name="aitools")
+    async def aitools_command(self, ctx: commands.Context, mode: str = None):
+        if getattr(self, "ai_tools_enabled_users", None) is None:
+            self.ai_tools_enabled_users = set()
+
+        uid = str(ctx.author.id)
+        mode = (mode or "").strip().lower()
+
+        if mode in {"on", "enable", "enabled"}:
+            self.ai_tools_enabled_users.add(uid)
+            self._save_model_settings()
+            await ctx.send(f"[tools] {ctx.author.mention}, AI search tools are now **enabled** for your mentions.")
+            return
+
+        if mode in {"off", "disable", "disabled"}:
+            self.ai_tools_enabled_users.discard(uid)
+            self._save_model_settings()
+            await ctx.send(f"[tools] {ctx.author.mention}, AI search tools are now **disabled** for your mentions.")
+            return
+
+        status = "enabled" if uid in self.ai_tools_enabled_users else "disabled"
+        await ctx.send(f"AI search tools are currently **{status}** for you. Use `!aitools on` or `!aitools off`.")
+
 
     @commands.command(name="tldr", aliases=["summarize"])
     async def tldr_command(self, ctx: commands.Context, count: int = 50):
